@@ -1,4 +1,3 @@
-
 from setuptools import setup, find_packages
 
 with open("README.md") as f:
@@ -42,4 +41,6 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Programming Language :: Python :: 3.6",
     ],
+    install_requires=["numpy", "pysam",],
+    extras_require={"tf": ["tensorflow"], "tf_gpu": ["tensorflow-gpu"],},
 )

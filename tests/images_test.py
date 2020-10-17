@@ -1,9 +1,9 @@
 import argparse, io, os, tempfile, unittest
 from unittest.mock import patch
-
-from nucleus.io import vcf
+import pysam
 import tensorflow as tf
 from PIL import Image
+from npsv2.variant import Variant
 from npsv2 import images
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -11,9 +11,8 @@ FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 class CreateSingleImageTest(unittest.TestCase):
     def setUp(self):
-        vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
-        with vcf.VcfReader(vcf_path) as reader:
-            self.variant = next(reader)
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
 
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
         self.params = argparse.Namespace()
@@ -58,7 +57,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             dataset_path = os.path.join(tempdir, "test.tfrecord")
             with tf.io.TFRecordWriter(dataset_path) as dataset:
-                all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, image_shape=(300, 300), sample_or_label="HG002")
+                all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, image_shape=(300, 300), sample="HG002")
                 for example in all_examples:
                     self.assertEqual(images._example_label(example), 2)
                     dataset.write(example.SerializeToString())
