@@ -12,6 +12,7 @@ RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   gawk \
   libbz2-dev \
   liblzma-dev \
+  protobuf-compiler \
   python3-dev \
   python3-pip \
   python3-pkgconfig \

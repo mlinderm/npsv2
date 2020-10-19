@@ -12,14 +12,7 @@ MIN_WIDTH = 300
 PADDING = 100
 
 CIGAR_ADVANCE_IMAGE = frozenset(
-    [
-        pysam.CMATCH,
-        pysam.CDEL,
-        pysam.CREF_SKIP,
-        pysam.CSOFT_CLIP,
-        pysam.CEQUAL,
-        pysam.CDIFF,
-    ]
+    [pysam.CMATCH, pysam.CDEL, pysam.CREF_SKIP, pysam.CSOFT_CLIP, pysam.CEQUAL, pysam.CDIFF,]
 )
 
 CIGAR_BASE_PRESENT = {
@@ -30,17 +23,6 @@ CIGAR_BASE_PRESENT = {
     pysam.CEQUAL: 255,
     pysam.CDIFF: 255,
 }
-
-
-# Adapted from DeepVariant
-def _bytes_feature(list_of_strings):
-    """Returns a bytes_list from a list of string / byte."""
-    return tf.train.Feature(bytes_list=tf.train.BytesList(value=list_of_strings))
-
-
-def _int_feature(list_of_ints):
-    """Returns a int64_list from a list of int / bool."""
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
 def read_alignment_length(cigar):
@@ -62,9 +44,7 @@ def populate_row_from_cigar(cigar):
     return base_present
 
 
-def create_single_example(
-    params, variant, read_path, region, image_shape=None, label=None
-):
+def create_single_example(params, variant, read_path, region, image_shape=None, label=None):
     # Nucleus regions are 0-indexed half-open
     if isinstance(region, str):
         region = Range.parse_literal(region)
@@ -74,9 +54,7 @@ def create_single_example(
 
     count = 0
     with pysam.AlignmentFile(read_path) as alignment_file:
-        for read in alignment_file.fetch(
-            contig=region.contig, start=region.start, stop=region.end,
-        ):
+        for read in alignment_file.fetch(contig=region.contig, start=region.start, stop=region.end,):
             # TODO: Randomly sample reads when there are more reads than rows
             if count >= HEIGHT:
                 break
@@ -113,19 +91,9 @@ def create_single_example(
     # Create consistent image size
     if image_shape is not None and image_tensor.shape[:2] != image_shape:
         # resize converts to float, directly (however convert_image_dtype assumes floats are in [0-1])
-        image_tensor = tf.cast(
-            tf.image.resize(image_tensor, image_shape), dtype=tf.uint8
-        ).numpy()
+        image_tensor = tf.cast(tf.image.resize(image_tensor, image_shape), dtype=tf.uint8).numpy()
 
-    feature = {
-        "image/shape": _int_feature(image_tensor.shape),
-        "image/encoded": _bytes_feature([image_tensor.tobytes()]),
-    }
-    if label is not None:
-        feature["label"] = _int_feature([label])
-
-    example = tf.train.Example(features=tf.train.Features(feature=feature))
-    return example
+    return image_tensor
 
 
 def example_to_image(example, out_path):
@@ -147,7 +115,8 @@ def example_to_image(example, out_path):
     image.save(out_path)
 
 
-def _genotype_to_allele_count(genotype, alleles={1}):
+def _genotype_to_label(genotype, alleles={1}):
+    # TODO: Handle no-calls
     count = 0
     for gt in genotype:
         if gt == -1:
@@ -157,20 +126,28 @@ def _genotype_to_allele_count(genotype, alleles={1}):
     return count
 
 
-def make_vcf_examples(params, vcf_path, read_path, image_shape=None, sample=None):
+# Adapted from DeepVariant
+def _bytes_feature(list_of_strings):
+    """Returns a bytes_list from a list of string / byte."""
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=list_of_strings))
+
+
+def _int_feature(list_of_ints):
+    """Returns a int64_list from a list of int / bool."""
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
+
+
+def make_vcf_examples(params, vcf_path, read_path, image_shape=None, sample_or_label=None):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
-        if sample and isinstance(sample, str):
-            sample_index = next(
-                (i for i, s in enumerate(vcf_file.header.samples) if s == sample), -1,
-            )
-            if sample == -1:
+        if sample_or_label and isinstance(sample_or_label, str):
+            samples = vcf_file.header.samples
+            sample_index = next((i for i, s in enumerate(samples) if s == sample_or_label), -1,)
+            if sample_index == -1:
                 raise ValueError("Sample identifier is not present in the file")
-            label_extractor = lambda variant: _genotype_to_allele_count(
-                variant.genotype_indices(sample_index)
-            )
+            label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(sample_index))
         else:
-            label_extractor = lambda variant: sample
+            label_extractor = lambda variant: sample_or_label
 
         for record in vcf_file:
             variant = Variant.from_pysam(record)
@@ -183,14 +160,16 @@ def make_vcf_examples(params, vcf_path, read_path, image_shape=None, sample=None
 
             label = label_extractor(variant)
 
-            yield create_single_example(
-                params,
-                variant,
-                read_path,
-                example_region,
-                image_shape=image_shape,
-                label=label,
-            )
+            image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape,)
+
+            feature = {
+                "image/shape": _int_feature(image_tensor.shape),
+                "image/encoded": _bytes_feature([image_tensor.tobytes()]),
+            }
+            if label is not None:
+                feature["label"] = _int_feature([label])
+
+            yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
 def _example_shape(example):
@@ -222,12 +201,8 @@ def load_example_dataset(params, filename, with_labels=False):
     def _process_input(proto_string):
         """Helper function for input function that parses a serialized example."""
 
-        parsed_features = tf.io.parse_single_example(
-            serialized=proto_string, features=proto_features
-        )
-        image_tensor = tf.reshape(
-            tf.io.decode_raw(parsed_features["image/encoded"], tf.uint8), shape
-        )
+        parsed_features = tf.io.parse_single_example(serialized=proto_string, features=proto_features)
+        image_tensor = tf.reshape(tf.io.decode_raw(parsed_features["image/encoded"], tf.uint8), shape)
 
         if with_labels:
             return image_tensor, parsed_features["label"]

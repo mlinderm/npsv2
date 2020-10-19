@@ -44,11 +44,6 @@ def make_argument_parser():
         "-o", "--output", help="Output file", type=str, required=True
     )
 
-    # TODO: Make options
-    parser_examples.add_argument(
-        "--compression_type", help="Compression type (one of 'GZIP', 'ZLIB' or '')", type=str, default=None
-    )
-
     return parser
 
 
@@ -60,7 +55,7 @@ def main():
         from .images import make_vcf_examples
         import tensorflow as tf
 
-        with tf.io.TFRecordWriter(args.output, args.compression_type) as dataset:
+        with tf.io.TFRecordWriter(args.output) as dataset:
             all_examples = make_vcf_examples(
                 args,
                 args.vcf,
