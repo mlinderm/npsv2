@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+set -e -o pipefail
+
+TMPDIR_ROOT=$TMPDIR
+REFERENCE=human_g1k_v37.fasta
+SHAREDREF=
+SAMPLE=
+
+COVERAGE=20
+FRAGMEAN=400
+FRAGSD=121
+LENGTH=150
+PROFILE=HS25
+ZYGOSITY=1
+SAMPLES=1
+
+usage()
+{
+    cat << EOF
+usage: $(basename "$0") [options] IN_VCF OUT_BAM 
+
+Generate synthetic BAMs for single variant and specified zygosity
+
+Options:
+  -h            Print this message
+  -R FASTA      Path to reference file, default: $REFERENCE
+  -S FASTA      Reference file already in shared memory, default: undefined
+  -c integer    Haploid coverage, default: $COVERAGE
+  -m float      Mean fragment size, default: $FRAGMEAN
+  -s float      Standard deviation of fragment size, default: $FRAGSD
+  -t DIRECTORY  Root for temporary directory, default: /data/scratch/\$USER 
+  -l integer    Read length, default: $LENGTH
+  -p string     ART sequencer profile, default: $PROFILE
+  -z (0,1,2)    Alternate allele count (AC), default: $ZYGOSITY
+  -f integer    Flank size, default: $FLANK
+  -i integer    Number of samples in output SAM/BAM, default: $SAMPLES
+  -n string     Sample name, default: undefined
+  -j FILE       NPSV stats file for GC normalized coverage, default: undefined
+  -g FILE       Path to gnomAD coverage file, default: undefined
+EOF
+}
+
+while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:g:j:" Option
+do
+    case $Option in
+        R)
+            REFERENCE=$OPTARG
+            ;;
+        S)
+            SHAREDREF=$OPTARG
+            ;;
+        c)
+            COVERAGE=$OPTARG
+            ;;
+        m)
+            FRAGMEAN=$OPTARG
+            ;;
+        s)
+            FRAGSD=$OPTARG
+            ;;
+        t)
+            TMPDIR_ROOT=$OPTARG
+            ;;
+        l)
+            LENGTH=$OPTARG
+            ;;
+        p)
+            PROFILE=$OPTARG
+            ;;
+        z)
+            ZYGOSITY=$OPTARG
+            ;;
+        i)
+            SAMPLES=$OPTARG
+            ;;
+        n)
+            SAMPLE=$OPTARG
+            ;;
+        g)
+            GNOMADCOVGFILE=$OPTARG
+            ;;
+        j)
+            STATSFILE=$OPTARG
+            ;;
+        h)
+            usage
+            exit 0
+            ;;
+        ?)
+            usage
+            exit 85
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+if [[ $# -ne 2 ]]; then
+    >&2 echo "Error: Missing positional arguments"
+    >&2 usage
+    exit 1
+fi
+
+FASTA=$1
+OUTBAM=$2
+
+if [[ ! -e "$FASTA" ]]; then
+    >&2 echo "Error: Input FASTA file $FASTA does not exist"
+    >&2 usage
+    exit 1
+fi
+
+TMPDIR=$(mktemp -d --tmpdir="$TMPDIR_ROOT") || exit 1
+trap "rm -rf $TMPDIR" 0
+
+# Generate diploid FASTAs for input to synthetic read generator
+
+if [[ $ZYGOSITY -eq 0 ]]; then
+    COVERAGE=$(bc <<< "$COVERAGE * 2")
+elif [[ $ZYGOSITY -eq 2 ]]; then
+    COVERAGE=$(bc <<< "$COVERAGE * 2")
+fi
+cp "$FASTA" "${OUTBAM/%bam/synth.fasta}"
+
+
+# If shared memory reference is not defined, use reference files
+if [[ -z $SHAREDREF ]]; then
+    SHAREDREF="$REFERENCE"
+fi
+
+for (( s=1; s<=SAMPLES; s++ ))
+do
+    if [[ -z $SAMPLE ]]; then
+        SM="synth${s}"
+    else
+        SM="$SAMPLE"
+    fi
+    # Generate synthetic reads reads1.fq and reads2.fq. art_illumina use time in seconds for seed which can result in identical seeds for data.
+    READS_PREFIX=$TMPDIR/reads.synth${s}
+    art_illumina -q -i "$FASTA" -o "$READS_PREFIX" -sam -ss "$PROFILE" -l "$LENGTH" -f "$COVERAGE" -p -m "$FRAGMEAN" -s "$FRAGSD" -sp -rs $(od -An -tu4 -N4 /dev/urandom) 1>&2
+    
+    >&2 echo "Generating aligned BAM"
+    # Generate synthetic aligned BAM using minimal, but representative, pipeline
+    # This pipeline should be modified to make the simulated pipeline similar to the
+    # the pipeline used with the actual data
+    ALIGNEDBAM=$TMPDIR/aligned${s}.bam
+    
+    bwa mem -c 250 -M -v 1 -I "${FRAGMEAN},${FRAGSD}" \
+        -R "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
+        "$SHAREDREF" \
+        "${READS_PREFIX}1.fq" "${READS_PREFIX}2.fq" | \
+    samblaster -q -M --addMateTags | \
+    samtools view -S -u  - | \
+    sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
+done
+
+if [[ "$SAMPLES" -gt 1 ]]; then
+    # Combine all of the individual BAM files
+    >&2 echo "Generating aligned BAM files with replicates"
+    sambamba -q merge -t 1 "$OUTBAM" $(seq 1 "$SAMPLES" | xargs printf " $TMPDIR/aligned%d.bam")
+else
+    mv "$TMPDIR/aligned1.bam" "$OUTBAM"
+    mv "$TMPDIR/aligned1.bam.bai" "$OUTBAM.bai"
+fi
+>&2 echo "Completed generating synthetic data"

@@ -1,7 +1,9 @@
+import os, subprocess, tempfile
 import numpy as np
 import pysam
 import tensorflow as tf
 from PIL import Image
+from shlex import quote
 
 from .variant import Variant
 from .range import Range
@@ -96,25 +98,6 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
     return image_tensor
 
 
-def example_to_image(example, out_path):
-    # Adapted from DeepVariant
-    features = example.features.feature
-    image_data = features["image/encoded"].bytes_list.value[0]
-    shape = features["image/shape"].int64_list.value[0:3]
-    image_tensor = np.frombuffer(image_data, np.uint8).reshape(shape)
-
-    if len(shape) == 3 and shape[2] == 3:
-        image_mode = "RGB"
-    elif len(shape) == 2 or shape[2] == 1:
-        image_mode = "L"
-        image_tensor = image_tensor[:, :, 0]
-    else:
-        raise ValueError("Unsupported image shape")
-
-    image = Image.fromarray(image_tensor, mode=image_mode)
-    image.save(out_path)
-
-
 def _genotype_to_label(genotype, alleles={1}):
     # TODO: Handle no-calls
     count = 0
@@ -137,7 +120,58 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_vcf_examples(params, vcf_path, read_path, image_shape=None, sample_or_label=None):
+def _art_read_length(read_length, profile):
+    """Make sure read length is compatible ART"""
+    if profile in ("HS10", "HS20"):
+        return min(read_length, 100)
+    elif profile in ("HS25", "HSXn", "HSXt"):
+        return min(read_length, 150)
+    else:
+        return read_length
+
+
+def _synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates=1):
+    hap_coverage = params.depth / 2
+    shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else None
+
+    synth_commandline = f"synthBAM \
+        -t {quote(params.tempdir)} \
+        -R {quote(params.reference)} \
+        {shared_ref_arg} \
+        -c {hap_coverage:0.1f} \
+        -m {params.fragment_mean} \
+        -s {params.fragment_sd} \
+        -l {_art_read_length(params.read_length, params.profile)} \
+        -p {params.profile} \
+        -i {replicates} \
+        -z {allele_count} \
+        {fasta_path} \
+        {bam_path}"
+
+    synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
+
+    if synth_result.returncode != 0 or not os.path.exists(bam_path):
+        print(synth_result.stderr)
+        raise RuntimeError(f"Synthesis script failed to generate {bam_path}")
+
+
+def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
+    if replicates == 1:
+        yield bam_path
+    else:
+        # Split synthetic BAM file into individual replicates
+        for i in range(1, replicates + 1):
+            read_group = f"synth{i}"
+            single_replicate_bam_path = os.path.join(dir, f"{read_group}.bam")
+
+            pysam.view(
+                bam_path, "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, catch_stdout=False,
+            )
+            pysam.index(single_replicate_bam_path, "-b")
+            yield single_replicate_bam_path
+
+
+def make_vcf_examples(params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
         if sample_or_label and isinstance(sample_or_label, str):
@@ -158,21 +192,55 @@ def make_vcf_examples(params, vcf_path, read_path, image_shape=None, sample_or_l
             padding = max((MIN_WIDTH - variant_range.length) // 2, PADDING)
             example_region = variant_range.expand(padding)
 
-            label = label_extractor(variant)
-
-            image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape,)
-
+            # Construct image for "real" data
+            image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape)
             feature = {
                 "image/shape": _int_feature(image_tensor.shape),
                 "image/encoded": _bytes_feature([image_tensor.tobytes()]),
             }
+
+            label = label_extractor(variant)
             if label is not None:
                 feature["label"] = _int_feature([label])
+
+            if simulate:
+                feature["sim/replicates"] = _int_feature([params.replicates])
+                # Generate synthetic training images
+                for allele_count in (0, 1, 2):
+                    with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
+                        # Generate the FASTA file for this zygosity
+                        fasta_path, ref_contig, alt_contig = variant.synth_fasta(
+                            reference_fasta=params.reference, ac=allele_count, flank=params.flank, dir=tempdir
+                        )
+
+                        # Generate synthetic bam files with given number of replicates
+                        synthetic_bam_path = os.path.join(tempdir, "replicates.bam")
+                        _synthesize_variant_data(
+                            params, fasta_path, synthetic_bam_path, allele_count, replicates=params.replicates
+                        )
+
+                        synth_encoded_images = []
+
+                        # Split synthetic BAM file into individual replicates
+                        for replicate_bam_path in _replicate_bam_generator(
+                            synthetic_bam_path, params.replicates, dir=tempdir
+                        ):
+                            synth_image_tensor = create_single_example(
+                                params, variant, replicate_bam_path, example_region, image_shape=image_shape
+                            )
+                            synth_encoded_images.append(synth_image_tensor.tobytes())
+
+                        feature[f"sim/{allele_count}/images/encoded"] = _bytes_feature(synth_encoded_images)
 
             yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
-def _example_shape(example):
+def _extract_image(example, shape):
+    image_data = example.features.feature["image/encoded"].bytes_list.value[0]
+    return np.frombuffer(image_data, np.uint8).reshape(shape)
+
+
+def _example_image_shape(example):
     return tuple(example.features.feature["image/shape"].int64_list.value[0:3])
 
 
@@ -180,34 +248,99 @@ def _example_label(example):
     return int(example.features.feature["label"].int64_list.value[0])
 
 
-def _extract_shape_from_first_example(filename):
+def _example_sim_replicates(example):
+    if "sim/replicates" in example.features.feature:
+        return int(example.features.feature["sim/replicates"].int64_list.value[0])
+    else:
+        return 0
+
+
+def _extract_metadata_from_first_example(filename):
     raw_example = next(iter(tf.data.TFRecordDataset(filenames=filename)))
     example = tf.train.Example.FromString(raw_example.numpy())
-    return _example_shape(example)
+    return _example_image_shape(example), _example_sim_replicates(example)
 
 
-def load_example_dataset(params, filename, with_labels=False):
+def example_to_image(example: tf.train.Example, out_path: str, with_simulations=False, margin=10, max_replicates=1):
+    # Adapted from DeepVariant
+    features = example.features.feature
+
+    shape = features["image/shape"].int64_list.value[0:3]
+    if len(shape) == 3 and shape[2] == 3:
+        image_mode = "RGB"
+        channels = [0, 1, 2]
+    elif len(shape) == 2 or shape[2] == 1:
+        image_mode = "L"
+        channels = 0
+    else:
+        raise ValueError("Unsupported image shape")
+
+    #image_data = features["image/encoded"].bytes_list.value[0]
+    #image_tensor = np.frombuffer(image_data, np.uint8).reshape(shape)
+    image_tensor = _extract_image(example, shape)
+    real_image = Image.fromarray(image_tensor[:, :, channels], mode=image_mode)
+
+    if with_simulations and "sim/replicates" in features:
+        width, height, _ = shape
+        replicates = min(features["sim/replicates"].int64_list.value[0], max_replicates)
+
+        image = Image.new(image_mode, (width + 2 * (width + margin), height + replicates * (height + margin)))
+        image.paste(real_image, (width + margin, 0))
+
+        for ac in (0, 1, 2):
+            synth_data = features[f"sim/{ac}/images/encoded"].bytes_list.value
+            for repl in range(min(replicates, max_replicates)):
+                synth_tensor = np.frombuffer(synth_data[repl], np.uint8).reshape(shape)
+                synth_image = Image.fromarray(synth_tensor[:, :, channels], mode=image_mode)
+
+                coord = (ac * (width + margin), (repl + 1) * (height + margin))
+                image.paste(synth_image, coord)
+    else:
+        image = real_image
+
+    image.save(out_path)
+
+
+def load_example_dataset(filename: str, with_label=False, with_simulations=False) -> tf.data.Dataset:
     # Extract image shape from the first example
-    shape = _extract_shape_from_first_example(filename)
+    shape, replicates = _extract_metadata_from_first_example(filename)
 
     proto_features = {
-        "image/encoded": tf.io.FixedLenFeature(shape=[], dtype=tf.string),
+        "image/encoded": tf.io.FixedLenFeature(shape=[1], dtype=tf.string),
         "image/shape": tf.io.FixedLenFeature(shape=[3], dtype=tf.int64),
     }
-    if with_labels:
+    if with_label:
         proto_features["label"] = tf.io.FixedLenFeature(shape=[1], dtype=tf.int64)
+    if with_simulations and replicates > 0:
+        proto_features.update(
+            {
+                "sim/replicates": tf.io.FixedLenFeature(shape=[1], dtype=tf.int64),
+                "sim/0/images/encoded": tf.io.FixedLenFeature(shape=[replicates], dtype=tf.string),
+                "sim/1/images/encoded": tf.io.FixedLenFeature(shape=[replicates], dtype=tf.string),
+                "sim/2/images/encoded": tf.io.FixedLenFeature(shape=[replicates], dtype=tf.string),
+            }
+        )
+
+    def _decode_image(image_feature):
+        return tf.reshape(tf.io.decode_raw(image_feature, tf.uint8), shape)
 
     # Adapted from Nucleus example
     def _process_input(proto_string):
         """Helper function for input function that parses a serialized example."""
 
         parsed_features = tf.io.parse_single_example(serialized=proto_string, features=proto_features)
-        image_tensor = tf.reshape(tf.io.decode_raw(parsed_features["image/encoded"], tf.uint8), shape)
 
-        if with_labels:
-            return image_tensor, parsed_features["label"]
+        features = {"image": _decode_image(parsed_features["image/encoded"])}
+        if with_simulations:
+            for ac in (0, 1, 2):
+                features[f"sim/{ac}/images"] = tf.map_fn(
+                    _decode_image, parsed_features[f"sim/{ac}/images/encoded"], fn_output_signature=tf.uint8
+                )
+
+        if with_label:
+            return features, parsed_features["label"]
         else:
-            return image_tensor, None
+            return features, None
 
     return tf.data.TFRecordDataset(filenames=filename).map(map_func=_process_input)
 

@@ -63,7 +63,7 @@ setup(
     author_email="mlinderman@middlebury.edu",
     license=license,
     url="https://github.com/mlinderm/npsv2",
-    scripts=[],
+    scripts=["scripts/synthBAM"],
     entry_points="""
         [console_scripts]
         npsv2=npsv2.main:main
