@@ -17,7 +17,7 @@ SAMPLES=1
 usage()
 {
     cat << EOF
-usage: $(basename "$0") [options] IN_VCF OUT_BAM 
+usage: $(basename "$0") [options] IN_FASTA OUT_BAM
 
 Generate synthetic BAMs for single variant and specified zygosity
 
@@ -32,15 +32,12 @@ Options:
   -l integer    Read length, default: $LENGTH
   -p string     ART sequencer profile, default: $PROFILE
   -z (0,1,2)    Alternate allele count (AC), default: $ZYGOSITY
-  -f integer    Flank size, default: $FLANK
   -i integer    Number of samples in output SAM/BAM, default: $SAMPLES
   -n string     Sample name, default: undefined
-  -j FILE       NPSV stats file for GC normalized coverage, default: undefined
-  -g FILE       Path to gnomAD coverage file, default: undefined
 EOF
 }
 
-while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:g:j:" Option
+while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:" Option
 do
     case $Option in
         R)
@@ -75,12 +72,6 @@ do
             ;;
         n)
             SAMPLE=$OPTARG
-            ;;
-        g)
-            GNOMADCOVGFILE=$OPTARG
-            ;;
-        j)
-            STATSFILE=$OPTARG
             ;;
         h)
             usage

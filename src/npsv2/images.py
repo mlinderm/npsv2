@@ -1,4 +1,4 @@
-import os, subprocess, tempfile
+import os, subprocess, sys, tempfile
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -133,7 +133,7 @@ def _art_read_length(read_length, profile):
 
 def _synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates=1):
     hap_coverage = params.depth / 2
-    shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else None
+    shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
 
     synth_commandline = f"synthBAM \
         -t {quote(params.tempdir)} \
@@ -166,9 +166,10 @@ def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
             single_replicate_bam_path = os.path.join(dir, f"{read_group}.bam")
 
             pysam.view(
-                bam_path, "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, catch_stdout=False,
+                "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, bam_path, catch_stdout=False,
             )
-            pysam.index(single_replicate_bam_path, "-b")
+            pysam.index(single_replicate_bam_path)
+             
             yield single_replicate_bam_path
 
 
@@ -265,7 +266,7 @@ def vcf_to_tfrecords(
     with tf.io.TFRecordWriter(output_path) as file_writer:
         region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(vcf_path), output_types=(tf.string))
         example_dataset = region_dataset.interleave(
-            _generate_examples, cycle_length=params.threads, num_parallel_calls=None, deterministic=True
+            _generate_examples, cycle_length=params.threads, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False
         )
         for example in tqdm(example_dataset):
             file_writer.write(example.numpy())
