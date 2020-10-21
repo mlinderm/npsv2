@@ -174,13 +174,59 @@ class VCFExampleGenerateTest(unittest.TestCase):
         for features, label in dataset:
             self.assertEqual(features["image"].shape, (300, 300, 1))
             self.assertEqual(label, 2)
-            
+
             example_image = images._extract_image(example, (300, 300, 1))
             self.assertTrue(np.array_equal(features["image"], example_image))
-            
+
             for ac in (0, 1, 2):
                 feature_name = f"sim/{ac}/images"
                 self.assertEqual(features[feature_name].shape, (1, 300, 300, 1))
                 for repl in range(self.params.replicates):
-                    self.assertTrue(np.array_equal(features[feature_name][repl,:,:,:], example_image))
+                    self.assertTrue(np.array_equal(features[feature_name][repl, :, :, :], example_image))
 
+
+class ChunkedVCFExampleGenerateTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.params = argparse.Namespace(tempdir=self.tempdir.name, reference=None, flank=1, replicates=1, threads=2)
+
+        self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
+        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_region_generator(self):
+        regions = list(images._region_generator(self.vcf_path))
+        self.assertIn("1", regions)
+
+    @patch(
+        "npsv2.variant._reference_sequence",
+        return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
+    )
+    @patch("npsv2.images._synthesize_variant_data", side_effect=_mock_synthesize_variant_data)
+    def test_make_dataset(self, synth_ref, mock_ref):
+        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
+        images.vcf_to_tfrecords(
+            self.params, self.vcf_path, self.bam_path, dataset_path, image_shape=(300, 300), sample_or_label="HG002", simulate=True,
+        )
+
+        self.assertEqual(mock_ref.call_count, 3)
+        for args, _ in mock_ref.call_args_list:
+            self.assertEqual(args[1], Range("1", 899921, 899993))
+
+        self.assertTrue(os.path.exists(dataset_path))
+
+        # Load dataset with simulated data
+        dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
+        for features, label in dataset:
+            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(label, 2)
+
+            # png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
+            # image = Image.fromarray(features["image"].numpy()[:,:,0], mode="L")
+            # image.save(png_path)
+
+            for ac in (0, 1, 2):
+                feature_name = f"sim/{ac}/images"
+                self.assertEqual(features[feature_name].shape, (1, 300, 300, 1))

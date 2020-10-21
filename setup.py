@@ -90,6 +90,6 @@ setup(
         "Programming Language :: Python :: 3.6",
     ],
     install_requires=["numpy", "pysam", "Pillow", "tqdm"],
-    extras_require={"tf": ["tensorflow"], "tf_gpu": ["tensorflow-gpu"],},
+    extras_require={"tf": ["tensorflow>=2.2"], "tf_gpu": ["tensorflow-gpu>=2.2"],},
     cmdclass={"protobuf": BuildProtobuf},
 )

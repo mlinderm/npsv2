@@ -38,6 +38,7 @@ def make_argument_parser():
     parser.add_argument(
         "-t", "--tempdir", help="Specify the temp directory", type=str, default=tempfile.gettempdir(),
     )
+    parser.add_argument("--threads", help="Number of threads", type=int, default=1)
 
     subparsers = parser.add_subparsers(dest="command", help="Sub-command help")
 
@@ -82,8 +83,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "examples":
-        from .images import make_vcf_examples
-        import tensorflow as tf
+        from .images import vcf_to_tfrecords
 
         # Check if shared reference is loaded
         setattr(args, "shared_reference", _bwa_index_loaded(args.reference))
@@ -93,12 +93,9 @@ def main():
                 args.reference,
             )
 
-        with tf.io.TFRecordWriter(args.output) as dataset:
-            all_examples = make_vcf_examples(
-                args, args.vcf, args.bam, image_shape=(300, 300), sample_or_label=args.sample, simulate=args.replicates > 0
-            )
-            for example in tqdm(all_examples):
-                dataset.write(example.SerializeToString())
+        vcf_to_tfrecords(
+            args, args.vcf, args.bam, args.output, image_shape=(300, 300), sample_or_label=args.sample, simulate=args.replicates > 0
+        )
 
     elif args.command == "visualize":
         from .images import example_to_image

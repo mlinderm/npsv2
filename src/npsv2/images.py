@@ -4,6 +4,7 @@ import pysam
 import tensorflow as tf
 from PIL import Image
 from shlex import quote
+from tqdm import tqdm
 
 from .variant import Variant
 from .range import Range
@@ -171,7 +172,9 @@ def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
             yield single_replicate_bam_path
 
 
-def make_vcf_examples(params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False):
+def make_vcf_examples(
+    params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False, region=None,
+):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
         if sample_or_label and isinstance(sample_or_label, str):
@@ -179,18 +182,20 @@ def make_vcf_examples(params, vcf_path: str, read_path: str, image_shape=None, s
             sample_index = next((i for i, s in enumerate(samples) if s == sample_or_label), -1,)
             if sample_index == -1:
                 raise ValueError("Sample identifier is not present in the file")
+            vcf_file.subset_samples([sample_or_label])
             label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(sample_index))
         else:
+            vcf_file.subset_samples([])  # Drop all samples
             label_extractor = lambda variant: sample_or_label
 
-        for record in vcf_file:
+        for record in vcf_file.fetch(region=region):
             variant = Variant.from_pysam(record)
             assert variant.is_biallelic(), "Multi-allelic sites not yet supported"
 
             # TODO: Handle odd sized variants when padding
-            variant_range = variant.reference_range
-            padding = max((MIN_WIDTH - variant_range.length) // 2, PADDING)
-            example_region = variant_range.expand(padding)
+            variant_region = variant.reference_range
+            padding = max((MIN_WIDTH - variant_region.length) // 2, PADDING)
+            example_region = variant_region.expand(padding)
 
             # Construct image for "real" data
             image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape)
@@ -235,6 +240,37 @@ def make_vcf_examples(params, vcf_path: str, read_path: str, image_shape=None, s
             yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
+def _region_generator(vcf_path: str, chunk_size=30000000):
+    # TODO: Chunk within chromosomes
+    with pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
+        tid = 0
+        while vcf_file.is_valid_tid(tid):
+            yield vcf_file.get_reference_name(tid)
+            tid += 1
+
+
+def vcf_to_tfrecords(
+    params, vcf_path: str, read_path: str, output_path: str, image_shape=None, sample_or_label=None, simulate=False,
+):
+    def _encoded_example_generator(region=None):
+        all_examples = make_vcf_examples(
+            params, vcf_path, read_path, image_shape, sample_or_label, simulate=simulate, region=region
+        )
+        for example in all_examples:
+            yield example.SerializeToString()
+
+    def _generate_examples(region):
+        return tf.data.Dataset.from_generator(_encoded_example_generator, output_types=(tf.string), args=(region,),)
+
+    with tf.io.TFRecordWriter(output_path) as file_writer:
+        region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(vcf_path), output_types=(tf.string))
+        example_dataset = region_dataset.interleave(
+            _generate_examples, cycle_length=params.threads, num_parallel_calls=None, deterministic=True
+        )
+        for example in tqdm(example_dataset):
+            file_writer.write(example.numpy())
+
+
 def _extract_image(example, shape):
     image_data = example.features.feature["image/encoded"].bytes_list.value[0]
     return np.frombuffer(image_data, np.uint8).reshape(shape)
@@ -275,8 +311,6 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     else:
         raise ValueError("Unsupported image shape")
 
-    #image_data = features["image/encoded"].bytes_list.value[0]
-    #image_tensor = np.frombuffer(image_data, np.uint8).reshape(shape)
     image_tensor = _extract_image(example, shape)
     real_image = Image.fromarray(image_tensor[:, :, channels], mode=image_mode)
 
@@ -333,8 +367,9 @@ def load_example_dataset(filename: str, with_label=False, with_simulations=False
         features = {"image": _decode_image(parsed_features["image/encoded"])}
         if with_simulations:
             for ac in (0, 1, 2):
+                # dytpe is deprecated in tf 2.3 (but only 2.2 is available through conda)
                 features[f"sim/{ac}/images"] = tf.map_fn(
-                    _decode_image, parsed_features[f"sim/{ac}/images/encoded"], fn_output_signature=tf.uint8
+                    _decode_image, parsed_features[f"sim/{ac}/images/encoded"], dtype=tf.uint8
                 )
 
         if with_label:
