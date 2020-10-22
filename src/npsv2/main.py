@@ -2,6 +2,7 @@
 import argparse, logging, os, subprocess, tempfile
 from tqdm import tqdm
 
+
 def _bwa_index_loaded(reference: str) -> str:
     """Check if bwa index is loaded in shared memory
     
@@ -55,9 +56,7 @@ def make_argument_parser():
         "-r", "--reference-sequence", help="Reference fasta file", type=str, dest="reference", required=True,
     )
 
-    parser_examples.add_argument(
-        "-s", "--sample", help="Sample to use for genotype labels", type=str, default=None
-    )
+    parser_examples.add_argument("-s", "--sample", help="Sample to use for genotype labels", type=str, default=None)
 
     parser_examples.add_argument("-n", "--replicates", help="Number of replicates", type=int, default=0)
     parser_examples.add_argument("--flank", help="Flank size for simulation region", type=int, default=1000)
@@ -74,7 +73,9 @@ def make_argument_parser():
     visualize_examples = subparsers.add_parser("visualize", help="Convert example to images")
     visualize_examples.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
     visualize_examples.add_argument("-o", "--output", help="Output directory", type=str, required=True)
-    visualize_examples.add_argument("-n", "--replicates", help="Max number of replicates to visualize", type=int, default=0)
+    visualize_examples.add_argument(
+        "-n", "--replicates", help="Max number of replicates to visualize", type=int, default=0
+    )
     return parser
 
 
@@ -94,7 +95,14 @@ def main():
             )
 
         vcf_to_tfrecords(
-            args, args.vcf, args.bam, args.output, image_shape=(300, 300), sample_or_label=args.sample, simulate=args.replicates > 0
+            args,
+            args.vcf,
+            args.bam,
+            args.output,
+            image_shape=(300, 300),
+            sample_or_label=args.sample,
+            simulate=args.replicates > 0,
+            progress_bar=True,
         )
 
     elif args.command == "visualize":
@@ -105,11 +113,10 @@ def main():
         for i, record in enumerate(dataset):
             example = tf.train.Example()
             example.ParseFromString(record.numpy())
-            
+
             # TODO: Generate variant ID and use that as file name
             image_path = os.path.join(args.output, f"variant{i}.png")
             example_to_image(example, image_path, with_simulations=args.replicates > 0, max_replicates=args.replicates)
-
 
 
 if __name__ == "__main__":

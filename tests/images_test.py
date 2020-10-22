@@ -230,3 +230,20 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             for ac in (0, 1, 2):
                 feature_name = f"sim/{ac}/images"
                 self.assertEqual(features[feature_name].shape, (1, 300, 300, 1))
+
+    @patch(
+        "npsv2.variant._reference_sequence",
+        return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
+    )
+    @patch("npsv2.images._synthesize_variant_data", side_effect=_mock_synthesize_variant_data)
+    def test_compressed_dataset_roundtrip(self, synth_ref, mock_ref):
+        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord.gz")
+        images.vcf_to_tfrecords(
+            self.params, self.vcf_path, self.bam_path, dataset_path, image_shape=(300, 300), sample_or_label="HG002",
+        )
+        self.assertTrue(os.path.exists(dataset_path))
+        # Load dataset with simulated data
+        dataset = images.load_example_dataset(dataset_path, with_label=True)
+        for features, label in dataset:
+            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(label, 2)
