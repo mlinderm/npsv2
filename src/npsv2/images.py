@@ -240,6 +240,13 @@ def make_vcf_examples(
             yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
+def _filename_to_compression(filename: str) -> str:
+    if filename.endswith(".gz"):
+        return "GZIP"
+    else:
+        return None
+
+
 def _region_generator(vcf_path: str, chunk_size=30000000):
     # TODO: Chunk within chromosomes
     with pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
@@ -250,7 +257,7 @@ def _region_generator(vcf_path: str, chunk_size=30000000):
 
 
 def vcf_to_tfrecords(
-    params, vcf_path: str, read_path: str, output_path: str, image_shape=None, sample_or_label=None, simulate=False,
+    params, vcf_path: str, read_path: str, output_path: str, image_shape=None, sample_or_label=None, simulate=False, progress_bar=False
 ):
     def _encoded_example_generator(region=None):
         all_examples = make_vcf_examples(
@@ -262,12 +269,12 @@ def vcf_to_tfrecords(
     def _generate_examples(region):
         return tf.data.Dataset.from_generator(_encoded_example_generator, output_types=(tf.string), args=(region,),)
 
-    with tf.io.TFRecordWriter(output_path) as file_writer:
+    with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
         region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(vcf_path), output_types=(tf.string))
         example_dataset = region_dataset.interleave(
             _generate_examples, cycle_length=params.threads, num_parallel_calls=None, deterministic=True
         )
-        for example in tqdm(example_dataset):
+        for example in tqdm(example_dataset, desc="Writing VCF to TFRecords", disable=not progress_bar):
             file_writer.write(example.numpy())
 
 
@@ -292,7 +299,9 @@ def _example_sim_replicates(example):
 
 
 def _extract_metadata_from_first_example(filename):
-    raw_example = next(iter(tf.data.TFRecordDataset(filenames=filename)))
+    raw_example = next(
+        iter(tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)))
+    )
     example = tf.train.Example.FromString(raw_example.numpy())
     return _example_image_shape(example), _example_sim_replicates(example)
 
@@ -377,5 +386,7 @@ def load_example_dataset(filename: str, with_label=False, with_simulations=False
         else:
             return features, None
 
-    return tf.data.TFRecordDataset(filenames=filename).map(map_func=_process_input)
+    return tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)).map(
+        map_func=_process_input
+    )
 
