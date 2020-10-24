@@ -19,6 +19,20 @@ def _bwa_index_loaded(reference: str) -> str:
             return shared_name
     return None
 
+def _configure_gpu():
+    """
+    Configure GPU options (seems to be required for RTX GPUs)
+    """
+    import tensorflow as tf
+    try:
+        gpus = tf.config.experimental.list_physical_devices("GPU")
+        if gpus:    
+            # Currently, memory growth needs to be the same across GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        pass
+
 
 def make_argument_parser():
     parser = argparse.ArgumentParser("npsv2", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -70,18 +84,31 @@ def make_argument_parser():
     parser_examples.add_argument("--depth", type=float, help="Mean depth of coverage")
 
     # Visualize
-    visualize_examples = subparsers.add_parser("visualize", help="Convert example to images")
-    visualize_examples.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
-    visualize_examples.add_argument("-o", "--output", help="Output directory", type=str, required=True)
-    visualize_examples.add_argument(
+    parser_visualize = subparsers.add_parser("visualize", help="Convert example to images")
+    parser_visualize.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
+    parser_visualize.add_argument("-o", "--output", help="Output directory", type=str, required=True)
+    parser_visualize.add_argument(
         "-n", "--replicates", help="Max number of replicates to visualize", type=int, default=0
     )
+
+    # Training
+    parser_train = subparsers.add_parser("train", help="Convert example to images")
+    parser_train.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
+    parser_train.add_argument("-o", "--output", help="Path to save model", type=str, required=True)
+
+    # Evaluation
+    parser_evaluate = subparsers.add_parser("evaluate", help="Evaluate model")
+    parser_evaluate.add_argument("-m", "--model", help="Saved model", type=str, required=True)
+    parser_evaluate.add_argument("-d", "--dataset", help="Input tfrecords file", type=str, required=True)
+    
     return parser
 
 
 def main():
     parser = make_argument_parser()
     args = parser.parse_args()
+
+    _configure_gpu()
 
     if args.command == "examples":
         from .images import vcf_to_tfrecords
@@ -106,11 +133,11 @@ def main():
         )
 
     elif args.command == "visualize":
-        from .images import example_to_image
         import tensorflow as tf
+        from .images import example_to_image
 
         dataset = tf.data.TFRecordDataset(filenames=args.input)
-        for i, record in enumerate(dataset):
+        for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
             example = tf.train.Example()
             example.ParseFromString(record.numpy())
 
@@ -118,6 +145,26 @@ def main():
             image_path = os.path.join(args.output, f"variant{i}.png")
             example_to_image(example, image_path, with_simulations=args.replicates > 0, max_replicates=args.replicates)
 
+    elif args.command == "train":
+        import tensorflow as tf
+        from .training import train
+        
+        train(args.input, args.output)
+
+    elif args.command == "evaluate":
+        import tensorflow as tf
+        from .training import evaluate_model
+
+        genotype_concordance, nonreference_concordance, confusion_matrix = evaluate_model(args.model, args.dataset)
+        print(f"Accuracy -  Genotype concordance: {genotype_concordance:.3}, Non-reference Concordance: {nonreference_concordance:.3}")
+
+        # Print the confusion matrix
+        tf.print("Confusion Matrix")
+        tf.print("\t\t\tTest\t")
+        tf.print("T", "", "0/0", "0/1", "1/1", sep="\t")
+        tf.print("R", "0/0", *confusion_matrix[0,:], sep="\t", summarize=-1)
+        tf.print("U", "0/1", *confusion_matrix[1,:], sep="\t", summarize=-1)
+        tf.print("E", "1/1", *confusion_matrix[2,:], sep="\t", summarize=-1)
 
 if __name__ == "__main__":
     main()
