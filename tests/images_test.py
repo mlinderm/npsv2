@@ -21,12 +21,12 @@ class CreateSingleImageTest(unittest.TestCase):
 
     def test_resizing_image(self):
         image_tensor = images.create_single_example(self.params, self.variant, self.bam_path, "1:899722-900192")
-        self.assertNotEqual(image_tensor.shape, (300, 300, 1))
+        self.assertNotEqual(image_tensor.shape, (images.IMAGE_HEIGHT, 300, images.IMAGE_CHANNELS))
 
         image_tensor = images.create_single_example(
             self.params, self.variant, self.bam_path, "1:899722-900192", image_shape=(300, 300),
         )
-        self.assertEqual(image_tensor.shape, (300, 300, 1))
+        self.assertEqual(image_tensor.shape, (300, 300, images.IMAGE_CHANNELS))
 
 
 def _mock_synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates):
@@ -76,8 +76,6 @@ class VCFExampleGenerateTest(unittest.TestCase):
             )
         )
 
-        # We would like to compress the records, but any compression leads to
-        # tensorflow.python.framework.errors_impl.DataLossError: corrupted record at 0
         dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
         with tf.io.TFRecordWriter(dataset_path) as dataset:
             dataset.write(example.SerializeToString())
@@ -85,9 +83,9 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
 
-            example_image = images._extract_image(example, (300, 300, 1))
+            example_image = images._extract_image(example, (300, 300, images.IMAGE_CHANNELS))
             self.assertTrue(np.array_equal(features["image"], example_image))
 
             self.assertEqual(label, 2)
@@ -134,7 +132,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
             )
         )
 
-        png_path = os.path.join(self.params.tempdir, "test.png")
+        png_path = "test.png"  # os.path.join(self.params.tempdir, "test.png")
         images.example_to_image(example, png_path, with_simulations=True, margin=10, max_replicates=1)
 
         self.assertTrue(os.path.exists(png_path))
@@ -166,23 +164,23 @@ class VCFExampleGenerateTest(unittest.TestCase):
         # Load dataset without simulated data
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)
 
         # Load dataset with simulated data
         dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)
 
-            example_image = images._extract_image(example, (300, 300, 1))
+            example_image = images._extract_image(example, (300, 300, images.IMAGE_CHANNELS))
             self.assertTrue(np.array_equal(features["image"], example_image))
 
             for ac in (0, 1, 2):
                 feature_name = f"sim/{ac}/images"
-                self.assertEqual(features[feature_name].shape, (1, 300, 300, 1))
+                self.assertEqual(features[feature_name].shape, (1, 300, 300, images.IMAGE_CHANNELS))
                 for repl in range(self.params.replicates):
-                    self.assertTrue(np.array_equal(features[feature_name][repl, :, :, :], example_image))
+                    self.assertTrue(np.array_equal(features[feature_name][repl], example_image))
 
 
 class ChunkedVCFExampleGenerateTest(unittest.TestCase):
@@ -208,7 +206,13 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
     def test_make_dataset(self, synth_ref, mock_ref):
         dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
         images.vcf_to_tfrecords(
-            self.params, self.vcf_path, self.bam_path, dataset_path, image_shape=(300, 300), sample_or_label="HG002", simulate=True,
+            self.params,
+            self.vcf_path,
+            self.bam_path,
+            dataset_path,
+            image_shape=(300, 300),
+            sample_or_label="HG002",
+            simulate=True,
         )
 
         self.assertEqual(mock_ref.call_count, 3)
@@ -220,7 +224,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
         # Load dataset with simulated data
         dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)
 
             # png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
@@ -229,7 +233,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
 
             for ac in (0, 1, 2):
                 feature_name = f"sim/{ac}/images"
-                self.assertEqual(features[feature_name].shape, (1, 300, 300, 1))
+                self.assertEqual(features[feature_name].shape, (1, 300, 300, images.IMAGE_CHANNELS))
 
     @patch(
         "npsv2.variant._reference_sequence",
@@ -245,5 +249,5 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
         # Load dataset with simulated data
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, 1))
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)

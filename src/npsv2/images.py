@@ -8,91 +8,57 @@ from tqdm import tqdm
 
 from .variant import Variant
 from .range import Range
+from .pileup import Pileup
 
-# if ranges.ranges_overlap(variant_utils.variant_range(variant), region)
-HEIGHT = 300
-MIN_WIDTH = 300
+IMAGE_HEIGHT = 100
+IMAGE_WIDTH = 300
+IMAGE_CHANNELS = 1
+IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
+
 PADDING = 100
 
-CIGAR_ADVANCE_IMAGE = frozenset(
-    [pysam.CMATCH, pysam.CDEL, pysam.CREF_SKIP, pysam.CSOFT_CLIP, pysam.CEQUAL, pysam.CDIFF,]
-)
-
-CIGAR_BASE_PRESENT = {
-    pysam.CMATCH: 255,
-    pysam.CDEL: 0,
-    pysam.CREF_SKIP: 0,
-    pysam.CSOFT_CLIP: 128,
-    pysam.CEQUAL: 255,
-    pysam.CDIFF: 255,
-}
-
-
-def read_alignment_length(cigar):
-    return sum(length for op, length in cigar if op in CIGAR_ADVANCE_IMAGE)
-
-
-def populate_row_from_cigar(cigar):
-    alignment_length = read_alignment_length(cigar)
-    base_present = np.zeros(alignment_length, dtype=np.uint8)
-
-    image_pos = 0
-    for operation, length in cigar:
-        pixel = CIGAR_BASE_PRESENT.get(operation, None)
-        if pixel is not None:
-            entry_image_end = image_pos + length
-            base_present[image_pos:entry_image_end] = pixel
-            image_pos = entry_image_end
-
-    return base_present
-
+BASE_CHANNEL = 0
+ALIGNED_BASE_PIXEL = 255
+SOFT_CLIP_BASE_PIXEL = 128
 
 def create_single_example(params, variant, read_path, region, image_shape=None, label=None):
-    # Nucleus regions are 0-indexed half-open
     if isinstance(region, str):
         region = Range.parse_literal(region)
     width = region.length
 
-    image_tensor = np.zeros((HEIGHT, width, 1), dtype=np.uint8)
+    if image_shape and len(image_shape) != 2:
+        raise ValueError("Image shape must be (rows, height) sequence")
+    elif image_shape:
+        tensor_shape = (image_shape[0], width, IMAGE_CHANNELS)
+    else:
+        tensor_shape = (IMAGE_HEIGHT, width, IMAGE_CHANNELS)
 
-    count = 0
+    image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
+
+    pileup = Pileup(region)
+
+    # count = 0
     with pysam.AlignmentFile(read_path) as alignment_file:
         for read in alignment_file.fetch(contig=region.contig, start=region.start, stop=region.end,):
-            # TODO: Randomly sample reads when there are more reads than rows
-            if count >= HEIGHT:
-                break
-
-            cigar = read.cigartuples
-            if not cigar:
+            if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
+                # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
                 continue
 
-            base_present = populate_row_from_cigar(cigar)
+            pileup.add_read(read)
 
-            # Determine the mapping between read row and the image block
 
-            # Include "soft clip" in the read
-            read_position = read.reference_start
-            if cigar[0][0] == pysam.CSOFT_CLIP:
-                read_position -= cigar[0][1]
+    for i in range(width):
+        column = pileup[i]
 
-            image_start = read_position - region.start
-            image_end = image_start + base_present.size
-
-            # Adjust start and end indices for image
-            if image_start < 0:
-                base_present = base_present[abs(image_start) :]
-                image_start = 0
-
-            if image_end > width:
-                base_present = base_present[: width - image_end]
-                image_end = width
-
-            image_tensor[count, image_start:image_end, 0] = base_present
-
-            count += 1
+        # TODO: Sample when more reads than rows...
+        aligned_pixels = min(column.aligned_bases, tensor_shape[0])
+        image_tensor[0:aligned_pixels, i, BASE_CHANNEL] = ALIGNED_BASE_PIXEL
+        image_tensor[
+            aligned_pixels : min(aligned_pixels + column.soft_clipped_bases, tensor_shape[0]), i, BASE_CHANNEL
+        ] = SOFT_CLIP_BASE_PIXEL
 
     # Create consistent image size
-    if image_shape is not None and image_tensor.shape[:2] != image_shape:
+    if image_shape and image_tensor.shape[:2] != image_shape:
         # resize converts to float, directly (however convert_image_dtype assumes floats are in [0-1])
         image_tensor = tf.cast(tf.image.resize(image_tensor, image_shape), dtype=tf.uint8).numpy()
 
@@ -169,7 +135,7 @@ def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
                 "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, bam_path, catch_stdout=False,
             )
             pysam.index(single_replicate_bam_path)
-             
+
             yield single_replicate_bam_path
 
 
@@ -195,7 +161,7 @@ def make_vcf_examples(
 
             # TODO: Handle odd sized variants when padding
             variant_region = variant.reference_range
-            padding = max((MIN_WIDTH - variant_region.length) // 2, PADDING)
+            padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
             example_region = variant_region.expand(padding)
 
             # Construct image for "real" data
@@ -258,7 +224,14 @@ def _region_generator(vcf_path: str, chunk_size=30000000):
 
 
 def vcf_to_tfrecords(
-    params, vcf_path: str, read_path: str, output_path: str, image_shape=None, sample_or_label=None, simulate=False, progress_bar=False
+    params,
+    vcf_path: str,
+    read_path: str,
+    output_path: str,
+    image_shape=None,
+    sample_or_label=None,
+    simulate=False,
+    progress_bar=False,
 ):
     def _encoded_example_generator(region=None):
         all_examples = make_vcf_examples(
@@ -273,7 +246,10 @@ def vcf_to_tfrecords(
     with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
         region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(vcf_path), output_types=(tf.string))
         example_dataset = region_dataset.interleave(
-            _generate_examples, cycle_length=params.threads, num_parallel_calls=tf.data.experimental.AUTOTUNE, deterministic=False
+            _generate_examples,
+            cycle_length=params.threads,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            deterministic=False,
         )
         for example in tqdm(example_dataset, desc="Writing VCF to TFRecords", disable=not progress_bar):
             file_writer.write(example.numpy())
@@ -325,10 +301,12 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     real_image = Image.fromarray(image_tensor[:, :, channels], mode=image_mode)
 
     if with_simulations and "sim/replicates" in features:
-        width, height, _ = shape
+        width, IMAGE_HEIGHT, _ = shape
         replicates = min(features["sim/replicates"].int64_list.value[0], max_replicates)
 
-        image = Image.new(image_mode, (width + 2 * (width + margin), height + replicates * (height + margin)))
+        image = Image.new(
+            image_mode, (width + 2 * (width + margin), IMAGE_HEIGHT + replicates * (IMAGE_HEIGHT + margin))
+        )
         image.paste(real_image, (width + margin, 0))
 
         for ac in (0, 1, 2):
@@ -337,7 +315,7 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
                 synth_tensor = np.frombuffer(synth_data[repl], np.uint8).reshape(shape)
                 synth_image = Image.fromarray(synth_tensor[:, :, channels], mode=image_mode)
 
-                coord = (ac * (width + margin), (repl + 1) * (height + margin))
+                coord = (ac * (width + margin), (repl + 1) * (IMAGE_HEIGHT + margin))
                 image.paste(synth_image, coord)
     else:
         image = real_image
