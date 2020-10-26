@@ -1,3 +1,10 @@
 syntax = "proto3";
 
 package npsv2;
+
+message StructuralVariant {
+    string contig = 1;
+    int64 start = 2;
+    int64 end = 3;
+    int64 svlen = 4;
+}

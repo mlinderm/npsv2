@@ -7,6 +7,7 @@ from PIL import Image
 from npsv2.variant import Variant
 from npsv2.range import Range
 from npsv2 import images
+from npsv2 import npsv2_pb2
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -84,9 +85,11 @@ class VCFExampleGenerateTest(unittest.TestCase):
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
             self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
-
             example_image = images._extract_image(example, (300, 300, images.IMAGE_CHANNELS))
             self.assertTrue(np.array_equal(features["image"], example_image))
+
+            proto = images._features_variant(features)
+            self.assertEqual(proto.svlen, -70)
 
             self.assertEqual(label, 2)
 

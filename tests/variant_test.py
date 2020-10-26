@@ -44,6 +44,9 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
             self.assertEqual(lines[2], ">1_899922_899993_alt")
             self.assertEqual(lines[3], "GG")
 
+    def test_construct_proto(self):
+        proto = self.variant.as_proto()
+        self.assertEqual(proto.start, 899921)
 
 class SymbolicDELVariantTestSuite(unittest.TestCase):
     def setUp(self):

@@ -105,8 +105,7 @@ def _random_pair_indices(replicates, pairs_per_variant):
     match_pairs = [((ac, r1), (ac, r2)) for (ac, (r1, r2)) in match_pairs]
 
     mismatch_pairs = itertools.product(
-        itertools.combinations(range(3), 2),
-        itertools.product(range(replicates), repeat=2),
+        itertools.combinations(range(3), 2), itertools.product(range(replicates), repeat=2),
     )
     mismatch_pairs = [((ac1, r1), (ac2, r2)) for ((ac1, ac2), (r1, r2)) in mismatch_pairs]
 
@@ -138,13 +137,7 @@ def _variant_to_test_pairs(features, original_label):
     query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
     query_images = tf.stack([query_image, query_image, query_image])
     support_images = tf.image.convert_image_dtype(
-        tf.stack(
-            [
-                features["sim/0/images"][0, :, :, :],
-                features["sim/1/images"][0, :, :, :],
-                features["sim/2/images"][0, :, :, :],
-            ]
-        ),
+        tf.stack([features["sim/0/images"][0], features["sim/1/images"][0], features["sim/2/images"][0],]),
         dtype=tf.float32,
     )
     image_tensors = {
@@ -244,10 +237,6 @@ def evaluate_model(model, dataset):
     nonreference_concordance = tf.keras.backend.mean(tf.math.equal(y_pred_present, y_true_present))
 
     # Generate the confusion matrix
-    confusion_matrix = tf.math.confusion_matrix(
-        y_true,
-        y_pred_label,
-        num_classes=3,
-    )
+    confusion_matrix = tf.math.confusion_matrix(y_true, y_pred_label, num_classes=3,)
 
     return genotype_concordance, nonreference_concordance, confusion_matrix

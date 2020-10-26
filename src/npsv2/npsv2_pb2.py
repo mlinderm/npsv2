@@ -19,12 +19,72 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   name='src/npsv2/npsv2.proto',
   package='npsv2',
   syntax='proto3',
-  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2b\x06proto3')
+  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2\"N\n\x11StructuralVariant\x12\x0e\n\x06\x63ontig\x18\x01 \x01(\t\x12\r\n\x05start\x18\x02 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x03 \x01(\x03\x12\r\n\x05svlen\x18\x04 \x01(\x03\x62\x06proto3')
 )
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
 
 
+
+_STRUCTURALVARIANT = _descriptor.Descriptor(
+  name='StructuralVariant',
+  full_name='npsv2.StructuralVariant',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='contig', full_name='npsv2.StructuralVariant.contig', index=0,
+      number=1, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=_b("").decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+    _descriptor.FieldDescriptor(
+      name='start', full_name='npsv2.StructuralVariant.start', index=1,
+      number=2, type=3, cpp_type=2, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+    _descriptor.FieldDescriptor(
+      name='end', full_name='npsv2.StructuralVariant.end', index=2,
+      number=3, type=3, cpp_type=2, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+    _descriptor.FieldDescriptor(
+      name='svlen', full_name='npsv2.StructuralVariant.svlen', index=3,
+      number=4, type=3, cpp_type=2, label=1,
+      has_default_value=False, default_value=0,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      options=None),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=32,
+  serialized_end=110,
+)
+
+DESCRIPTOR.message_types_by_name['StructuralVariant'] = _STRUCTURALVARIANT
+
+StructuralVariant = _reflection.GeneratedProtocolMessageType('StructuralVariant', (_message.Message,), dict(
+  DESCRIPTOR = _STRUCTURALVARIANT,
+  __module__ = 'src.npsv2.npsv2_pb2'
+  # @@protoc_insertion_point(class_scope:npsv2.StructuralVariant)
+  ))
+_sym_db.RegisterMessage(StructuralVariant)
 
 
 # @@protoc_insertion_point(module_scope)

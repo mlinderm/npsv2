@@ -9,6 +9,7 @@ from tqdm import tqdm
 from .variant import Variant
 from .range import Range
 from .pileup import Pileup
+from . import npsv2_pb2
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
@@ -167,6 +168,7 @@ def make_vcf_examples(
             # Construct image for "real" data
             image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape)
             feature = {
+                "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
                 "image/shape": _int_feature(image_tensor.shape),
                 "image/encoded": _bytes_feature([image_tensor.tobytes()]),
             }
@@ -254,6 +256,14 @@ def vcf_to_tfrecords(
         for example in tqdm(example_dataset, desc="Writing VCF to TFRecords", disable=not progress_bar):
             file_writer.write(example.numpy())
 
+def _features_variant(features):
+    return npsv2_pb2.StructuralVariant.FromString(features["variant/encoded"].numpy())
+
+
+def _example_variant(example):
+    encoded_variant = example.features.feature["variant/encoded"].bytes_list.value[0]
+    return npsv2_pb2.StructuralVariant.FromString(encoded_variant)
+
 
 def _extract_image(example, shape):
     image_data = example.features.feature["image/encoded"].bytes_list.value[0]
@@ -328,6 +338,7 @@ def load_example_dataset(filename: str, with_label=False, with_simulations=False
     shape, replicates = _extract_metadata_from_first_example(filename)
 
     proto_features = {
+        "variant/encoded": tf.io.FixedLenFeature(shape=[1], dtype=tf.string),
         "image/encoded": tf.io.FixedLenFeature(shape=[1], dtype=tf.string),
         "image/shape": tf.io.FixedLenFeature(shape=[3], dtype=tf.int64),
     }
@@ -352,7 +363,10 @@ def load_example_dataset(filename: str, with_label=False, with_simulations=False
 
         parsed_features = tf.io.parse_single_example(serialized=proto_string, features=proto_features)
 
-        features = {"image": _decode_image(parsed_features["image/encoded"])}
+        features = {
+            "variant/encoded": parsed_features["variant/encoded"][0],
+            "image": _decode_image(parsed_features["image/encoded"]),
+        }
         if with_simulations:
             for ac in (0, 1, 2):
                 # dytpe is deprecated in tf 2.3 (but only 2.2 is available through conda)

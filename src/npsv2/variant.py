@@ -1,6 +1,7 @@
 import logging, os, tempfile, textwrap
 import pysam
 from .range import Range
+from . import npsv2_pb2
 
 def _reference_sequence(reference_fasta, region: Range) -> str:
     with pysam.FastaFile(reference_fasta) as ref_fasta:
@@ -89,6 +90,15 @@ class Variant(object):
                 print(line, file=allele_fasta)
 
         return allele_fasta.name, ref_contig, alt_contig
+
+    def as_proto(self):
+        sv = npsv2_pb2.StructuralVariant()
+        sv.contig = self.contig
+        sv.start = self.start
+        sv.end = self.end
+        sv.svlen = self._record.info["SVLEN"][0]
+        return sv
+
 
 
 class DeletionVariant(Variant):
