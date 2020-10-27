@@ -18,7 +18,7 @@ class CreateSingleImageTest(unittest.TestCase):
         self.variant = Variant.from_pysam(record)
 
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-        self.params = argparse.Namespace()
+        self.params = argparse.Namespace(fragment_mean=569, fragment_sd=163)
 
     def test_resizing_image(self):
         image_tensor = images.create_single_example(self.params, self.variant, self.bam_path, "1:899722-900192")
@@ -38,7 +38,7 @@ def _mock_synthesize_variant_data(params, fasta_path, bam_path, allele_count, re
 class VCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(tempdir=self.tempdir.name, reference=None, flank=1, replicates=1)
+        self.params = argparse.Namespace(tempdir=self.tempdir.name, reference=None, flank=1, replicates=1, fragment_mean=569, fragment_sd=163)
 
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
@@ -135,7 +135,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
             )
         )
 
-        png_path = "test.png"  # os.path.join(self.params.tempdir, "test.png")
+        png_path = os.path.join(self.params.tempdir, "test.png")
         images.example_to_image(example, png_path, with_simulations=True, margin=10, max_replicates=1)
 
         self.assertTrue(os.path.exists(png_path))
@@ -189,7 +189,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
 class ChunkedVCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(tempdir=self.tempdir.name, reference=None, flank=1, replicates=1, threads=2)
+        self.params = argparse.Namespace(tempdir=self.tempdir.name, reference=None, flank=1, replicates=1, threads=2, fragment_mean=569, fragment_sd=163)
 
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")

@@ -2,3 +2,4 @@ numpy>=1.14
 pysam
 Pillow
 tqdm
+tensorflow-addons

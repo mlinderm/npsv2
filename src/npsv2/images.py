@@ -8,12 +8,12 @@ from tqdm import tqdm
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup
+from .pileup import Pileup, FragmentTracker
 from . import npsv2_pb2
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
-IMAGE_CHANNELS = 1
+IMAGE_CHANNELS = 3
 IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 PADDING = 100
@@ -21,6 +21,14 @@ PADDING = 100
 BASE_CHANNEL = 0
 ALIGNED_BASE_PIXEL = 255
 SOFT_CLIP_BASE_PIXEL = 128
+
+REF_INSERT_SIZE_CHANNEL = 1
+ALT_INSERT_SIZE_CHANNEL = 2
+INSERT_SIZE_MEAN_PIXEL = 128
+INSERT_SIZE_SD_PIXEL = 24
+
+def _fragment_zscore(params, fragment_length):
+    return (fragment_length - params.fragment_mean) / params.fragment_sd
 
 def create_single_example(params, variant, read_path, region, image_shape=None, label=None):
     if isinstance(region, str):
@@ -37,16 +45,17 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
     image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
 
     pileup = Pileup(region)
+    fragments = FragmentTracker()
 
-    # count = 0
     with pysam.AlignmentFile(read_path) as alignment_file:
-        for read in alignment_file.fetch(contig=region.contig, start=region.start, stop=region.end,):
+        # Expand query region to capture straddling reads 
+        for read in alignment_file.fetch(contig=region.contig, start=region.start-1000, stop=region.end+1000):
             if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
                 # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
                 continue
 
             pileup.add_read(read)
-
+            fragments.add_read(read)
 
     for i in range(width):
         column = pileup[i]
@@ -57,6 +66,22 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
         image_tensor[
             aligned_pixels : min(aligned_pixels + column.soft_clipped_bases, tensor_shape[0]), i, BASE_CHANNEL
         ] = SOFT_CLIP_BASE_PIXEL
+
+    variant_region = variant.reference_region
+    left_region = variant.left_flank_region(1000) # TODO: Incorporate CI
+    right_region = variant.right_flank_region(1000)
+
+    row = 0
+    for fragment in fragments:
+        # Since reads were inserted in left-to-fetch, the fragments should be in sorted order
+        if row >= IMAGE_HEIGHT:
+            break
+        elif fragment.fragment_straddles(left_region, right_region, min_aligned=3):
+            ref_zscore = _fragment_zscore(params, fragment.fragment_length)
+            image_tensor[row, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
+            alt_zscore = _fragment_zscore(params, fragment.fragment_length + variant.length_change())
+            image_tensor[row, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
+            row += 1
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
@@ -161,7 +186,7 @@ def make_vcf_examples(
             assert variant.is_biallelic(), "Multi-allelic sites not yet supported"
 
             # TODO: Handle odd sized variants when padding
-            variant_region = variant.reference_range
+            variant_region = variant.reference_region
             padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
             example_region = variant_region.expand(padding)
 

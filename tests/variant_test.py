@@ -23,8 +23,12 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant._padding, 1)
 
         # Range is 0-indexed half-open...
-        self.assertEqual(self.variant.reference_range, Range("1", 899922, 899992))
         self.assertTrue(self.variant.is_biallelic())
+
+    def test_region_strings(self):
+        self.assertEqual(self.variant.reference_region, Range("1", 899922, 899992))
+        self.assertEqual(self.variant.left_flank_region(left_flank=2, right_flank=5), Range("1", 899920, 899927))
+        self.assertEqual(self.variant.right_flank_region(left_flank=2, right_flank=5), Range("1", 899990, 899997))
 
     @patch("npsv2.variant._reference_sequence", return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG")
     def test_consensus_fasta(self, mock_ref):

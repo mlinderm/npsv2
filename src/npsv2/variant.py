@@ -44,9 +44,18 @@ class Variant(object):
         # TODO: Exclude alleles
         return len(self._record.alts) == 1
 
+    def length_change(self):
+        return self._record.info["SVLEN"][0]
+
     @property
-    def reference_range(self):
+    def reference_region(self):
         return Range(self.contig, self.start + self._padding, self.end)
+
+    def left_flank_region(self, left_flank, right_flank=0):
+        return Range(self.contig, self.start + self._padding - left_flank, self.start + self._padding + right_flank)
+    
+    def right_flank_region(self, right_flank, left_flank=0):
+        return Range(self.contig, self.end - left_flank, self.end + right_flank)
 
     def genotype_indices(self, index_or_id):
         call = self._record.samples[index_or_id]
@@ -65,7 +74,7 @@ class Variant(object):
         line_width=60,
         dir=None
     ):
-        region = self.reference_range.expand(flank)
+        region = self.reference_region.expand(flank)
         ref_seq = _reference_sequence(reference_fasta, region)
         if ac != 0:
             alt_seq = self._alt_seq(ref_seq, flank)

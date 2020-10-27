@@ -1,4 +1,5 @@
 from pysam.libcutils import parse_region
+from pysam import AlignedSegment
 
 class Range(object):
     def __init__(self, contig, start, end):
@@ -28,3 +29,8 @@ class Range(object):
         new_start = max(self.start - left_or_both, 0)
         new_end = self.end + right
         return Range(self.contig, new_start, new_end)
+
+    def get_overlap(self, read: AlignedSegment):
+        if read.reference_name != self.contig:
+            return 0
+        return read.get_overlap(self.start, self.end)
