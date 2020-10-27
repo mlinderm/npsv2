@@ -2,11 +2,12 @@ import itertools, logging, random
 import tensorflow as tf
 import tensorflow_addons as tfa
 import numpy as np
+import pandas as pd
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
-from .images import load_example_dataset, _extract_metadata_from_first_example
-
+from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
+from . import npsv2_pb2
 
 # Adapted from: https://github.com/few-shot-learning/Keras-FewShotLearning/blob/master/keras_fsl/models/encoders/koch_net.py
 def _siamese_networks_model(input_shape):
@@ -51,10 +52,10 @@ def _siamese_networks_model(input_shape):
                 kernel_initializer=kernel_initializer,
                 bias_initializer=bias_initializer,
             ),
-            layers.MaxPooling2D((2, 2)),  # Not in original model, but included here to reduce size
+            # layers.MaxPooling2D((2, 2)),  # Not in original model, but included here to reduce size
             layers.Flatten(),
             layers.Dense(
-                4096,
+                4096,  # Original size in the paper
                 activation=tf.nn.sigmoid,
                 kernel_initializer=kernel_initializer,
                 bias_initializer=bias_initializer,
@@ -105,7 +106,8 @@ def _random_pair_indices(replicates, pairs_per_variant):
     match_pairs = [((ac, r1), (ac, r2)) for (ac, (r1, r2)) in match_pairs]
 
     mismatch_pairs = itertools.product(
-        itertools.combinations(range(3), 2), itertools.product(range(replicates), repeat=2),
+        itertools.combinations(range(3), 2),
+        itertools.product(range(replicates), repeat=2),
     )
     mismatch_pairs = [((ac1, r1), (ac2, r2)) for ((ac1, ac2), (r1, r2)) in mismatch_pairs]
 
@@ -131,20 +133,6 @@ def _variant_to_training_pairs(features, original_label):
 
     # Construct data to permit "flat_map" and thus more flexible batching downstream
     return tf.data.Dataset.from_tensor_slices((image_tensors, label_tensor))
-
-
-def _variant_to_test_pairs(features, original_label):
-    query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
-    query_images = tf.stack([query_image, query_image, query_image])
-    support_images = tf.image.convert_image_dtype(
-        tf.stack([features["sim/0/images"][0], features["sim/1/images"][0], features["sim/2/images"][0],]),
-        dtype=tf.float32,
-    )
-    image_tensors = {
-        "query": query_images,
-        "support": support_images,
-    }
-    return image_tensors, original_label
 
 
 def distance_accuracy(y_true, y_pred, threshold=0.5):
@@ -194,12 +182,25 @@ def train(tfrecords_path: str, model_path: str):
     logging.info("Saving model in %s", model_path)
     model.save(model_path)
 
-    genotype_concordance, nonreference_concordance, _ = evaluate_model(model, example_dataset)
-    logging.info(
-        "Accuracy - Genotype concordance: %f, Non-reference Concordance: %f",
-        genotype_concordance,
-        nonreference_concordance,
+
+def _variant_to_test_pairs(features, original_label):
+    query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+    query_images = tf.stack([query_image, query_image, query_image])
+    support_images = tf.image.convert_image_dtype(
+        tf.stack(
+            [
+                features["sim/0/images"][0],
+                features["sim/1/images"][0],
+                features["sim/2/images"][0],
+            ]
+        ),
+        dtype=tf.float32,
     )
+    image_tensors = {
+        "query": query_images,
+        "support": support_images,
+    }
+    return image_tensors, original_label, features["variant/encoded"]
 
 
 def evaluate_model(model, dataset):
@@ -215,28 +216,30 @@ def evaluate_model(model, dataset):
 
     test_dataset = dataset.map(_variant_to_test_pairs)
 
-    # Unzip test dataset
-    y_pred = []
-    y_true = []
-    for images, label in test_dataset:
-        y_pred.append(tf.reshape(model.predict(images), (-1, 3)))
-        y_true.append(label)
-    y_pred = tf.concat(y_pred, axis=0)
-    y_true = tf.concat(y_true, axis=0)
+    # Unzip test dataset into pandas dataframe with genotypes and variant annotations
+    rows = []
+    for images, label, encoded_variant in test_dataset:
+        # Extract metadata for the variant
+        variant_proto = npsv2_pb2.StructuralVariant.FromString(encoded_variant.numpy())
 
-    y_pred = tf.nn.softmax(-y_pred, axis=1)  # For models that produce distances
+        # Predict genotype
+        genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
+        genotype_probabilities = tf.nn.softmax(-genotype_probabilities, axis=1) # For models that produce distances
 
-    # Use keras mean to avoid type inference
-    genotype_concordance = tf.keras.backend.mean(tf.keras.metrics.sparse_categorical_accuracy(y_true, y_pred))
+        rows.append(
+            pd.DataFrame(
+                dict(SVLEN=variant_proto.svlen, LABEL=label, AC=tf.math.argmax(genotype_probabilities, axis=1))
+            )
+        )
 
-    # Non-reference concordance collapses heterozygous and homozygous alternate
-    y_pred_label = tf.math.argmax(y_pred, axis=1)
-    y_pred_present = tf.math.greater(y_pred_label, 0)
-    y_true_present = tf.math.greater(y_true, 0)
+    table = pd.concat(rows, ignore_index=True)
+    table["MATCH"] = table.LABEL == table.AC
 
-    nonreference_concordance = tf.keras.backend.mean(tf.math.equal(y_pred_present, y_true_present))
+    genotype_concordance = np.mean(table.MATCH)
+    nonreference_concordance = np.mean((table.LABEL > 0) == (table.AC > 0))
+    confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True)
 
-    # Generate the confusion matrix
-    confusion_matrix = tf.math.confusion_matrix(y_true, y_pred_label, num_classes=3,)
+    svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
+    print(table.groupby(svlen_bins)["MATCH"].mean())
 
     return genotype_concordance, nonreference_concordance, confusion_matrix
