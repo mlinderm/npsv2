@@ -10,10 +10,11 @@ from .variant import Variant
 from .range import Range
 from .pileup import Pileup, FragmentTracker
 from . import npsv2_pb2
+from .realigner import FragmentRealigner, realign_fragment, AlleleAssignment
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
-IMAGE_CHANNELS = 3
+IMAGE_CHANNELS = 4
 IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 PADDING = 100
@@ -27,29 +28,50 @@ ALT_INSERT_SIZE_CHANNEL = 2
 INSERT_SIZE_MEAN_PIXEL = 128
 INSERT_SIZE_SD_PIXEL = 24
 
+ALLELE_CHANNEL = 3
+REF_PIXEL = 128
+ALT_PIXEL = 255
+
+ALLELE_TO_PIXEL = {
+    AlleleAssignment.AMB: 0,
+    AlleleAssignment.REF: REF_PIXEL,
+    AlleleAssignment.ALT: ALT_PIXEL,
+}
+
+
 def _fragment_zscore(params, fragment_length):
     return (fragment_length - params.fragment_mean) / params.fragment_sd
 
-def create_single_example(params, variant, read_path, region, image_shape=None, label=None):
+
+def _create_realigner(params, variant):
+    fasta_path, _, _ = variant.synth_fasta(reference_fasta=params.reference, dir=params.tempdir, flank=params.flank)
+    return FragmentRealigner(fasta_path, params.fragment_mean, params.fragment_sd)
+
+
+def create_single_example(params, variant, read_path, region, image_shape=None, realigner=None):
     if isinstance(region, str):
         region = Range.parse_literal(region)
-    width = region.length
 
     if image_shape and len(image_shape) != 2:
         raise ValueError("Image shape must be (rows, height) sequence")
     elif image_shape:
-        tensor_shape = (image_shape[0], width, IMAGE_CHANNELS)
+        tensor_shape = (image_shape[0], region.length, IMAGE_CHANNELS)
     else:
-        tensor_shape = (IMAGE_HEIGHT, width, IMAGE_CHANNELS)
+        tensor_shape = (IMAGE_HEIGHT, region.length, IMAGE_CHANNELS)
 
     image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
+
+    if realigner is None:
+        realigner = _create_realigner(params, variant)
 
     pileup = Pileup(region)
     fragments = FragmentTracker()
 
     with pysam.AlignmentFile(read_path) as alignment_file:
-        # Expand query region to capture straddling reads 
-        for read in alignment_file.fetch(contig=region.contig, start=region.start-1000, stop=region.end+1000):
+        # Expand query region to capture straddling reads (TODO: Make flank a parameter)
+        for read in alignment_file.fetch(
+            contig=region.contig, start=region.start - params.flank, stop=region.end + params.flank
+        ):
             if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
                 # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
                 continue
@@ -57,9 +79,7 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
             pileup.add_read(read)
             fragments.add_read(read)
 
-    for i in range(width):
-        column = pileup[i]
-
+    for i, column in enumerate(pileup):
         # TODO: Sample when more reads than rows...
         aligned_pixels = min(column.aligned_bases, tensor_shape[0])
         image_tensor[0:aligned_pixels, i, BASE_CHANNEL] = ALIGNED_BASE_PIXEL
@@ -67,21 +87,32 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
             aligned_pixels : min(aligned_pixels + column.soft_clipped_bases, tensor_shape[0]), i, BASE_CHANNEL
         ] = SOFT_CLIP_BASE_PIXEL
 
-    variant_region = variant.reference_region
-    left_region = variant.left_flank_region(1000) # TODO: Incorporate CI
-    right_region = variant.right_flank_region(1000)
+    left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
+    right_region = variant.right_flank_region(params.flank)
 
-    row = 0
+    realigned_reads = []
+
+    irow = 0
     for fragment in fragments:
-        # Since reads were inserted in left-to-fetch, the fragments should be in sorted order
-        if row >= IMAGE_HEIGHT:
-            break
-        elif fragment.fragment_straddles(left_region, right_region, min_aligned=3):
+        if irow < tensor_shape[0] and fragment.fragment_straddles(left_region, right_region, min_aligned=3):
             ref_zscore = _fragment_zscore(params, fragment.fragment_length)
-            image_tensor[row, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
+            image_tensor[irow, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
             alt_zscore = _fragment_zscore(params, fragment.fragment_length + variant.length_change())
-            image_tensor[row, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
-            row += 1
+            image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
+            irow += 1
+
+        allele, _, _ = realign_fragment(realigner, fragment, assign_delta=1.0)
+        if allele != AlleleAssignment.AMB:
+            realigned_reads.append((allele, fragment.read1))
+            realigned_reads.append((allele, fragment.read2))
+
+    # Sort reads in position order
+    realigned_reads.sort(key=lambda x: x[1].reference_start)
+
+    # TODO: Sample if there are more reads than pixels:
+    for arow, (allele, read) in enumerate(realigned_reads[: tensor_shape[0]]):
+        for col_slice, _ in pileup.read_columns(read):
+            image_tensor[arow, col_slice, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[allele]
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
@@ -190,8 +221,13 @@ def make_vcf_examples(
             padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
             example_region = variant_region.expand(padding)
 
+            # Construct realigner once for all images for this variant
+            realigner = _create_realigner(params, variant)
+
             # Construct image for "real" data
-            image_tensor = create_single_example(params, variant, read_path, example_region, image_shape=image_shape)
+            image_tensor = create_single_example(
+                params, variant, read_path, example_region, image_shape=image_shape, realigner=realigner
+            )
             feature = {
                 "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
                 "image/shape": _int_feature(image_tensor.shape),
@@ -225,7 +261,12 @@ def make_vcf_examples(
                             synthetic_bam_path, params.replicates, dir=tempdir
                         ):
                             synth_image_tensor = create_single_example(
-                                params, variant, replicate_bam_path, example_region, image_shape=image_shape
+                                params,
+                                variant,
+                                replicate_bam_path,
+                                example_region,
+                                image_shape=image_shape,
+                                realigner=realigner,
                             )
                             synth_encoded_images.append(synth_image_tensor.tobytes())
 
@@ -281,6 +322,7 @@ def vcf_to_tfrecords(
         for example in tqdm(example_dataset, desc="Writing VCF to TFRecords", disable=not progress_bar):
             file_writer.write(example.numpy())
 
+
 def _features_variant(features):
     return npsv2_pb2.StructuralVariant.FromString(features["variant/encoded"].numpy())
 
@@ -290,7 +332,7 @@ def _example_variant(example):
     return npsv2_pb2.StructuralVariant.FromString(encoded_variant)
 
 
-def _extract_image(example, shape):
+def _example_image(example, shape):
     image_data = example.features.feature["image/encoded"].bytes_list.value[0]
     return np.frombuffer(image_data, np.uint8).reshape(shape)
 
@@ -310,6 +352,11 @@ def _example_sim_replicates(example):
         return 0
 
 
+def _example_sim_image(example, shape, ac, replicate):
+    image_data = example.features.feature[f"sim/{ac}/images/encoded"].bytes_list.value[replicate]
+    return np.frombuffer(image_data, np.uint8).reshape(shape)
+
+
 def _extract_metadata_from_first_example(filename):
     raw_example = next(
         iter(tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)))
@@ -322,22 +369,26 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     # Adapted from DeepVariant
     features = example.features.feature
 
-    shape = features["image/shape"].int64_list.value[0:3]
+    shape = _example_image_shape(example)
     if len(shape) == 3 and shape[2] == 3:
         image_mode = "RGB"
         channels = [0, 1, 2]
     elif len(shape) == 2 or shape[2] == 1:
         image_mode = "L"
         channels = 0
+    elif len(shape) == 3 or shape[2] > 3:
+        image_mode = "RGB"
+        # Drop REF_INSERT_SIZE_CHANNEL for RGB visualization
+        channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
     else:
         raise ValueError("Unsupported image shape")
 
-    image_tensor = _extract_image(example, shape)
+    image_tensor = _example_image(example, shape)
     real_image = Image.fromarray(image_tensor[:, :, channels], mode=image_mode)
 
     if with_simulations and "sim/replicates" in features:
         width, IMAGE_HEIGHT, _ = shape
-        replicates = min(features["sim/replicates"].int64_list.value[0], max_replicates)
+        replicates = min(_example_sim_replicates(example), max_replicates)
 
         image = Image.new(
             image_mode, (width + 2 * (width + margin), IMAGE_HEIGHT + replicates * (IMAGE_HEIGHT + margin))
@@ -345,9 +396,8 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image.paste(real_image, (width + margin, 0))
 
         for ac in (0, 1, 2):
-            synth_data = features[f"sim/{ac}/images/encoded"].bytes_list.value
             for repl in range(min(replicates, max_replicates)):
-                synth_tensor = np.frombuffer(synth_data[repl], np.uint8).reshape(shape)
+                synth_tensor = _example_sim_image(example, shape, ac, repl)
                 synth_image = Image.fromarray(synth_tensor[:, :, channels], mode=image_mode)
 
                 coord = (ac * (width + margin), (repl + 1) * (IMAGE_HEIGHT + margin))

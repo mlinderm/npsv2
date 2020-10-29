@@ -13,6 +13,16 @@ class PileupTest(unittest.TestCase):
             }
         )
 
+    def test_pileup_slices(self):
+        read = pysam.AlignedSegment.fromstring(
+            "HISEQ1:18:H8VC6ADXX:2:2213:9314:11990	161	1	899870	60	139M9S	2	33141319	0	GCTGGAGCCTGGGAAAGCGTGGCGCCCATGAATATCCGCAGGTCCGCAGTGGGGCTGCCGGGAGGGGTCCGCAGGTCCGCAGTGGGGCTGTGGGGGGGGGCCGCGCGTCCGCAGTGGGGGTGGGCTGCGGGAAGGGGGGGGCCGGGCC	@C@DFFFFGHHHHJIHGIJEGIJGIJIEEGJJIIEGGGDIIIHGIIIEEBCDFC?B@?=;BB&5;BD;51590;>8A:0505+:9ABBBD29A>.59@D.505&9&5&)090&5+:?<>&)5&58+589@D50<?<<B@D>&&)0<&)",
+            header=self.header,
+        )
+
+        pileup = Pileup(Range("1", 899721, 900192))
+        self.assertEqual(pileup.read_columns(read), [(slice(148, 287),pysam.CMATCH), (slice(287, 296),pysam.CSOFT_CLIP)])
+
+
     def test_add_single_read(self):
         read = pysam.AlignedSegment.fromstring(
             "HISEQ1:18:H8VC6ADXX:2:2213:9314:11990	161	1	899870	60	139M9S	2	33141319	0	GCTGGAGCCTGGGAAAGCGTGGCGCCCATGAATATCCGCAGGTCCGCAGTGGGGCTGCCGGGAGGGGTCCGCAGGTCCGCAGTGGGGCTGTGGGGGGGGGCCGCGCGTCCGCAGTGGGGGTGGGCTGCGGGAAGGGGGGGGCCGGGCC	@C@DFFFFGHHHHJIHGIJEGIJGIJIEEGJJIIEGGGDIIIHGIIIEEBCDFC?B@?=;BB&5;BD;51590;>8A:0505+:9ABBBD29A>.59@D.505&9&5&)090&5+:?<>&)5&58+589@D50<?<<B@D>&&)0<&)",
@@ -20,8 +30,7 @@ class PileupTest(unittest.TestCase):
         )
         
         pileup = Pileup(Range("1", 899721, 900192))
-        self.assertTrue(pileup.add_read(read))
-        self.assertEqual(pileup.read_count, 1)
+        pileup.add_read(read)
 
         for i in range(0, 148): # Before the read
             self.assertEqual(pileup[i].total_bases, 0)
@@ -44,8 +53,7 @@ class PileupTest(unittest.TestCase):
         )
         
         pileup = Pileup(Range("1", 899721, 900192))
-        self.assertTrue(pileup.add_read(read))
-        self.assertEqual(pileup.read_count, 1)
+        pileup.add_read(read)
 
         self.assertEqual(pileup[327].total_bases, 0)
         for i in range(328, 404): # Soft-clipped bases
