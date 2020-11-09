@@ -107,8 +107,9 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
+            self.assertIn("image", features)
             self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
-            example_image = images._example_image(example, (300, 300, images.IMAGE_CHANNELS))
+            example_image = images._example_image(example)
             self.assertTrue(np.array_equal(features["image"], example_image))
 
             proto = images._features_variant(features)
@@ -133,11 +134,9 @@ class VCFExampleGenerateTest(unittest.TestCase):
         reference_query_region = Range("1", 899922, 899992).expand(self.params.flank)
         for args, _ in mock_ref.call_args_list:
             self.assertEqual(args[1], reference_query_region)
-
-        self.assertIn("sim/replicates", example.features.feature)
-        self.assertEqual(images._example_sim_replicates(example), 1)
-        for ac in (0, 1, 2):
-            self.assertIn(f"sim/{ac}/images/encoded", example.features.feature)
+        
+        self.assertIn("sim/images/shape", example.features.feature)
+        self.assertEqual(images._example_sim_images_shape(example), (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     @patch("npsv2.images._synthesize_variant_data", side_effect=_mock_synthesize_variant_data)
@@ -191,14 +190,16 @@ class VCFExampleGenerateTest(unittest.TestCase):
             self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)
 
-            example_image = images._example_image(example, (300, 300, images.IMAGE_CHANNELS))
+            example_image = images._example_image(example)
             self.assertTrue(np.array_equal(features["image"], example_image))
 
+            self.assertIn("sim/images", features)
+            sim_tensor = features["sim/images"]
+            self.assertEqual(sim_tensor.shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
+
             for ac in (0, 1, 2):
-                feature_name = f"sim/{ac}/images"
-                self.assertEqual(features[feature_name].shape, (1, 300, 300, images.IMAGE_CHANNELS))
                 for repl in range(self.params.replicates):
-                    self.assertTrue(np.array_equal(features[feature_name][repl], example_image))
+                    self.assertTrue(np.array_equal(sim_tensor[ac,repl], example_image))
 
 
 class ChunkedVCFExampleGenerateTest(unittest.TestCase):
@@ -254,9 +255,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             # image = Image.fromarray(features["image"].numpy()[:,:,0], mode="L")
             # image.save(png_path)
 
-            for ac in (0, 1, 2):
-                feature_name = f"sim/{ac}/images"
-                self.assertEqual(features[feature_name].shape, (1, 300, 300, images.IMAGE_CHANNELS))
+            self.assertEqual(features["sim/images"].shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
 
     @patch(
         "npsv2.variant._reference_sequence",
