@@ -134,6 +134,9 @@ def make_argument_parser():
     )
     parser_train.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
     parser_train.add_argument("-o", "--output", help="Path to save model", type=str, required=True)
+    parser_train.add_argument("--epochs", help="Maximum number of epochs", type=int, default=5)
+    parser_train.add_argument("--lr", dest="learning_rate", help="(Initial) learning rate", type=float, default=0.004)
+    parser_train.add_argument("--log-dir", dest="log_dir", help="Directory to write time-stamped TensorBoard logs", type=str, default=None)
 
     # Evaluation
     parser_evaluate = subparsers.add_parser(
@@ -174,9 +177,9 @@ def main():
         )
 
     elif args.command == "visualize":
-        from .images import example_to_image
+        from .images import example_to_image, _filename_to_compression
 
-        dataset = tf.data.TFRecordDataset(filenames=args.input)
+        dataset = tf.data.TFRecordDataset(filenames=args.input, compression_type=_filename_to_compression(args.input))
         for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
             example = tf.train.Example()
             example.ParseFromString(record.numpy())
@@ -188,7 +191,7 @@ def main():
     elif args.command == "train":
         from .training import train
 
-        train(args.input, args.output)
+        train(args, args.input, args.output)
 
     elif args.command == "evaluate":
         from .training import evaluate_model

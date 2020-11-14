@@ -406,11 +406,11 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
 
     _, replicates, *_ = _example_sim_images_shape(example)
     if with_simulations and replicates > 0:
-        width, IMAGE_HEIGHT, _ = shape
+        height, width, _ = shape
         replicates = min(replicates, max_replicates)
-
+        
         image = Image.new(
-            image_mode, (width + 2 * (width + margin), IMAGE_HEIGHT + replicates * (IMAGE_HEIGHT + margin))
+            image_mode, (width + 2 * (width + margin), height + replicates * (height + margin))
         )
         image.paste(real_image, (width + margin, 0))
 
@@ -420,7 +420,7 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
                 synth_image_tensor = synth_tensor[ac, repl]
                 synth_image = Image.fromarray(synth_image_tensor[:, :, channels], mode=image_mode)
 
-                coord = (ac * (width + margin), (repl + 1) * (IMAGE_HEIGHT + margin))
+                coord = (ac * (width + margin), (repl + 1) * (height + margin))
                 image.paste(synth_image, coord)
     else:
         image = real_image

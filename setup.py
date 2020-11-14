@@ -7,11 +7,7 @@ from distutils.spawn import find_executable
 # Project structure and CMake build steps adapted from
 # https://www.benjack.io/2018/02/02/python-cpp-revisited.html
 
-if "CMAKE" in os.environ and os.path.exists(os.environ["CMAKE"]):
-    cmake = os.environ["CMAKE"]
-else:
-    cmake = find_executable("cmake")
-
+cmake = find_executable(os.environ.get("CMAKE", "cmake"))
 
 class CMakeExtension(Extension):
     def __init__(self, name, sourcedir=""):
@@ -105,10 +101,7 @@ class SeqLibCMakeBuild(CMakeBuild):
 
 
 # Find the Protocol Buffer compiler (protoc)
-if "PROTOC" in os.environ and os.path.exists(os.environ["PROTOC"]):
-    protoc = os.environ["PROTOC"]
-else:
-    protoc = find_executable("protoc")
+protoc = find_executable(os.environ.get("PROTOC", "protoc"))
 
 def generate_proto(source: str):
     """Invoke Protocol Buffer compiler if .proto file is newer than generated code

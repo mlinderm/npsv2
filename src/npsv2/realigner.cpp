@@ -148,7 +148,7 @@ bool RealignedReadPair::Concordant() const {
 std::ostream& operator<<(std::ostream& os, const RealignedReadPair& pair) {
   if (pair.left_) os << *pair.left_ << std::endl;
   if (pair.right_) os << *pair.right_ << std::endl;
-  os << pair.score_ << std::endl;
+  return os << pair.score_ << std::endl;
 }
 
 namespace {
@@ -226,6 +226,9 @@ void IndexedSequence::AlignSequence(const sl::BamRecord& read, sl::BamRecordVect
 
 FragmentRealigner::FragmentRealigner(const std::string& fasta_path, double insert_size_mean, double insert_size_std)
     : insert_size_dist_(insert_size_mean, insert_size_std) {
+  // Release the GIL while executing the C++ realignment code
+  py::gil_scoped_release release;
+  
   // Load alleles from a FASTA file
   sl::FastqReader contigs(fasta_path);
   sl::UnalignedSequence next_sequence;
@@ -241,7 +244,7 @@ FragmentRealigner::FragmentRealigner(const std::string& fasta_path, double inser
 }
 
 std::map<std::string, double> FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
-                                                                 const std::string& read1_qual, py::kwargs kwargs) {
+                                                                 const std::string& read1_qual, py::kwargs kwargs) { 
   int offset = 0;
   if (kwargs && kwargs.contains("offset")) {
     offset = py::cast<int>(kwargs["offset"]);
@@ -259,6 +262,10 @@ std::map<std::string, double> FragmentRealigner::RealignReadPair(const std::stri
     read2.SetSequence(py::cast<std::string>(kwargs["read2_seq"]));
     read2.SetQualities(py::cast<std::string>(kwargs["read2_qual"]), offset);
   }
+
+  // Release the GIL while executing the C++ realignment code. This seems to need to be after
+  // any interactions with Python objects (e.g. kwargs) 
+  py::gil_scoped_release release;
 
   // Realign the fragment to the reference allele
   RealignedFragment ref_realignment(read1, read2, ref_index_, insert_size_dist_);

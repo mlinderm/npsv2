@@ -1,4 +1,4 @@
-import itertools, logging, random
+import datetime, functools, itertools, logging, os, random
 import tensorflow as tf
 import tensorflow_addons as tfa
 import numpy as np
@@ -80,18 +80,29 @@ def _euclidean_distance(tensors):
 
 
 def _siamese_convsim_model(input_shape):
-    encoder = tf.keras.models.Sequential(
-        [
-            layers.Input(input_shape),
-            layers.Conv2D(32, (3, 3), activation=tf.nn.relu),
-            layers.Conv2D(64, (3, 3), activation=tf.nn.relu),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.25),
-            layers.Flatten(),
-            layers.Dense(128, activation=tf.nn.relu),
-        ]
-    )
+    # encoder = tf.keras.models.Sequential(
+    #     [
+    #         layers.Input(input_shape),
+    #         layers.Conv2D(32, (3, 3), activation=tf.nn.relu),
+    #         layers.Conv2D(64, (3, 3), activation=tf.nn.relu),
+    #         layers.MaxPooling2D((2, 2)),
+    #         layers.Dropout(0.25),
+    #         layers.Flatten(),
+    #         layers.Dense(128, activation=tf.nn.relu),
+    #     ]
+    # )
+
+    encoder = tf.keras.models.Sequential([layers.Input(input_shape)])
+    for i in range(4):
+        encoder.add(layers.Conv2D(64, (3, 3), padding="same"))
+        encoder.add(layers.BatchNormalization())
+        encoder.add(layers.Dropout(0.2))
+        encoder.add(layers.Activation(tf.nn.relu))
+        encoder.add(layers.MaxPooling2D((2, 2)))
+    encoder.add(layers.Flatten())
+
     encoder.summary()
+
     query = layers.Input(input_shape, name="query")
     support = layers.Input(input_shape, name="support")
 
@@ -117,11 +128,8 @@ def _random_pair_indices(replicates, pairs_per_variant):
     return zip(*pairs), ([1] * class_num_pairs + [0] * class_num_pairs)
 
 
-def _variant_to_training_pairs(features, original_label):
-    replicates = features["sim/0/images"].shape[0]
-
-    images = tf.stack([features["sim/0/images"], features["sim/1/images"], features["sim/2/images"]])
-    images = tf.image.convert_image_dtype(images, dtype=tf.float32)
+def _variant_to_training_pairs(features, original_label, replicates):
+    images = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
 
     (query_indices, support_indices), pair_labels = _random_pair_indices(replicates, 8)
 
@@ -140,12 +148,19 @@ def distance_accuracy(y_true, y_pred, threshold=0.5):
     return tf.keras.backend.mean(tf.math.equal(y_true, tf.cast(y_pred < threshold, y_true.dtype)), axis=-1)
 
 
-def train(tfrecords_path: str, model_path: str):
+def train(params, tfrecords_path: str, model_path: str):
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_path)
 
     model = _siamese_convsim_model(image_shape)
     model.summary()
-    optimizer = tf.keras.optimizers.Adam(lr=0.004)
+
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=params.learning_rate,
+        decay_steps=10000,  # e.g. set to the number of steps per epoch
+        decay_rate=0.99,
+    )
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+
     model.compile(
         optimizer=optimizer,
         loss=tfa.losses.contrastive_loss,
@@ -153,13 +168,7 @@ def train(tfrecords_path: str, model_path: str):
     )
 
     # model = _siamese_networks_model(image_shape)
-
-    # # TODO: Decay learning rate, e.g.
-    # # lr_schedule = keras.optimizers.schedules.ExponentialDecay(
-    # #     initial_learning_rate=params.learning_rate,
-    # #     decay_steps=10000, # e.g. set to the number of steps per epoch
-    # #     decay_rate=0.99)
-    # optimizer = tf.keras.optimizers.Adam(lr=0.004)
+    # optimizer = tf.keras.optimizers.Adam(learning_rate=0.004)
     # model.compile(
     #     optimizer=optimizer,
     #     loss=tf.keras.losses.binary_crossentropy,
@@ -171,31 +180,54 @@ def train(tfrecords_path: str, model_path: str):
         with_label=True,
         with_simulations=True,
     )
-    train_dataset = example_dataset.flat_map(_variant_to_training_pairs).batch(16)
+    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, replicates=replicates)
+    train_dataset = (
+        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(16)
+    )
 
-    # TODO: Add early stopping callback
     # TODO: Reserve some training data for validation
-    history = model.fit(train_dataset, epochs=5)
+    early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
 
-    # TODO: Plot training and validation curves
+    checkpoint_filepath = os.path.join(params.tempdir, "checkpoint")
+    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
+    )
 
-    logging.info("Saving model in %s", model_path)
+    callbacks=[early_stopping, checkpoint_callback]
+    
+    if params.log_dir:
+        log_dir = os.path.join(params.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        logging.info("Logging TensorBoard data to: %s", log_dir)
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+        callbacks.append(tensorboard_callback)
+
+
+    model.fit(train_dataset, epochs=params.epochs, callbacks=callbacks)
+   
+    # Load best model
+    model.load_weights(checkpoint_filepath)
+
+    # TODO: Further evaluation or validation
+
+    logging.info("Saving model in: %s", model_path)
     model.save(model_path)
 
 
 def _variant_to_test_pairs(features, original_label):
-    query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
-    query_images = tf.stack([query_image, query_image, query_image])
-    support_images = tf.image.convert_image_dtype(
-        tf.stack(
-            [
-                features["sim/0/images"][0],
-                features["sim/1/images"][0],
-                features["sim/2/images"][0],
-            ]
-        ),
-        dtype=tf.float32,
-    )
+    #query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+    query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)] * 3)
+    support_images = tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32)
+
+    # support_images = tf.image.convert_image_dtype(features["sim/images"][:,0]
+    #     tf.stack(
+    #         [
+    #             features["sim/0/images"][0],
+    #             features["sim/1/images"][0],
+    #             features["sim/2/images"][0],
+    #         ]
+    #     ),
+    #     dtype=tf.float32,
+    # )
     image_tensors = {
         "query": query_images,
         "support": support_images,
@@ -224,7 +256,12 @@ def evaluate_model(model, dataset):
 
         # Predict genotype
         genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
-        genotype_probabilities = tf.nn.softmax(-genotype_probabilities, axis=1) # For models that produce distances
+        genotype_probabilities = tf.nn.softmax(-genotype_probabilities, axis=1)  # For models that produce distances
+
+        if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
+            print(variant_proto, label, genotype_probabilities)
+            assert False
+            
 
         rows.append(
             pd.DataFrame(

@@ -110,7 +110,11 @@ class Fragment(object):
 
     @property
     def fragment_length(self):
-        assert self.read1.template_length == (self.read2.reference_end - self.read1.reference_start)
+        # TODO: Handle weird pairs
+        # if self.read1.template_length != (self.read2.reference_end - self.read1.reference_start):
+        #     print(self.read1)
+        #     print(self.read2)
+        # assert self.read1.template_length == (self.read2.reference_end - self.read1.reference_start)
         return self.read1.template_length
        
 
