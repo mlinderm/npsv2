@@ -9,90 +9,11 @@ from tensorflow.keras.regularizers import l2
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 from . import npsv2_pb2
 
-# Adapted from: https://github.com/few-shot-learning/Keras-FewShotLearning/blob/master/keras_fsl/models/encoders/koch_net.py
-def _siamese_networks_model(input_shape):
-    kernel_initializer = RandomNormal(0.0, 0.01)
-    bias_initializer = RandomNormal(0.5, 0.01)
-
-    encoder = tf.keras.models.Sequential(
-        [
-            layers.Input(input_shape),
-            layers.Conv2D(
-                64,
-                (10, 10),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=kernel_initializer,
-                bias_initializer=bias_initializer,
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                128,
-                (7, 7),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=kernel_initializer,
-                bias_initializer=bias_initializer,
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                128,
-                (4, 4),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=kernel_initializer,
-                bias_initializer=bias_initializer,
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                256,
-                (4, 4),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=kernel_initializer,
-                bias_initializer=bias_initializer,
-            ),
-            # layers.MaxPooling2D((2, 2)),  # Not in original model, but included here to reduce size
-            layers.Flatten(),
-            layers.Dense(
-                4096,  # Original size in the paper
-                activation=tf.nn.sigmoid,
-                kernel_initializer=kernel_initializer,
-                bias_initializer=bias_initializer,
-            ),
-        ],
-        name="encoder",
-    )
-
-    query = layers.Input(input_shape, name="query")
-    support = layers.Input(input_shape, name="support")
-
-    embeddings = [encoder(query), encoder(support)]
-
-    output = layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))(embeddings)
-    output = layers.Dense(1, activation=tf.nn.sigmoid, use_bias=True)(output)
-    return tf.keras.Model(inputs=[query, support], outputs=output)
 
 
-def _euclidean_distance(tensors):
-    sum_square = tf.math.reduce_sum(tf.math.squared_difference(tensors[0], tensors[1]), axis=1, keepdims=True)
-    return tf.math.sqrt(tf.math.maximum(sum_square, tf.keras.backend.epsilon()))
 
-
-def _siamese_convsim_model(input_shape):
-    # encoder = tf.keras.models.Sequential(
-    #     [
-    #         layers.Input(input_shape),
-    #         layers.Conv2D(32, (3, 3), activation=tf.nn.relu),
-    #         layers.Conv2D(64, (3, 3), activation=tf.nn.relu),
-    #         layers.MaxPooling2D((2, 2)),
-    #         layers.Dropout(0.25),
-    #         layers.Flatten(),
-    #         layers.Dense(128, activation=tf.nn.relu),
-    #     ]
-    # )
-
-    encoder = tf.keras.models.Sequential([layers.Input(input_shape)])
+def _encoder_model(input_shape):
+    encoder = tf.keras.models.Sequential([layers.Input(input_shape)], name="encoder")
     for i in range(4):
         encoder.add(layers.Conv2D(64, (3, 3), padding="same"))
         encoder.add(layers.BatchNormalization())
@@ -100,19 +21,25 @@ def _siamese_convsim_model(input_shape):
         encoder.add(layers.Activation(tf.nn.relu))
         encoder.add(layers.MaxPooling2D((2, 2)))
     encoder.add(layers.Flatten())
+    
+    return encoder
 
-    encoder.summary()
+def _euclidean_distance(tensors):
+    sum_square = tf.math.reduce_sum(tf.math.squared_difference(tensors[0], tensors[1]), axis=1, keepdims=True)
+    return tf.math.sqrt(tf.math.maximum(sum_square, tf.keras.backend.epsilon()))
 
+def _siamese_model(input_shape):
     query = layers.Input(input_shape, name="query")
     support = layers.Input(input_shape, name="support")
 
+    encoder = _encoder_model(input_shape)
     embeddings = [encoder(query), encoder(support)]
 
     output = layers.Lambda(_euclidean_distance)(embeddings)
     return tf.keras.Model(inputs=[query, support], outputs=output)
 
 
-def _random_pair_indices(replicates, pairs_per_variant):
+def _random_pair_indices(replicates, max_pairs):
     match_pairs = itertools.product(range(3), itertools.combinations(range(replicates), 2))
     match_pairs = [((ac, r1), (ac, r2)) for (ac, (r1, r2)) in match_pairs]
 
@@ -122,23 +49,43 @@ def _random_pair_indices(replicates, pairs_per_variant):
     )
     mismatch_pairs = [((ac1, r1), (ac2, r2)) for ((ac1, ac2), (r1, r2)) in mismatch_pairs]
 
-    class_num_pairs = min(len(match_pairs), len(mismatch_pairs), pairs_per_variant // 2)
+    # Interleave positive and negative examples, flattening pairs into a single list
+    class_num_pairs = min(len(match_pairs), len(mismatch_pairs), max_pairs // 2)
+    pairs = [pair for pos_and_neg in zip(random.sample(match_pairs, class_num_pairs), random.sample(mismatch_pairs, class_num_pairs)) for pair in pos_and_neg]
+    print(pairs)  
+    # "Split" pairs into a list of query indices and a list of support indices
+    return zip(*pairs), [1, 0] * class_num_pairs
 
-    pairs = random.sample(match_pairs, class_num_pairs) + random.sample(mismatch_pairs, class_num_pairs)
-    return zip(*pairs), ([1] * class_num_pairs + [0] * class_num_pairs)
 
+def _variant_to_training_pairs(features, original_label, image_shape, replicates, max_pairs=8):
+    possible_matches = 3 * replicates * (replicates - 1) // 2
+    possible_mismatches = ((3 * replicates) * (3 * replicates - 1) // 2) - possible_matches
+    pairs_per_class = min(possible_matches, possible_mismatches, max_pairs // 2)
 
-def _variant_to_training_pairs(features, original_label, replicates):
-    images = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+    images = tf.ensure_shape(tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32), (3, replicates) + image_shape)
+    flat_images = tf.reshape(images, (-1,) + image_shape)
 
-    (query_indices, support_indices), pair_labels = _random_pair_indices(replicates, 8)
+    # We want to ensure we get a different set of images for every variant
+    replicate_labels = tf.expand_dims(tf.repeat(range(3), repeats=replicates), axis=-1) # (number of images, 1)
+    adjacency = tf.math.equal(replicate_labels, tf.transpose(replicate_labels))
+
+    match_pairs = tf.where(adjacency)
+    match_pairs = tf.boolean_mask(match_pairs, tf.math.less(match_pairs[:,0], match_pairs[:,1]))
+    match_pairs = tf.random.shuffle(match_pairs)[:pairs_per_class]
+
+    mismatch_pairs = tf.where(tf.math.logical_not(adjacency))
+    mismatch_pairs = tf.boolean_mask(mismatch_pairs, tf.math.less(mismatch_pairs[:,0], mismatch_pairs[:,1]))
+    mismatch_pairs = tf.random.shuffle(mismatch_pairs)[:pairs_per_class]
+
+    # Interleave match-mismatch pairs into a single tensor
+    pairs = tf.dynamic_stitch([range(0, 2*pairs_per_class, 2), range(1, 2*pairs_per_class, 2)], [match_pairs, mismatch_pairs])
 
     image_tensors = {
-        "query": tf.gather_nd(images, query_indices),
-        "support": tf.gather_nd(images, support_indices),
+        "query": tf.gather(flat_images, pairs[:,0]),
+        "support": tf.gather(flat_images, pairs[:,1]),
     }
-    label_tensor = tf.constant(pair_labels, dtype=tf.uint64)
-
+    label_tensor = tf.tile(tf.constant([1, 0]), [pairs_per_class])
+   
     # Construct data to permit "flat_map" and thus more flexible batching downstream
     return tf.data.Dataset.from_tensor_slices((image_tensors, label_tensor))
 
@@ -151,12 +98,12 @@ def distance_accuracy(y_true, y_pred, threshold=0.5):
 def train(params, tfrecords_path: str, model_path: str):
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_path)
 
-    model = _siamese_convsim_model(image_shape)
+    model = _siamese_model(image_shape)
     model.summary()
 
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
         initial_learning_rate=params.learning_rate,
-        decay_steps=10000,  # e.g. set to the number of steps per epoch
+        decay_steps=10000,  # e.g., set to the number of steps per epoch
         decay_rate=0.99,
     )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
@@ -167,22 +114,14 @@ def train(params, tfrecords_path: str, model_path: str):
         metrics=[distance_accuracy],
     )
 
-    # model = _siamese_networks_model(image_shape)
-    # optimizer = tf.keras.optimizers.Adam(learning_rate=0.004)
-    # model.compile(
-    #     optimizer=optimizer,
-    #     loss=tf.keras.losses.binary_crossentropy,
-    #     metrics=["binary_accuracy"],
-    # )
-
     example_dataset = load_example_dataset(
         tfrecords_path,
         with_label=True,
         with_simulations=True,
     )
-    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, replicates=replicates)
+    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=8)
     train_dataset = (
-        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(16)
+        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(32)
     )
 
     # TODO: Reserve some training data for validation
@@ -214,20 +153,9 @@ def train(params, tfrecords_path: str, model_path: str):
 
 
 def _variant_to_test_pairs(features, original_label):
-    #query_image = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
     query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)] * 3)
     support_images = tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32)
 
-    # support_images = tf.image.convert_image_dtype(features["sim/images"][:,0]
-    #     tf.stack(
-    #         [
-    #             features["sim/0/images"][0],
-    #             features["sim/1/images"][0],
-    #             features["sim/2/images"][0],
-    #         ]
-    #     ),
-    #     dtype=tf.float32,
-    # )
     image_tensors = {
         "query": query_images,
         "support": support_images,
@@ -255,12 +183,12 @@ def evaluate_model(model, dataset):
         variant_proto = npsv2_pb2.StructuralVariant.FromString(encoded_variant.numpy())
 
         # Predict genotype
-        genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
-        genotype_probabilities = tf.nn.softmax(-genotype_probabilities, axis=1)  # For models that produce distances
+        genotype_distances = tf.reshape(model.predict(images), (-1, 3))
+        genotype_probabilities = tf.nn.softmax(-genotype_distances, axis=1)  # For models that produce distances
 
-        if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
-            print(variant_proto, label, genotype_probabilities)
-            assert False
+        # if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
+        #     print(variant_proto, label, genotype_probabilities)
+        #     assert False
             
 
         rows.append(
