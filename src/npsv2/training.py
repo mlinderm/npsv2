@@ -1,8 +1,10 @@
-import datetime, functools, itertools, logging, os, random
+import datetime, functools, itertools, logging, os, random, sys
 import tensorflow as tf
 import tensorflow_addons as tfa
+import tensorflow_hub as hub
 import numpy as np
 import pandas as pd
+from scipy.spatial import distance
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
@@ -21,8 +23,22 @@ def _encoder_model(input_shape):
         encoder.add(layers.Activation(tf.nn.relu))
         encoder.add(layers.MaxPooling2D((2, 2)))
     encoder.add(layers.Flatten())
+
+    # For Koch et al.-style siamese network
+    # encoder.add(layers.Dense(2048, activation=tf.nn.sigmoid))
     
     return encoder
+
+# def _encoder_model(input_shape):
+#     encoder = tf.keras.models.Sequential([
+#         layers.Input(input_shape),
+#         layers.Conv2D(3, (1,1), activation='relu'),  # Make multi-channel input compatible with Inception                    
+#         hub.KerasLayer("https://tfhub.dev/google/imagenet/inception_v3/feature_vector/4", trainable=False),
+#         layers.Dense(512),
+#         layers.BatchNormalization(),
+#     ], name="encoder")
+#     encoder.summary()
+#     return encoder
 
 def _euclidean_distance(tensors):
     sum_square = tf.math.reduce_sum(tf.math.squared_difference(tensors[0], tensors[1]), axis=1, keepdims=True)
@@ -36,6 +52,11 @@ def _siamese_model(input_shape):
     embeddings = [encoder(query), encoder(support)]
 
     output = layers.Lambda(_euclidean_distance)(embeddings)
+    
+    # For Koch et al.-style siamese network
+    # output = layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))(embeddings)
+    # output = layers.Dense(1, activation=tf.nn.sigmoid, use_bias=True)(output)
+
     return tf.keras.Model(inputs=[query, support], outputs=output)
 
 
@@ -110,8 +131,10 @@ def train(params, tfrecords_path: str, model_path: str):
 
     model.compile(
         optimizer=optimizer,
-        loss=tfa.losses.contrastive_loss,
+        loss=tfa.losses.contrastive_loss,  # For models that just take euclidean distance...
         metrics=[distance_accuracy],
+        # loss=tf.keras.losses.binary_crossentropy,  # For Koch et al.-style siamese networks
+        # metrics=["binary_accuracy"],
     )
 
     example_dataset = load_example_dataset(
@@ -119,7 +142,7 @@ def train(params, tfrecords_path: str, model_path: str):
         with_label=True,
         with_simulations=True,
     )
-    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=8)
+    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=sys.maxsize)
     train_dataset = (
         example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(32)
     )
@@ -132,7 +155,7 @@ def train(params, tfrecords_path: str, model_path: str):
         filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
     )
 
-    callbacks=[early_stopping, checkpoint_callback]
+    callbacks=[checkpoint_callback]#[early_stopping, checkpoint_callback]
     
     if params.log_dir:
         log_dir = os.path.join(params.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -183,12 +206,13 @@ def evaluate_model(model, dataset):
         variant_proto = npsv2_pb2.StructuralVariant.FromString(encoded_variant.numpy())
 
         # Predict genotype
+        #genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
         genotype_distances = tf.reshape(model.predict(images), (-1, 3))
         genotype_probabilities = tf.nn.softmax(-genotype_distances, axis=1)  # For models that produce distances
 
-        # if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
-        #     print(variant_proto, label, genotype_probabilities)
-        #     assert False
+        if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
+            print(variant_proto, label, genotype_probabilities)
+            assert False
             
 
         rows.append(
@@ -208,3 +232,58 @@ def evaluate_model(model, dataset):
     print(table.groupby(svlen_bins)["MATCH"].mean())
 
     return genotype_concordance, nonreference_concordance, confusion_matrix
+
+
+def _variant_to_visualize_pairs(features, original_label, image_shape, replicates):
+    query_images = tf.image.convert_image_dtype(features["image"], dtype=tf.float32) #tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)] * 3 * replicates)
+    support_images = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32) #tf.reshape(tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32), (-1,) + image_shape)
+
+    image_tensors = {
+        "query": query_images,
+        "support": support_images,
+    }
+    return image_tensors, original_label, features["variant/encoded"]
+
+def visualize_embeddings(model, dataset, image_shape=None, replicates=None):
+    if isinstance(model, str):
+        model = tf.keras.models.load_model(
+            model,
+            custom_objects={"distance_accuracy": distance_accuracy, "contrastive_loss": tfa.losses.contrastive_loss},
+        )
+    assert isinstance(model, tf.keras.Model), "Valid model or path not provided"
+
+    if isinstance(dataset, str):
+        image_shape, replicates = _extract_metadata_from_first_example(dataset)
+        dataset = load_example_dataset(dataset, with_label=True, with_simulations=True)
+
+    model.summary()
+    # encoder = model.get_layer("encoder")
+    # encoder.summary()
+
+    variant_to_visualize_pairs = functools.partial(_variant_to_visualize_pairs, image_shape=image_shape, replicates=replicates)
+    test_dataset = dataset.map(variant_to_visualize_pairs)
+
+    for images, label, encoded_variant in test_dataset:
+        
+        rows = []
+        for (r1, r2) in itertools.combinations(range(3 * replicates), 2):
+            p = model.predict({ 
+                "query": tf.reshape(images["support"][r1 // replicates][r1 % replicates], (1,) + image_shape),
+                "support": tf.reshape(images["support"][r2 // replicates][r2 % replicates], (1,) + image_shape),
+            })
+            print(r1, r2, p)
+
+            rows.append(
+                pd.DataFrame(
+                    dict(AC1=r1 // replicates, AC2=r2 // replicates, SIM=p[0])
+                )
+            )
+
+        table = pd.concat(rows, ignore_index=True)
+
+        print(table.groupby(["AC1", "AC2"]).mean())
+    #   print(model.predict(images))
+    #     query_embeddings = encoder.predict(tf.reshape(images["query"], (1,) + image_shape))
+    #     support_embeddings = encoder.predict(tf.reshape(images["support"], (-1,) + image_shape))
+    #     print(distance.cdist(query_embeddings, support_embeddings))
+        

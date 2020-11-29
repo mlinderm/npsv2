@@ -396,9 +396,11 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image_mode = "L"
         channels = 0
     elif len(shape) == 3 or shape[2] > 3:
-        image_mode = "RGB"
+        #image_mode = "RGB"
         # Drop REF_INSERT_SIZE_CHANNEL for RGB visualization
-        channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+        #channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+        image_mode = "L"
+        channels = ALLELE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 

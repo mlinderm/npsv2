@@ -145,6 +145,13 @@ def make_argument_parser():
     parser_evaluate.add_argument("-m", "--model", help="Saved model", type=str, required=True)
     parser_evaluate.add_argument("-d", "--dataset", help="Input tfrecords file", type=str, required=True)
 
+    # Evaluation
+    parser_embeddings = subparsers.add_parser(
+        "embeddings", help="Plot embeddings", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser_embeddings.add_argument("-m", "--model", help="Saved model", type=str, required=True)
+    parser_embeddings.add_argument("-d", "--dataset", help="Input tfrecords file", type=str, required=True)
+
     return parser
 
 
@@ -204,6 +211,10 @@ def main():
             )
         )
 
+    elif args.command == "embeddings":
+        from .training import visualize_embeddings
+
+        visualize_embeddings(args.model, args.dataset)
 
 if __name__ == "__main__":
     main()
