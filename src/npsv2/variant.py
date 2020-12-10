@@ -29,6 +29,10 @@ class Variant(object):
         return DeletionVariant(record)
 
     @property
+    def is_deletion(self):
+        return False
+
+    @property
     def contig(self):
         return self._record.contig
 
@@ -45,7 +49,11 @@ class Variant(object):
         return len(self._record.alts) == 1
 
     def length_change(self):
-        return self._record.info["SVLEN"][0]
+        svlen = self._record.info["SVLEN"]
+        if isinstance(svlen, int):
+            return svlen
+        else:
+            return svlen[0]
 
     @property
     def reference_region(self):
@@ -113,6 +121,10 @@ class Variant(object):
 class DeletionVariant(Variant):
     def __init__(self, record):
         Variant.__init__(self, record)
+
+    @property
+    def is_deletion(self):
+        return True
 
     def _alt_seq(self, ref_seq, flank):
         alt_allele = self._record.alts[0]

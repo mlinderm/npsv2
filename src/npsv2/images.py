@@ -1,4 +1,4 @@
-import os, subprocess, sys, tempfile
+import os, random, subprocess, sys, tempfile
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -11,6 +11,7 @@ from .range import Range
 from .pileup import Pileup, FragmentTracker
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleAssignment
+from .simulation import RandomVariants, simulate_variant_sequencing
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
@@ -101,15 +102,21 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
             image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
             irow += 1
 
-        allele, _, _ = realign_fragment(realigner, fragment, assign_delta=1.0)
-        if allele != AlleleAssignment.AMB:
-            realigned_reads.append((allele, fragment.read1))
-            realigned_reads.append((allele, fragment.read2))
+        # At present we render reads based on the original alignment so we only realign fragments that could overlap
+        # the image window
+        if fragment.reads_overlap(region):
+            allele, _, _ = realign_fragment(realigner, fragment, assign_delta=1.0)
+            if allele != AlleleAssignment.AMB:
+                if region.get_overlap(fragment.read1) > 0:
+                    realigned_reads.append((allele, fragment.read1))
+                if region.get_overlap(fragment.read2) > 0:
+                    realigned_reads.append((allele, fragment.read2))
 
-    # Sort reads in position order
+    # Sample (if more reads than pixels) and sort reads in position order
+    if len(realigned_reads) > tensor_shape[0]:
+        realigned_reads = random.sample(realigned_reads, k=tensor_shape[0])
     realigned_reads.sort(key=lambda x: x[1].reference_start)
 
-    # TODO: Sample if there are more reads than pixels:
     for arow, (allele, read) in enumerate(realigned_reads[: tensor_shape[0]]):
         for col_slice, _ in pileup.read_columns(read):
             image_tensor[arow, col_slice, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[allele]
@@ -146,60 +153,60 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def _art_read_length(read_length, profile):
-    """Make sure read length is compatible ART"""
-    if profile in ("HS10", "HS20"):
-        return min(read_length, 100)
-    elif profile in ("HS25", "HSXn", "HSXt"):
-        return min(read_length, 150)
-    else:
-        return read_length
+# def _art_read_length(read_length, profile):
+#     """Make sure read length is compatible ART"""
+#     if profile in ("HS10", "HS20"):
+#         return min(read_length, 100)
+#     elif profile in ("HS25", "HSXn", "HSXt"):
+#         return min(read_length, 150)
+#     else:
+#         return read_length
 
 
-def _synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates=1):
-    hap_coverage = params.depth / 2
-    shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
+# def _synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates=1):
+#     hap_coverage = params.depth / 2
+#     shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
 
-    synth_commandline = f"synthBAM \
-        -t {quote(params.tempdir)} \
-        -R {quote(params.reference)} \
-        {shared_ref_arg} \
-        -c {hap_coverage:0.1f} \
-        -m {params.fragment_mean} \
-        -s {params.fragment_sd} \
-        -l {_art_read_length(params.read_length, params.profile)} \
-        -p {params.profile} \
-        -i {replicates} \
-        -z {allele_count} \
-        {fasta_path} \
-        {bam_path}"
+#     synth_commandline = f"synthBAM \
+#         -t {quote(params.tempdir)} \
+#         -R {quote(params.reference)} \
+#         {shared_ref_arg} \
+#         -c {hap_coverage:0.1f} \
+#         -m {params.fragment_mean} \
+#         -s {params.fragment_sd} \
+#         -l {_art_read_length(params.read_length, params.profile)} \
+#         -p {params.profile} \
+#         -i {replicates} \
+#         -z {allele_count} \
+#         {fasta_path} \
+#         {bam_path}"
 
-    synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
+#     synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
 
-    if synth_result.returncode != 0 or not os.path.exists(bam_path):
-        print(synth_result.stderr)
-        raise RuntimeError(f"Synthesis script failed to generate {bam_path}")
+#     if synth_result.returncode != 0 or not os.path.exists(bam_path):
+#         print(synth_result.stderr)
+#         raise RuntimeError(f"Synthesis script failed to generate {bam_path}")
 
 
-def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
-    if replicates == 1:
-        yield bam_path
-    else:
-        # Split synthetic BAM file into individual replicates
-        for i in range(1, replicates + 1):
-            read_group = f"synth{i}"
-            single_replicate_bam_path = os.path.join(dir, f"{read_group}.bam")
+# def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
+#     if replicates == 1:
+#         yield bam_path
+#     else:
+#         # Split synthetic BAM file into individual replicates
+#         for i in range(1, replicates + 1):
+#             read_group = f"synth{i}"
+#             single_replicate_bam_path = os.path.join(dir, f"{read_group}.bam")
 
-            pysam.view(
-                "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, bam_path, catch_stdout=False,
-            )
-            pysam.index(single_replicate_bam_path)
+#             pysam.view(
+#                 "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, bam_path, catch_stdout=False,
+#             )
+#             pysam.index(single_replicate_bam_path)
 
-            yield single_replicate_bam_path
+#             yield single_replicate_bam_path
 
 
 def make_vcf_examples(
-    params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False, region=None,
+    params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False, region: str=None,
 ):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
@@ -214,9 +221,23 @@ def make_vcf_examples(
             vcf_file.subset_samples([])  # Drop all samples
             label_extractor = lambda variant: sample_or_label
 
-        for record in vcf_file.fetch(region=region):
+        # Prepare random variant generator
+        if not params.sim_ref:
+            random_variants = RandomVariants(params.reference, params.exclude_bed)
+
+        if region:
+            query_range = Range.parse_literal(region)
+            variant_iter = vcf_file.fetch(**query_range.pysam_fetch)
+        else:
+            variant_iter = vcf_file
+
+        for record in variant_iter:
             variant = Variant.from_pysam(record)
             assert variant.is_biallelic(), "Multi-allelic sites not yet supported"
+
+            # To avoid duplicated entries, only generate images for variants that start within region
+            if region and not query_range.contains(variant.start):
+                continue
 
             # TODO: Handle odd sized variants when padding
             variant_region = variant.reference_region
@@ -245,25 +266,38 @@ def make_vcf_examples(
                 feature["sim/images/shape"] = _int_feature((3, params.replicates) + image_tensor.shape)
 
                 # Generate synthetic training images
-                ac_encoded_images = []
-                for allele_count in (0, 1, 2):
+                ac_encoded_images = [None] * 3
+                if params.sim_ref:
+                    ac_to_sim = (0, 1, 2)
+                else:
+                    ac_to_sim = (1, 2)
+                
+                    repl_encoded_images = []
+                    for random_variant in random_variants.generate(variant, n=params.replicates):
+                        random_variant_region = random_variant.reference_region.expand(padding)
+                        synth_image_tensor = create_single_example(
+                            params,
+                            random_variant,
+                            read_path,
+                            random_variant_region,
+                            image_shape=image_shape,
+                        )
+                        repl_encoded_images.append(synth_image_tensor)
+
+                    # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
+                    ac_encoded_images[0] = np.stack(repl_encoded_images)
+
+                for allele_count in ac_to_sim:
                     with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
                         # Generate the FASTA file for this zygosity
                         fasta_path, ref_contig, alt_contig = variant.synth_fasta(
                             reference_fasta=params.reference, ac=allele_count, flank=params.flank, dir=tempdir
                         )
 
-                        # Generate synthetic bam files with the given number of replicates
-                        synthetic_bam_path = os.path.join(tempdir, "replicates.bam")
-                        _synthesize_variant_data(
-                            params, fasta_path, synthetic_bam_path, allele_count, replicates=params.replicates
-                        )
-
-                        # Split synthetic BAM file into individual replicates
+                        # Generate and image synthetic bam files
                         repl_encoded_images = []
-                        for replicate_bam_path in _replicate_bam_generator(
-                            synthetic_bam_path, params.replicates, dir=tempdir
-                        ):
+                        for _ in range(params.replicates):
+                            replicate_bam_path = simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempdir)                           
                             synth_image_tensor = create_single_example(
                                 params,
                                 variant,
@@ -275,11 +309,11 @@ def make_vcf_examples(
                             repl_encoded_images.append(synth_image_tensor)
 
                         # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
-                        ac_encoded_images.append(np.stack(repl_encoded_images))
+                        ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
 
-                    # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into 5-D tensor
-                    sim_image_tensor = np.stack(ac_encoded_images)
-                    feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
+                # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into 5-D tensor
+                sim_image_tensor = np.stack(ac_encoded_images)
+                feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
 
             yield tf.train.Example(features=tf.train.Features(feature=feature))
 
@@ -291,14 +325,13 @@ def _filename_to_compression(filename: str) -> str:
         return None
 
 
-def _region_generator(vcf_path: str, chunk_size=30000000):
-    # TODO: Chunk within chromosomes
-    with pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
-        tid = 0
-        while vcf_file.is_valid_tid(tid):
-            yield vcf_file.get_reference_name(tid)
-            tid += 1
-
+def _region_generator(ref_path: str, vcf_path: str, chunk_size=30000000):
+    with pysam.FastaFile(ref_path) as ref_file, pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
+        for contig, length in zip(ref_file.references, ref_file.lengths):
+            if vcf_file.get_tid(contig) != -1:
+                for start in range(1, length, chunk_size):
+                    yield f"{contig}:{start}-{min(start + chunk_size, length)}"
+        
 
 def vcf_to_tfrecords(
     params,
@@ -311,6 +344,11 @@ def vcf_to_tfrecords(
     progress_bar=False,
 ):
     def _encoded_example_generator(region=None):
+        try:
+            # TF seems to encode the region string as bytes
+            region = region.decode()
+        except (UnicodeDecodeError, AttributeError):
+            pass
         all_examples = make_vcf_examples(
             params, vcf_path, read_path, image_shape, sample_or_label, simulate=simulate, region=region
         )
@@ -321,7 +359,7 @@ def vcf_to_tfrecords(
         return tf.data.Dataset.from_generator(_encoded_example_generator, output_types=(tf.string), args=(region,),)
 
     with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-        region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(vcf_path), output_types=(tf.string))
+        region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(params.reference, vcf_path), output_types=(tf.string))
         example_dataset = region_dataset.interleave(
             _generate_examples,
             cycle_length=params.threads,

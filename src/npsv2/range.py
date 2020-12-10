@@ -22,6 +22,13 @@ class Range(object):
     def length(self):
         return self.end - self.start
 
+    @property
+    def pysam_fetch(self):
+        return dict(contig=self.contig, start=self.start, stop=self.end)
+
+    def contains(self, point: int):
+        return self.start <= point < self.end
+
     # TODO: Add contig map
     def expand(self, left_or_both, right=None):
         if right is None:
@@ -30,7 +37,15 @@ class Range(object):
         new_end = self.end + right
         return Range(self.contig, new_start, new_end)
 
-    def get_overlap(self, read: AlignedSegment):
-        if read.reference_name != self.contig:
-            return 0
-        return read.get_overlap(self.start, self.end)
+    def get_overlap(self, has_region):
+        # Tried @singledispatchmethod, but couldn't make it work for Range inputs
+        if isinstance(has_region, AlignedSegment):
+            if has_region.reference_name != self.contig:
+                return 0
+            return has_region.get_overlap(self.start, self.end)
+        elif isinstance(has_region, "Range"):
+            if self.contig != other.contig:
+                return 0
+            return max(0, min(self.end, other.end) - max(self.start, other.start))
+        else:
+            raise NotImplementedError()

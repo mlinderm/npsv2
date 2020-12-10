@@ -118,6 +118,14 @@ def make_argument_parser():
     )
     parser_examples.add_argument("--depth", type=float, help="Mean depth of coverage")
 
+    parser_examples.add_argument("--sim-ref", help="Simulate reference genotype instead sample", action="store_true", default=False)
+    parser_examples.add_argument(
+        "--exclude-bed",
+        type=str,
+        help="Tabix-indexed BED file of regions to exclude from random sampling",
+        default=None
+    )
+
     # Visualize
     parser_visualize = subparsers.add_parser(
         "visualize", help="Convert example to images", formatter_class=argparse.ArgumentDefaultsHelpFormatter

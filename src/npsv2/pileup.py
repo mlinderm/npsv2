@@ -136,6 +136,16 @@ class Fragment(object):
             left_region.get_overlap(self.read1) >= min_aligned and right_region.get_overlap(self.read2) >= min_aligned
         )
 
+    def fragment_overlaps(self, region: Range, min_overlap=3):
+        # TODO: Allow fragments with just one read
+        if not self.is_properly_paired:
+            return False
+
+        fragment_region = Range(self.read1.reference_name, self.read1.self.read1.reference_start, self.read2.reference_end)
+        return fragment_region.get_overlap(region) >= min_overlap
+
+    def reads_overlap(self, region: Range, min_overlap=3):
+        return (self.read1 and (region.get_overlap(self.read1) >= 3)) or (self.read2 and (region.get_overlap(self.read2) >= 3))
 
 class FragmentTracker(object):
     def __init__(self):

@@ -164,21 +164,12 @@ setup(
     """,
     packages=find_packages("src"),
     package_dir={"": "src"},
+    include_package_data=True,
+    package_data={"": ["etc/*"]},
     ext_modules=[CMakeExtension("npsv2/npsv2r")],
     cmdclass=dict(build_ext=SeqLibCMakeBuild, protbuf=BuildProtobuf),
     zip_safe=False,
     test_suite="tests",
-    include_package_data=True,
-    data_files=[
-        (
-            "etc",
-            [
-                "etc/human_g1k_v37.genome",
-                "etc/human_g1k_v37.gaps.bed.gz",
-                "etc/human_g1k_v37.gaps.bed.gz.tbi",
-            ],
-        )
-    ],
     classifiers=[
         "Intended Audience :: Science/Research",
         "Topic :: Scientific/Engineering :: Bio-Informatics",

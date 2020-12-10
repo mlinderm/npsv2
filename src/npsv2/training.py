@@ -14,20 +14,20 @@ from . import npsv2_pb2
 
 
 
-def _encoder_model(input_shape):
-    encoder = tf.keras.models.Sequential([layers.Input(input_shape)], name="encoder")
-    for i in range(4):
-        encoder.add(layers.Conv2D(64, (3, 3), padding="same"))
-        encoder.add(layers.BatchNormalization())
-        encoder.add(layers.Dropout(0.2))
-        encoder.add(layers.Activation(tf.nn.relu))
-        encoder.add(layers.MaxPooling2D((2, 2)))
-    encoder.add(layers.Flatten())
+# def _encoder_model(input_shape):
+#     encoder = tf.keras.models.Sequential([layers.Input(input_shape)], name="encoder")
+#     for i in range(4):
+#         encoder.add(layers.Conv2D(64, (3, 3), padding="same"))
+#         encoder.add(layers.BatchNormalization())
+#         encoder.add(layers.Dropout(0.2))
+#         encoder.add(layers.Activation(tf.nn.relu))
+#         encoder.add(layers.MaxPooling2D((2, 2)))
+#     encoder.add(layers.Flatten())
 
-    # For Koch et al.-style siamese network
-    # encoder.add(layers.Dense(2048, activation=tf.nn.sigmoid))
+#     # For Koch et al.-style siamese network
+#     # encoder.add(layers.Dense(2048, activation=tf.nn.sigmoid))
     
-    return encoder
+#    return encoder
 
 # def _encoder_model(input_shape):
 #     encoder = tf.keras.models.Sequential([
@@ -37,8 +37,33 @@ def _encoder_model(input_shape):
 #         layers.Dense(512),
 #         layers.BatchNormalization(),
 #     ], name="encoder")
-#     encoder.summary()
 #     return encoder
+
+def _encoder_model(input_shape):
+    assert tf.keras.backend.image_data_format() == "channels_last"
+
+    base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+    base_model.trainable = True #False
+    
+    # Trying to fine tune model with imagenet weights but 4 input channels, but am not successful. All layers mismatch...
+    # base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+    # weights_path = tf.keras.utils.get_file(
+    #       'inception_v3_weights_tf_dim_ordering_tf_kernels_notop.h5',
+    #       'https://storage.googleapis.com/tensorflow/keras-applications/inception_v3/inception_v3_weights_tf_dim_ordering_tf_kernels_notop.h5',
+    #       cache_subdir='models',
+    #       file_hash='bcbd6486424b2319ff4ef7d526e38f63')
+    # base_model.load_weights(weights_path, by_name=True, skip_mismatch=True)
+    # base_model.trainable = False
+
+    encoder = tf.keras.models.Sequential([
+        layers.Input(input_shape),
+        #layers.Conv2D(3, (1,1), activation='relu'),  # Make multi-channel input compatible with Inception     
+        layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
+        base_model,
+        layers.Dense(512),
+        layers.BatchNormalization(),
+    ], name="encoder")
+    return encoder
 
 def _euclidean_distance(tensors):
     sum_square = tf.math.reduce_sum(tf.math.squared_difference(tensors[0], tensors[1]), axis=1, keepdims=True)
@@ -59,6 +84,59 @@ def _siamese_model(input_shape):
 
     return tf.keras.Model(inputs=[query, support], outputs=output)
 
+def _cdist(tensors, squared: bool = False):
+    # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
+    query_features, genotype_features = tensors
+
+    distances_squared = tf.math.add(
+        tf.math.reduce_sum(tf.math.square(query_features), axis=[1], keepdims=True),
+        tf.math.reduce_sum(tf.math.square(tf.transpose(genotype_features)), axis=[0], keepdims=True),
+    ) - 2.0 * tf.matmul(query_features, tf.transpose(genotype_features))
+
+    # Deal with numerical inaccuracies. Set small negatives to zero.
+    distances_squared = tf.math.maximum(distances_squared, 0.0)
+    # Get the mask where the zero distances are at.
+    error_mask = tf.math.less_equal(distances_squared, 0.0)
+
+    # Optionally take the sqrt.
+    if squared:
+        distances = distances_squared
+    else:
+        distances = tf.math.sqrt(
+            distances_squared + tf.cast(error_mask, dtype=tf.dtypes.float32) * tf.keras.backend.epsilon()
+        )
+
+    # Undo conditionally adding 1e-16.
+    distances = tf.math.multiply(
+        distances,
+        tf.cast(tf.math.logical_not(error_mask), dtype=tf.dtypes.float32),
+    )
+    return distances
+
+
+
+def _genotype_model(input_shape):
+    encoder = _encoder_model(input_shape)
+    encoder.summary()
+    embeddings_shape = encoder.output_shape
+    # print(embeddings_shape)
+    
+    query = layers.Input(input_shape, name="query")
+    query_embeddings = encoder(query)
+       
+    support = layers.Input((3,) + input_shape, name="support")
+    support_embeddings = layers.TimeDistributed(encoder)(support)
+    #support_embeddings = layers.Lambda(lambda x: tf.reshape(encoder(tf.reshape(x, (-1,) + input_shape)), (-1, 3, embeddings_shape[-1])))(support)
+
+    def _variant_distances(tensors):
+        query, support = tensors
+        return tf.squeeze(tf.map_fn(_cdist, (tf.expand_dims(query, axis=1), support), dtype=tf.dtypes.float32), axis=1)
+
+    distances = layers.Lambda(_variant_distances)([query_embeddings, support_embeddings])
+    output = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=1))(distances) # Convert distance to probability
+
+    return tf.keras.Model(inputs=[query, support], outputs=output)
+
 
 def _random_pair_indices(replicates, max_pairs):
     match_pairs = itertools.product(range(3), itertools.combinations(range(replicates), 2))
@@ -73,7 +151,7 @@ def _random_pair_indices(replicates, max_pairs):
     # Interleave positive and negative examples, flattening pairs into a single list
     class_num_pairs = min(len(match_pairs), len(mismatch_pairs), max_pairs // 2)
     pairs = [pair for pos_and_neg in zip(random.sample(match_pairs, class_num_pairs), random.sample(mismatch_pairs, class_num_pairs)) for pair in pos_and_neg]
-    print(pairs)  
+ 
     # "Split" pairs into a list of query indices and a list of support indices
     return zip(*pairs), [1, 0] * class_num_pairs
 
@@ -110,6 +188,77 @@ def _variant_to_training_pairs(features, original_label, image_shape, replicates
     # Construct data to permit "flat_map" and thus more flexible batching downstream
     return tf.data.Dataset.from_tensor_slices((image_tensors, label_tensor))
 
+def _variant_to_training_triples(features, original_label):
+    # query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)]*4)
+    # support_images = tf.stack([
+    #     tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+    #     tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+    #     tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+    #     tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+    # ])
+
+    # image_tensors = {
+    #     "query": query_images,
+    #     "support": support_images,
+    # }
+    
+    # return tf.data.Dataset.from_tensor_slices((image_tensors, tf.repeat(original_label, 4)))
+    # query_images = tf.expand_dims(tf.image.convert_image_dtype(features["image"], dtype=tf.float32), axis=0)
+    # support_images = tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=0)
+
+    # image_tensors = {
+    #     "query": query_images,
+    #     "support": support_images,
+    # }
+    # return tf.data.Dataset.from_tensor_slices((image_tensors, original_label))
+    # query_images = tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32)
+    # support_images = tf.stack([tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32)]*3)
+
+    # image_tensors = {
+    #     "query": query_images,
+    #     "support": support_images,
+    # }
+    # return tf.data.Dataset.from_tensor_slices((image_tensors, tf.constant([0, 1, 2])))
+    query_images = tf.tile(
+        tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
+        [4, 1, 1, 1]
+    )
+    support_images = tf.stack([
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+    ])
+    image_tensors = {
+        "query": query_images,
+        "support": support_images,
+    }
+    return tf.data.Dataset.from_tensor_slices((image_tensors, tf.constant([0, 1, 2]*4, dtype=tf.int64)))
+
+def _variant_to_real_training_triples(features, original_label):
+    query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)]*4)
+    support_images = tf.stack([
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+    ])
+
+    image_tensors = {
+        "query": query_images,
+        "support": support_images,
+    }
+    
+    return tf.data.Dataset.from_tensor_slices((image_tensors, tf.repeat(original_label, 4)))
+
 
 def distance_accuracy(y_true, y_pred, threshold=0.5):
     """Compute classification accuracy with a fixed threshold on distances."""
@@ -119,22 +268,25 @@ def distance_accuracy(y_true, y_pred, threshold=0.5):
 def train(params, tfrecords_path: str, model_path: str):
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_path)
 
-    model = _siamese_model(image_shape)
+    #model = _siamese_model(image_shape)
+    model = _genotype_model(image_shape)
     model.summary()
 
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=params.learning_rate,
-        decay_steps=10000,  # e.g., set to the number of steps per epoch
-        decay_rate=0.99,
-    )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+    # lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+    #     initial_learning_rate=params.learning_rate,
+    #     decay_steps=10000,  # e.g., set to the number of steps per epoch
+    #     decay_rate=0.99,
+    # )
+    optimizer = tf.keras.optimizers.Adam(learning_rate=params.learning_rate) #lr_schedule)
 
     model.compile(
         optimizer=optimizer,
-        loss=tfa.losses.contrastive_loss,  # For models that just take euclidean distance...
-        metrics=[distance_accuracy],
+        # loss=tfa.losses.contrastive_loss,  # For models that just take euclidean distance...
+        # metrics=[distance_accuracy],
         # loss=tf.keras.losses.binary_crossentropy,  # For Koch et al.-style siamese networks
         # metrics=["binary_accuracy"],
+        loss="sparse_categorical_crossentropy",
+        metrics=["sparse_categorical_accuracy"],
     )
 
     example_dataset = load_example_dataset(
@@ -142,13 +294,27 @@ def train(params, tfrecords_path: str, model_path: str):
         with_label=True,
         with_simulations=True,
     )
-    variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=sys.maxsize)
+    # variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=sys.maxsize)
+    # train_dataset = (
+    #     example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(32)
+    # )
+
     train_dataset = (
-        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(32)
+        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(_variant_to_training_triples).batch(24) #16)
     )
 
+    # ref_example_dataset = load_example_dataset(
+    #     "images/HG002.manta.fp.tfrecords.gz",
+    #     with_label=True,
+    #     with_simulations=True,
+    # )
+    # ref_train_dataset = (
+    #     ref_example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(_variant_to_real_training_triples).batch(16)  # 24
+    # )
+    # train_dataset = train_dataset.concatenate(ref_train_dataset)
+
     # TODO: Reserve some training data for validation
-    early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
+    #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
 
     checkpoint_filepath = os.path.join(params.tempdir, "checkpoint")
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
@@ -185,6 +351,16 @@ def _variant_to_test_pairs(features, original_label):
     }
     return image_tensors, original_label, features["variant/encoded"]
 
+def _variant_to_test_triples(features, original_label):
+    query_images = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+    support_images = tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32)
+   
+    image_tensors = {
+        "query": tf.expand_dims(query_images, axis=0),
+        "support": tf.expand_dims(support_images, axis=0),
+    }
+    return image_tensors, original_label, features["variant/encoded"]
+
 
 def evaluate_model(model, dataset):
     if isinstance(model, str):
@@ -197,22 +373,25 @@ def evaluate_model(model, dataset):
     if isinstance(dataset, str):
         dataset = load_example_dataset(dataset, with_label=True, with_simulations=True)
 
-    test_dataset = dataset.map(_variant_to_test_pairs)
+    test_dataset = dataset.map(_variant_to_test_triples)
 
     # Unzip test dataset into pandas dataframe with genotypes and variant annotations
+    fp_count = 0
     rows = []
     for images, label, encoded_variant in test_dataset:
         # Extract metadata for the variant
         variant_proto = npsv2_pb2.StructuralVariant.FromString(encoded_variant.numpy())
 
         # Predict genotype
-        #genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
-        genotype_distances = tf.reshape(model.predict(images), (-1, 3))
-        genotype_probabilities = tf.nn.softmax(-genotype_distances, axis=1)  # For models that produce distances
+        genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
 
-        if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 0:
-            print(variant_proto, label, genotype_probabilities)
-            assert False
+        #genotype_distances = tf.reshape(model.predict(images), (-1, 3))
+        #genotype_probabilities = tf.nn.softmax(-genotype_distances, axis=1)  # For models that produce distances
+
+        # if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 1:
+        #     print(variant_proto, label, genotype_probabilities)
+        #     fp_count +=1
+        #     assert fp_count < 10
             
 
         rows.append(
