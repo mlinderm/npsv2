@@ -5,6 +5,7 @@ TMPDIR_ROOT=$TMPDIR
 REFERENCE=human_g1k_v37.fasta
 SHAREDREF=
 SAMPLE=
+STATSPATH=
 
 COVERAGE=20
 FRAGMEAN=400
@@ -34,10 +35,11 @@ Options:
   -z (0,1,2)    Alternate allele count (AC), default: $ZYGOSITY
   -i integer    Number of samples in output SAM/BAM, default: $SAMPLES
   -n string     Sample name, default: undefined
+  -j FILE       NPSV stats file for GC normalized coverage, default: undefined
 EOF
 }
 
-while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:" Option
+while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:j:" Option
 do
     case $Option in
         R)
@@ -72,6 +74,9 @@ do
             ;;
         n)
             SAMPLE=$OPTARG
+            ;;
+        j)
+            STATSPATH=$OPTARG
             ;;
         h)
             usage
@@ -135,13 +140,25 @@ do
     # the pipeline used with the actual data
     ALIGNEDBAM=$TMPDIR/aligned${s}.bam
     
-    bwa mem -c 250 -M -v 1 -I "${FRAGMEAN},${FRAGSD}" \
-        -R "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
-        "$SHAREDREF" \
-        "${READS_PREFIX}1.fq" "${READS_PREFIX}2.fq" | \
-    samblaster -q -M --addMateTags | \
-    samtools view -S -u  - | \
-    sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
+    if [[ -n $STATSFILE ]]; then
+        # Downsample reads based on GC fraction
+        npsv2 normcovg --fasta-path "$FASTA" --stats-path "$STATSPATH" -i "${READS_PREFIX}.sam" | \
+        bwa mem -p -c 250 -M -v 1 -I "${FRAGMEAN},${FRAGSD}" \
+            -R "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
+            "$SHAREDREF" \
+            /dev/stdin | \
+        samblaster -q -M --addMateTags | \
+        samtools view -S -u  - | \
+        sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
+    else
+        bwa mem -c 250 -M -v 1 -I "${FRAGMEAN},${FRAGSD}" \
+            -R "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
+            "$SHAREDREF" \
+            "${READS_PREFIX}1.fq" "${READS_PREFIX}2.fq" | \
+        samblaster -q -M --addMateTags | \
+        samtools view -S -u  - | \
+        sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
+    fi
 done
 
 if [[ "$SAMPLES" -gt 1 ]]; then

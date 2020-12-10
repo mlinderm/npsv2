@@ -9,11 +9,12 @@ from npsv2.range import Range
 from npsv2 import images
 from npsv2 import npsv2_pb2
 from npsv2.simulation import RandomVariants
+from npsv2.sample import Sample
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
-def _mock_simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempfile.gettempdir()):
+def _mock_simulate_variant_sequencing(params, fasta_path, allele_count, sample: Sample, dir=tempfile.gettempdir()):
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
 
@@ -42,22 +43,22 @@ class CreateSingleImageTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.params = argparse.Namespace(
             reference=os.path.join(FILE_DIR, "1_896922_902998.fasta"),
-            fragment_mean=569,
-            fragment_sd=163,
             tempdir=self.tempdir.name,
             flank=1000,
+            augment=False,
         )
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
 
     def tearDown(self):
         self.tempdir.cleanup()
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_resizing_image(self, mock_ref):
-        image_tensor = images.create_single_example(self.params, self.variant, self.bam_path, "1:899722-900192")
+        image_tensor = images.create_single_example(self.params, self.variant, self.bam_path, "1:899722-900192", self.sample)
         self.assertNotEqual(image_tensor.shape, (images.IMAGE_HEIGHT, 300, images.IMAGE_CHANNELS))
 
         image_tensor = images.create_single_example(
-            self.params, self.variant, self.bam_path, "1:899722-900192", image_shape=(300, 300),
+            self.params, self.variant, self.bam_path, "1:899722-900192", self.sample, image_shape=(300, 300),
         )
         self.assertEqual(image_tensor.shape, (300, 300, images.IMAGE_CHANNELS))
 
@@ -66,9 +67,10 @@ class VCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.params = argparse.Namespace(
-            tempdir=self.tempdir.name, reference=None, flank=1000, replicates=1, fragment_mean=569, fragment_sd=163, sim_ref=True, exclude_bed=None,
+            tempdir=self.tempdir.name, reference=None, flank=1000, replicates=1, sample_ref=False, exclude_bed=None, augment=False,
         )
 
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
 
@@ -77,23 +79,23 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_vcf_generator_runs_without_error(self, mock_ref):
-        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path)
+        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample)
         self.assertEqual(len(list(all_examples)), 1)
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_label_extraction(self, mock_ref):
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path))
+        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample))
         self.assertNotIn("label", example.features.feature)
 
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, sample_or_label="HG002"))
+        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, sample_or_label="HG002"))
         self.assertEqual(images._example_label(example), 2)
 
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, sample_or_label=1))
+        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, sample_or_label=1))
         self.assertEqual(images._example_label(example), 1)
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_example_to_image(self, mock_ref):
-        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, image_shape=(300, 300))
+        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300))
 
         png_path = os.path.join(self.params.tempdir, "test.png")
         images.example_to_image(next(all_examples), png_path)
@@ -106,7 +108,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
     def test_dataset_roundtrip(self, mock_ref):
         example = next(
             images.make_vcf_examples(
-                self.params, self.vcf_path, self.bam_path, image_shape=(300, 300), sample_or_label="HG002",
+                self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300), sample_or_label="HG002",
             )
         )
 
@@ -136,6 +138,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
                 self.params,
                 self.vcf_path,
                 self.bam_path,
+                self.sample,
                 image_shape=(300, 300),
                 sample_or_label="HG002",
                 simulate=True,
@@ -157,6 +160,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
                 self.params,
                 self.vcf_path,
                 self.bam_path,
+                self.sample,
                 image_shape=(300, 300),
                 sample_or_label="HG002",
                 simulate=True,
@@ -178,6 +182,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
                 self.params,
                 self.vcf_path,
                 self.bam_path,
+                self.sample,
                 image_shape=(300, 300),
                 sample_or_label="HG002",
                 simulate=True,
@@ -227,6 +232,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
                 params,
                 self.vcf_path,
                 self.bam_path,
+                self.sample,
                 image_shape=(300, 300),
                 sample_or_label="HG002",
                 simulate=True,
@@ -246,12 +252,11 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             flank=1,
             replicates=1,
             threads=2,
-            fragment_mean=569,
-            fragment_sd=163,
-            sim_ref=True,
+            sample_ref=False,
             exclude_bed=None,
+            augment=False,
         )
-
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
 
@@ -272,6 +277,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             self.vcf_path,
             self.bam_path,
             dataset_path,
+            self.sample,
             image_shape=(300, 300),
             sample_or_label="HG002",
             simulate=True,
@@ -304,7 +310,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
     def test_compressed_dataset_roundtrip(self, synth_ref, mock_ref, mock_reg):
         dataset_path = os.path.join(self.params.tempdir, "test.tfrecord.gz")
         images.vcf_to_tfrecords(
-            self.params, self.vcf_path, self.bam_path, dataset_path, image_shape=(300, 300), sample_or_label="HG002",
+            self.params, self.vcf_path, self.bam_path, dataset_path, self.sample, image_shape=(300, 300), sample_or_label="HG002",
         )
         self.assertTrue(os.path.exists(dataset_path))
         # Load dataset with simulated data

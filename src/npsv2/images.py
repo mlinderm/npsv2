@@ -1,9 +1,8 @@
-import os, random, subprocess, sys, tempfile
+import logging, os, random, subprocess, sys, tempfile
 import numpy as np
 import pysam
 import tensorflow as tf
 from PIL import Image
-from shlex import quote
 from tqdm import tqdm
 
 from .variant import Variant
@@ -11,7 +10,8 @@ from .range import Range
 from .pileup import Pileup, FragmentTracker
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleAssignment
-from .simulation import RandomVariants, simulate_variant_sequencing
+from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
+from .sample import Sample
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
@@ -40,16 +40,16 @@ ALLELE_TO_PIXEL = {
 }
 
 
-def _fragment_zscore(params, fragment_length):
-    return (fragment_length - params.fragment_mean) / params.fragment_sd
+def _fragment_zscore(sample: Sample, fragment_length: int):
+    return (fragment_length - sample.mean_insert_size) / sample.std_insert_size
 
 
-def _create_realigner(params, variant):
+def _create_realigner(params, variant, sample: Sample):
     fasta_path, _, _ = variant.synth_fasta(reference_fasta=params.reference, dir=params.tempdir, flank=params.flank)
-    return FragmentRealigner(fasta_path, params.fragment_mean, params.fragment_sd)
+    return FragmentRealigner(fasta_path, sample.mean_insert_size, sample.std_insert_size)
 
 
-def create_single_example(params, variant, read_path, region, image_shape=None, realigner=None):
+def create_single_example(params, variant, read_path, region, sample: Sample, image_shape=None, realigner=None):
     if isinstance(region, str):
         region = Range.parse_literal(region)
 
@@ -63,7 +63,7 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
     image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
 
     if realigner is None:
-        realigner = _create_realigner(params, variant)
+        realigner = _create_realigner(params, variant, sample)
 
     pileup = Pileup(region)
     fragments = FragmentTracker()
@@ -96,9 +96,9 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
     irow = 0
     for fragment in fragments:
         if irow < tensor_shape[0] and fragment.fragment_straddles(left_region, right_region, min_aligned=3):
-            ref_zscore = _fragment_zscore(params, fragment.fragment_length)
+            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
             image_tensor[irow, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
-            alt_zscore = _fragment_zscore(params, fragment.fragment_length + variant.length_change())
+            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
             image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
             irow += 1
 
@@ -123,7 +123,8 @@ def create_single_example(params, variant, read_path, region, image_shape=None, 
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
-        # resize converts to float, directly (however convert_image_dtype assumes floats are in [0-1])
+        # resize converts to float, directly (however convert_image_dtype assumes floats are in [0-1]) so
+        # we use cast instead
         image_tensor = tf.cast(tf.image.resize(image_tensor, image_shape), dtype=tf.uint8).numpy()
 
     return image_tensor
@@ -153,76 +154,26 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-# def _art_read_length(read_length, profile):
-#     """Make sure read length is compatible ART"""
-#     if profile in ("HS10", "HS20"):
-#         return min(read_length, 100)
-#     elif profile in ("HS25", "HSXn", "HSXt"):
-#         return min(read_length, 150)
-#     else:
-#         return read_length
-
-
-# def _synthesize_variant_data(params, fasta_path, bam_path, allele_count, replicates=1):
-#     hap_coverage = params.depth / 2
-#     shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
-
-#     synth_commandline = f"synthBAM \
-#         -t {quote(params.tempdir)} \
-#         -R {quote(params.reference)} \
-#         {shared_ref_arg} \
-#         -c {hap_coverage:0.1f} \
-#         -m {params.fragment_mean} \
-#         -s {params.fragment_sd} \
-#         -l {_art_read_length(params.read_length, params.profile)} \
-#         -p {params.profile} \
-#         -i {replicates} \
-#         -z {allele_count} \
-#         {fasta_path} \
-#         {bam_path}"
-
-#     synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
-
-#     if synth_result.returncode != 0 or not os.path.exists(bam_path):
-#         print(synth_result.stderr)
-#         raise RuntimeError(f"Synthesis script failed to generate {bam_path}")
-
-
-# def _replicate_bam_generator(bam_path, replicates, dir=tempfile.gettempdir()):
-#     if replicates == 1:
-#         yield bam_path
-#     else:
-#         # Split synthetic BAM file into individual replicates
-#         for i in range(1, replicates + 1):
-#             read_group = f"synth{i}"
-#             single_replicate_bam_path = os.path.join(dir, f"{read_group}.bam")
-
-#             pysam.view(
-#                 "-b", "-h", "-r", read_group, "-o", single_replicate_bam_path, bam_path, catch_stdout=False,
-#             )
-#             pysam.index(single_replicate_bam_path)
-
-#             yield single_replicate_bam_path
-
-
 def make_vcf_examples(
-    params, vcf_path: str, read_path: str, image_shape=None, sample_or_label=None, simulate=False, region: str=None,
+    params, vcf_path: str, read_path: str, sample: Sample, image_shape=None, sample_or_label=None, simulate=False, region: str=None,
 ):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
-        if sample_or_label and isinstance(sample_or_label, str):
+        if sample_or_label is not None and isinstance(sample_or_label, str):
             samples = vcf_file.header.samples
             sample_index = next((i for i, s in enumerate(samples) if s == sample_or_label), -1,)
             if sample_index == -1:
                 raise ValueError("Sample identifier is not present in the file")
+            logging.info("Using %s genotypes as labels (VCF sample index %d)", sample_or_label, sample_index)
             vcf_file.subset_samples([sample_or_label])
             label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(sample_index))
         else:
+            logging.info("Using fixed AC=%d as label", sample_or_label)
             vcf_file.subset_samples([])  # Drop all samples
             label_extractor = lambda variant: sample_or_label
 
-        # Prepare random variant generator
-        if not params.sim_ref:
+        # Prepare random variant generator (if specified)
+        if params.sample_ref:
             random_variants = RandomVariants(params.reference, params.exclude_bed)
 
         if region:
@@ -245,11 +196,11 @@ def make_vcf_examples(
             example_region = variant_region.expand(padding)
 
             # Construct realigner once for all images for this variant
-            realigner = _create_realigner(params, variant)
+            realigner = _create_realigner(params, variant, sample)
 
             # Construct image for "real" data
             image_tensor = create_single_example(
-                params, variant, read_path, example_region, image_shape=image_shape, realigner=realigner
+                params, variant, read_path, example_region, sample, image_shape=image_shape, realigner=realigner
             )
             feature = {
                 "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
@@ -261,15 +212,14 @@ def make_vcf_examples(
             if label is not None:
                 feature["label"] = _int_feature([label])
 
-            if simulate:
+            if simulate and params.replicates > 0:
                 # A 5-D tensor for simulated images (AC, REPLICATES, ROW, COLS, CHANNELS)
                 feature["sim/images/shape"] = _int_feature((3, params.replicates) + image_tensor.shape)
 
                 # Generate synthetic training images
                 ac_encoded_images = [None] * 3
-                if params.sim_ref:
-                    ac_to_sim = (0, 1, 2)
-                else:
+                if params.sample_ref:
+                    # Sample random variants from the genome to create the 0/0 replicates
                     ac_to_sim = (1, 2)
                 
                     repl_encoded_images = []
@@ -280,12 +230,22 @@ def make_vcf_examples(
                             random_variant,
                             read_path,
                             random_variant_region,
+                            sample,
                             image_shape=image_shape,
                         )
                         repl_encoded_images.append(synth_image_tensor)
 
                     # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
                     ac_encoded_images[0] = np.stack(repl_encoded_images)
+                else:
+                    ac_to_sim = (0, 1, 2)
+
+                # If we are augmenting the simulated data, use the provided statistics for the first example, so it
+                # will hopefully be similar to the real data and the augment the remaining replicates
+                if params.augment:
+                    repl_samples = augment_samples(sample, params.replicates, keep_original=True)
+                else:
+                    repl_samples = [sample] * params.replicates
 
                 for allele_count in ac_to_sim:
                     with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
@@ -296,13 +256,14 @@ def make_vcf_examples(
 
                         # Generate and image synthetic bam files
                         repl_encoded_images = []
-                        for _ in range(params.replicates):
-                            replicate_bam_path = simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempdir)                           
+                        for i in range(params.replicates):
+                            replicate_bam_path = simulate_variant_sequencing(params, fasta_path, allele_count, repl_samples[i], dir=tempdir)                           
                             synth_image_tensor = create_single_example(
                                 params,
                                 variant,
                                 replicate_bam_path,
                                 example_region,
+                                repl_samples[i],
                                 image_shape=image_shape,
                                 realigner=realigner,
                             )
@@ -338,6 +299,7 @@ def vcf_to_tfrecords(
     vcf_path: str,
     read_path: str,
     output_path: str,
+    sample: Sample,
     image_shape=None,
     sample_or_label=None,
     simulate=False,
@@ -350,7 +312,7 @@ def vcf_to_tfrecords(
         except (UnicodeDecodeError, AttributeError):
             pass
         all_examples = make_vcf_examples(
-            params, vcf_path, read_path, image_shape, sample_or_label, simulate=simulate, region=region
+            params, vcf_path, read_path, sample, image_shape=image_shape, sample_or_label=sample_or_label, simulate=simulate, region=region
         )
         for example in all_examples:
             yield example.SerializeToString()
@@ -434,11 +396,11 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image_mode = "L"
         channels = 0
     elif len(shape) == 3 or shape[2] > 3:
-        #image_mode = "RGB"
-        # Drop REF_INSERT_SIZE_CHANNEL for RGB visualization
-        #channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        image_mode = "L"
-        channels = ALLELE_CHANNEL
+         # Drop REF_INSERT_SIZE_CHANNEL for RGB visualization
+        image_mode = "RGB"
+        channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+        # image_mode = "L"
+        # channels = ALLELE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 

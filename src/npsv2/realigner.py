@@ -1,6 +1,6 @@
 from enum import Enum
 import pysam
-from ._realigner import *
+from ._native import FragmentRealigner, test_score_alignment, test_realign_read_pair
 from .pileup import Fragment
 
 def _quality_string(read: pysam.AlignedSegment) -> str:

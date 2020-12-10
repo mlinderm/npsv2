@@ -1,9 +1,11 @@
-import logging, os, random, re, subprocess, tempfile
+import copy, logging, os, random, re, subprocess, tempfile
 import pysam
 import numpy as np
 from shlex import quote
 from .range import Range
-from .variant import Variant 
+from .variant import Variant
+from .sample import Sample
+from . import _native
 
 CHROM_REGEX_AUTO = r"^(chr)?([1-9][0-9]?)$"
 CHROM_REGEX_AUTO_NOY = r"^(chr)?([1-9][0-9]?|[X])$"
@@ -81,9 +83,8 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempfile.gettempdir()):
-    # TODO: Introduce coverage and other augmentations
-    hap_coverage =  params.depth / 2 # random.uniform(15, 35) / 2
+def simulate_variant_sequencing(params, fasta_path, allele_count, sample: Sample, dir=tempfile.gettempdir()):
+    hap_coverage =  sample.mean_coverage / 2
     shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
         
     replicate_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
@@ -94,10 +95,10 @@ def simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempfile.g
         -R {quote(params.reference)} \
         {shared_ref_arg} \
         -c {hap_coverage:0.1f} \
-        -m {params.fragment_mean} \
-        -s {params.fragment_sd} \
-        -l {_art_read_length(params.read_length, params.profile)} \
-        -p {params.profile} \
+        -m {sample.mean_insert_size} \
+        -s {sample.std_insert_size} \
+        -l {_art_read_length(sample.read_length, sample.sequencer)} \
+        -p {sample.sequencer} \
         -i 1 \
         -z {allele_count} \
         {fasta_path} \
@@ -110,3 +111,28 @@ def simulate_variant_sequencing(params, fasta_path, allele_count, dir=tempfile.g
     return replicate_bam.name
 
 
+def filter_reads_gc(stats_path: str, fasta_path: str, in_sam: str, out_fastq: str, max_norm_covg=2.):
+    sample = Sample.from_json(stats_path)
+        
+    gc_covg = np.fromiter((sample.gc_normalized_coverage(gc) for gc in range(0, 101, 1)), dtype=float)
+    max_normalized_gc = min(np.max(gc_covg), args.max_norm_covg)
+    gc_covg /= max_normalized_gc
+
+    _native.filter_reads_gc(fasta_path, in_sam, out_fastq, gc_covg)
+
+
+def augment_samples(original_sample: Sample, n, keep_original=True):
+    new_samples = [original_sample] if keep_original else []
+
+    # TODO: Apply augmentation approach like snorkel, with multiple augmentor functions. Potential augmentors
+    # include coverage, insert-size distribution, GC distribution   
+    for _ in range(n - len(new_samples)):
+        new_sample = copy.copy(original_sample)
+
+        new_sample.mean_coverage = random.uniform(max(original_sample.mean_coverage - 10, 0), original_sample.mean_coverage + 10)
+        new_sample.mean_insert_size = random.uniform(original_sample.mean_insert_size - 75, original_sample.mean_insert_size + 75)
+        new_sample.std_insert_size = random.uniform(original_sample.std_insert_size - 30, original_sample.std_insert_size + 30)
+        
+        new_samples.append(new_sample)
+
+    return new_samples

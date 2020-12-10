@@ -11,10 +11,7 @@ npsv2 examples \
     -i tests/data/1_899922_899992_DEL.vcf.gz \
     -b tests/data/1_896922_902998.bam \
     -o tests/results/test.tfresults \
-    --read-length 148 \
-    --fragment-mean 573 \
-    --fragment-sd 164 \
-    --depth 25 \
+    --stats-path tests/data/stats.json \
     --replicates 2
 ```
 
