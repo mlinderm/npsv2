@@ -1,3 +1,6 @@
+import random
+from enum import Enum
+from typing import NamedTuple
 import pysam
 from .range import Range
 
@@ -9,79 +12,23 @@ CIGAR_ADVANCE_PILEUP = frozenset(
 CIGAR_ALIGNED_BASE = frozenset([pysam.CMATCH, pysam.CEQUAL, pysam.CDIFF,])
 
 
-def _read_region(read, cigar):
-    first_op, first_len = cigar[0]
-    if first_op == pysam.CSOFT_CLIP:
-        read_start = read.reference_start - first_len
-    else:
-        read_start = read.reference_start
-    aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
-    return read_start, read_start + aligned_length
+class AlleleAssignment(Enum):
+    AMB = -1
+    REF = 0
+    ALT = 1
 
+class BaseAlignment(Enum):
+    ALIGNED = 1
+    SOFT_CLIP = 2
 
-class PileupColumn(object):
-    def __init__(self):
-        self.aligned_bases = 0
-        self.soft_clipped_bases = 0
-
-    @property
-    def total_bases(self):
-        return self.aligned_bases + self.soft_clipped_bases
-
-    def apply_cigar(self, cigar_op):
-        if cigar_op == pysam.CSOFT_CLIP:
-            self.soft_clipped_bases += 1
-        elif cigar_op in CIGAR_ALIGNED_BASE:
-            self.aligned_bases += 1
-
-
-class Pileup(object):
-    def __init__(self, reference_region: Range):
-        self._region = reference_region
-        self._columns = [PileupColumn() for _ in range(self._region.length)]
-
-    def __len__(self):
-        return len(self._columns)
-
-    def __getitem__(self, sliced):
-        return self._columns[sliced]
-
-    def __iter__(self):
-        return iter(self._columns)
-
-    def read_columns(self, read: pysam.AlignedSegment):
-        if read.reference_name != self._region.contig:
-            return []
-        
-        cigar = read.cigartuples
-        if not cigar:
-            return []
-        
-        first_op, first_len = cigar[0]
-        if first_op == pysam.CSOFT_CLIP:
-            read_start = read.reference_start - first_len
-        else:
-            read_start = read.reference_start
-        
-        if read_start >= self._region.end:
-            return []
-        
-        slices = []
-        pileup_start = read_start - self._region.start
-        for cigar_op, cigar_len in cigar:
-            if cigar_op in CIGAR_ADVANCE_PILEUP:
-                next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, len(self._columns)))
-                if next_slice.stop > next_slice.start:
-                    slices.append((next_slice, cigar_op))
-                pileup_start += cigar_len
-
-        return slices
-
-    def add_read(self, read: pysam.AlignedSegment):
-        for col_slice, cigar_op in self.read_columns(read):
-            for column in self._columns[col_slice]:
-                column.apply_cigar(cigar_op)
-
+# def _read_region(read, cigar):
+#     first_op, first_len = cigar[0]
+#     if first_op == pysam.CSOFT_CLIP:
+#         read_start = read.reference_start - first_len
+#     else:
+#         read_start = read.reference_start
+#     aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
+#     return read_start, read_start + aligned_length
 
 
 class Fragment(object):
@@ -163,3 +110,98 @@ class FragmentTracker(object):
             self._fragments[name].add_read(read)
         else:
             self._fragments[name] = Fragment(read)
+
+
+class PileupBase(NamedTuple):
+    read_start: int
+    aligned: BaseAlignment
+    mapq: int = None
+    allele: AlleleAssignment = AlleleAssignment.AMB
+    ref_zscore: float = None
+    alt_zscore: float = None
+
+
+class PileupColumn:
+    def __init__(self):
+        self._bases = []
+
+    def __len__(self):
+        return len(self._bases)
+
+    def _aligned_count(self, kind):
+        return sum((base.aligned == kind for base in self._bases))
+
+    @property
+    def aligned_bases(self):
+        return self._aligned_count(BaseAlignment.ALIGNED)
+
+    @property
+    def soft_clipped_bases(self):
+        return self._aligned_count(BaseAlignment.SOFT_CLIP)
+
+    def add_base(self, read_start, cigar_op, **attributes):
+        if cigar_op == pysam.CSOFT_CLIP:
+            self._bases.append(PileupBase(read_start, BaseAlignment.SOFT_CLIP, **attributes))
+        elif cigar_op in CIGAR_ALIGNED_BASE:
+            self._bases.append(PileupBase(read_start, BaseAlignment.ALIGNED, **attributes))
+
+    def ordered_bases(self, max_bases=None):
+        if max_bases is None:
+            max_bases = len(self._bases)
+        # Return bases sorted by read position, randomly downsampling if needed
+        bases = random.sample(self._bases, k=max_bases) if len(self._bases) > max_bases else self._bases
+        return sorted(bases, key=lambda base: base.read_start)
+
+class Pileup:
+    def __init__(self, reference_region: Range):
+        self._region = reference_region
+        self._columns = [PileupColumn() for _ in range(self._region.length)]
+
+    def __len__(self):
+        return len(self._columns)
+
+    def __getitem__(self, sliced):
+        return self._columns[sliced]
+
+    def __iter__(self):
+        return iter(self._columns)
+
+    def read_columns(self, read: pysam.AlignedSegment):
+        if read.reference_name != self._region.contig:
+            return None, []
+        
+        cigar = read.cigartuples
+        if not cigar:
+            return None, []
+        
+        first_op, first_len = cigar[0]
+        if first_op == pysam.CSOFT_CLIP:
+            read_start = read.reference_start - first_len
+        else:
+            read_start = read.reference_start
+        
+        if read_start >= self._region.end:
+            return read_start, []
+        
+        slices = []
+        pileup_start = read_start - self._region.start
+        for cigar_op, cigar_len in cigar:
+            if cigar_op in CIGAR_ADVANCE_PILEUP:
+                next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, len(self._columns)))
+                if next_slice.stop > next_slice.start:
+                    slices.append((next_slice, cigar_op))
+                pileup_start += cigar_len
+
+        return read_start, slices
+
+    def add_read(self, read: pysam.AlignedSegment, **attributes):
+        read_start, slices = self.read_columns(read)
+        for col_slice, cigar_op in slices:
+            for column in self._columns[col_slice]:
+                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, **attributes)
+
+    def add_fragment(self, fragment: Fragment, **attributes):
+        if fragment.read1:
+            self.add_read(fragment.read1, **attributes)
+        if fragment.read2:
+            self.add_read(fragment.read2, **attributes)

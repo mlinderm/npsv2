@@ -7,22 +7,29 @@ from tqdm import tqdm
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup, FragmentTracker
+from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment
 from . import npsv2_pb2
-from .realigner import FragmentRealigner, realign_fragment, AlleleAssignment
+from .realigner import FragmentRealigner, realign_fragment 
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
 from .sample import Sample
 
 IMAGE_HEIGHT = 100
 IMAGE_WIDTH = 300
-IMAGE_CHANNELS = 4
+IMAGE_CHANNELS = 5
 IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 PADDING = 100
 
+MAX_PIXEL_VALUE = 254 # Adapted from DeepVariant
+
 BASE_CHANNEL = 0
 ALIGNED_BASE_PIXEL = 255
 SOFT_CLIP_BASE_PIXEL = 128
+
+ALIGNED_TO_PIXEL = {
+    BaseAlignment.ALIGNED: ALIGNED_BASE_PIXEL,
+    BaseAlignment.SOFT_CLIP: SOFT_CLIP_BASE_PIXEL,
+}
 
 REF_INSERT_SIZE_CHANNEL = 1
 ALT_INSERT_SIZE_CHANNEL = 2
@@ -38,6 +45,9 @@ ALLELE_TO_PIXEL = {
     AlleleAssignment.REF: REF_PIXEL,
     AlleleAssignment.ALT: ALT_PIXEL,
 }
+
+MAPQ_CHANNEL = 4
+MAX_MAPQ = 60
 
 
 def _fragment_zscore(sample: Sample, fragment_length: int):
@@ -65,7 +75,7 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
     if realigner is None:
         realigner = _create_realigner(params, variant, sample)
 
-    pileup = Pileup(region)
+    #pileup = Pileup(region)
     fragments = FragmentTracker()
 
     with pysam.AlignmentFile(read_path) as alignment_file:
@@ -77,49 +87,61 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
                 # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
                 continue
 
-            pileup.add_read(read)
+            #pileup.add_read(read)
             fragments.add_read(read)
-
-    for i, column in enumerate(pileup):
-        # TODO: Sample when more reads than rows...
-        aligned_pixels = min(column.aligned_bases, tensor_shape[0])
-        image_tensor[0:aligned_pixels, i, BASE_CHANNEL] = ALIGNED_BASE_PIXEL
-        image_tensor[
-            aligned_pixels : min(aligned_pixels + column.soft_clipped_bases, tensor_shape[0]), i, BASE_CHANNEL
-        ] = SOFT_CLIP_BASE_PIXEL
-
+    
+    # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
+    pileup = Pileup(region)
+    
     left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
     right_region = variant.right_flank_region(params.flank)
 
-    realigned_reads = []
-
-    irow = 0
     for fragment in fragments:
-        if irow < tensor_shape[0] and fragment.fragment_straddles(left_region, right_region, min_aligned=3):
-            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-            image_tensor[irow, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
-            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
-            image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
-            irow += 1
-
         # At present we render reads based on the original alignment so we only realign fragments that could overlap
         # the image window
         if fragment.reads_overlap(region):
             allele, _, _ = realign_fragment(realigner, fragment, assign_delta=1.0)
-            if allele != AlleleAssignment.AMB:
-                if region.get_overlap(fragment.read1) > 0:
-                    realigned_reads.append((allele, fragment.read1))
-                if region.get_overlap(fragment.read2) > 0:
-                    realigned_reads.append((allele, fragment.read2))
+        else:
+            allele = AlleleAssignment.AMB    
+        
+        # Only record the zscore for reads that straddle the event
+        if fragment.fragment_straddles(left_region, right_region, min_aligned=3):
+            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+        else:
+            ref_zscore = None
+            alt_zscore = None
 
-    # Sample (if more reads than pixels) and sort reads in position order
-    if len(realigned_reads) > tensor_shape[0]:
-        realigned_reads = random.sample(realigned_reads, k=tensor_shape[0])
-    realigned_reads.sort(key=lambda x: x[1].reference_start)
+        pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+        
 
-    for arow, (allele, read) in enumerate(realigned_reads[: tensor_shape[0]]):
-        for col_slice, _ in pileup.read_columns(read):
-            image_tensor[arow, col_slice, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[allele]
+    for j, column in enumerate(pileup):
+        for i, base in enumerate(column.ordered_bases(max_bases=tensor_shape[0])):
+            image_tensor[i, j, BASE_CHANNEL] = ALIGNED_TO_PIXEL[base.aligned]
+            image_tensor[i, j, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[base.allele]
+            image_tensor[i, j, MAPQ_CHANNEL] = min(base.mapq / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
+            if base.ref_zscore is not None:
+                image_tensor[i, j, REF_INSERT_SIZE_CHANNEL] = np.clip(INSERT_SIZE_MEAN_PIXEL + base.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE)
+            if base.alt_zscore is not None:
+                image_tensor[i, j, ALT_INSERT_SIZE_CHANNEL] = np.clip(INSERT_SIZE_MEAN_PIXEL + base.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE)
+      
+
+    # left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
+    # right_region = variant.right_flank_region(params.flank)
+
+    # realigned_reads = []
+
+    # irow = 0
+    # for fragment in fragments:
+    #     if irow < tensor_shape[0] and fragment.fragment_straddles(left_region, right_region, min_aligned=3):
+    #         ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+    #         image_tensor[irow, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
+    #         alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+    #         image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
+    #         irow += 1
+
+   
+
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
@@ -396,11 +418,12 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image_mode = "L"
         channels = 0
     elif len(shape) == 3 or shape[2] > 3:
-         # Drop REF_INSERT_SIZE_CHANNEL for RGB visualization
+        # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
+        # mapq as alpha)...
         image_mode = "RGB"
         channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        # image_mode = "L"
-        # channels = ALLELE_CHANNEL
+        #image_mode = "L"
+        #channels = ALT_INSERT_SIZE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 

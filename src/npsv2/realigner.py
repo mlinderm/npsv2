@@ -1,15 +1,10 @@
-from enum import Enum
 import pysam
 from ._native import FragmentRealigner, test_score_alignment, test_realign_read_pair
-from .pileup import Fragment
+from .pileup import Fragment, AlleleAssignment
 
 def _quality_string(read: pysam.AlignedSegment) -> str:
     return "".join([chr(c) for c in read.query_qualities])    
 
-class AlleleAssignment(Enum):
-    AMB = -1
-    REF = 0
-    ALT = 1
 
 def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_delta=1):
     name = fragment.query_name
