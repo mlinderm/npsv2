@@ -474,9 +474,13 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     image.save(out_path)
 
 
-def load_example_dataset(filename: str, with_label=False, with_simulations=False) -> tf.data.Dataset:
+def load_example_dataset(filenames, with_label=False, with_simulations=False) -> tf.data.Dataset:
+    if isinstance(filenames, str):
+        filenames = [filenames]
+    assert len(filenames) > 0
+
     # Extract image shape from the first example
-    shape, replicates = _extract_metadata_from_first_example(filename)
+    shape, replicates = _extract_metadata_from_first_example(filenames[0])
 
     proto_features = {
         "variant/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
@@ -514,7 +518,7 @@ def load_example_dataset(filename: str, with_label=False, with_simulations=False
         else:
             return features, None
 
-    return tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)).map(
+    return tf.data.TFRecordDataset(filenames=filenames, compression_type=_filename_to_compression(filenames[0])).map(
         map_func=_process_input
     )
 

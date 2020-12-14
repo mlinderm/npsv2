@@ -1,273 +1,164 @@
-import argparse, itertools, random
 import tensorflow as tf
-import numpy as np
+import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
-from npsv2.images import load_example_dataset
+from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 
-# Adapted from: https://github.com/few-shot-learning/Keras-FewShotLearning/blob/master/keras_fsl/models/encoders/koch_net.py
-def siamese_networks_model(input_shape):
-    encoder = tf.keras.models.Sequential(
-        [
-            layers.Input(input_shape),
-            layers.Conv2D(
-                64,
-                (10, 10),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=RandomNormal(0.0, 0.01),
-                bias_initializer=RandomNormal(0.5, 0.01),
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                128,
-                (7, 7),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=RandomNormal(0.0, 0.01),
-                bias_initializer=RandomNormal(0.5, 0.01),
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                128,
-                (4, 4),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=RandomNormal(0.0, 0.01),
-                bias_initializer=RandomNormal(0.5, 0.01),
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(
-                256,
-                (4, 4),
-                activation=tf.nn.relu,
-                kernel_regularizer=l2(),
-                kernel_initializer=RandomNormal(0.0, 0.01),
-                bias_initializer=RandomNormal(0.5, 0.01),
-            ),
-            layers.MaxPooling2D((2, 2)),
-            layers.Flatten(),
-            layers.Dense(
-                4096,
-                activation=tf.nn.sigmoid,
-                kernel_initializer=RandomNormal(0.0, 0.2),
-                bias_initializer=RandomNormal(0.5, 0.01),
-            ),
-        ],
-        name="encoder",
+def _cdist(tensors, squared: bool = False):
+    # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
+    query_features, genotype_features = tensors
+
+    distances_squared = tf.math.add(
+        tf.math.reduce_sum(tf.math.square(query_features), axis=[1], keepdims=True),
+        tf.math.reduce_sum(tf.math.square(tf.transpose(genotype_features)), axis=[0], keepdims=True),
+    ) - 2.0 * tf.matmul(query_features, tf.transpose(genotype_features))
+
+    # Deal with numerical inaccuracies. Set small negatives to zero.
+    distances_squared = tf.math.maximum(distances_squared, 0.0)
+    # Get the mask where the zero distances are at.
+    error_mask = tf.math.less_equal(distances_squared, 0.0)
+
+    # Optionally take the sqrt.
+    if squared:
+        distances = distances_squared
+    else:
+        distances = tf.math.sqrt(
+            distances_squared + tf.cast(error_mask, dtype=tf.dtypes.float32) * tf.keras.backend.epsilon()
+        )
+
+    # Undo conditionally adding 1e-16.
+    distances = tf.math.multiply(
+        distances,
+        tf.cast(tf.math.logical_not(error_mask), dtype=tf.dtypes.float32),
     )
+    return distances
 
-    query = layers.Input(input_shape, name="query")
-    support = layers.Input(input_shape, name="support")
+def _inceptionv3_encoder(input_shape):
+    assert tf.keras.backend.image_data_format() == "channels_last"
 
-    embeddings = [encoder(query), encoder(support)]
+    base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+    base_model.trainable = True
+    
+    encoder = tf.keras.models.Sequential([
+        layers.Input(input_shape),
+        layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
+        base_model,
+        layers.Dense(512),
+        layers.BatchNormalization(),
+    ], name="encoder")
+    return encoder
 
-    output = layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))(embeddings)
-    output = layers.Dense(1, activation=tf.nn.sigmoid, use_bias=True)(output)
-    return tf.keras.Model(inputs=[query, support], outputs=output)
-
-
-
-params = argparse.Namespace(learning_rate=0.004, l2=0.001, batch_size=32, total_epochs=20)
-
-gpus = tf.config.experimental.list_physical_devices("GPU")
-if gpus:
-    try:
-        # Currently, memory growth needs to be the same across GPUs
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        # Memory growth must be set before GPUs have been initialized
-        print(e)
-
-
-# Decay learning rate, e.g. 
-# lr_schedule = keras.optimizers.schedules.ExponentialDecay(
-#     initial_learning_rate=params.learning_rate,
-#     decay_steps=10000, # e.g. set to the number of steps per epoch
-#     decay_rate=0.99)
-
-optimizer = tf.keras.optimizers.Adam(lr=params.learning_rate)
-model = siamese_networks_model((300, 300, 1))
-model.compile(
-    optimizer=optimizer,
-    loss=tf.keras.losses.binary_crossentropy,
-    metrics=["binary_accuracy"],
-)
-model.summary()
-
-
-def random_pair_indices(replicates, pairs_per_variant):
-    match_pairs = itertools.product(range(3), itertools.combinations(range(replicates), 2))
-    match_pairs = [((ac, r1), (ac, r2)) for (ac, (r1, r2)) in match_pairs]
-
-    mismatch_pairs = itertools.product(
-        itertools.combinations(range(3), 2),
-        itertools.product(range(replicates), repeat=2),
+def _variant_to_allsim_training_triples(features, original_label):
+    # TODO: Make this a function of the number of replicates
+    query_images = tf.tile(
+        tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
+        [4, 1, 1, 1]
     )
-    mismatch_pairs = [((ac1, r1), (ac2, r2)) for ((ac1, ac2), (r1, r2)) in mismatch_pairs]
-
-    class_num_pairs = min(len(match_pairs), len(mismatch_pairs), pairs_per_variant // 2)
-
-    pairs = random.sample(match_pairs, class_num_pairs) + random.sample(mismatch_pairs, class_num_pairs)
-    return zip(*pairs), ([1] * class_num_pairs + [0] * class_num_pairs)
-
-
-def variant_to_training_pairs(features, original_label):
-    replicates = features["sim/0/images"].shape[0]
-
-    images = tf.stack([features["sim/0/images"], features["sim/1/images"], features["sim/2/images"]])
-    images = tf.image.convert_image_dtype(images, dtype=tf.float32)
-
-    (query_indices, support_indices), pair_labels = random_pair_indices(replicates, 8)
-
+    support_images = tf.stack([
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+    ])
     image_tensors = {
-        "query": tf.gather_nd(images, query_indices),
-        "support": tf.gather_nd(images, support_indices),
+        "query": query_images,
+        "support": support_images,
     }
-    label_tensor = tf.constant(pair_labels, dtype=tf.uint64)
+    return tf.data.Dataset.from_tensor_slices((image_tensors, tf.constant([0, 1, 2]*4, dtype=tf.int64)))
 
-    # Construct data to permit "flat_map" and thus more flexible batching downstream
-    return tf.data.Dataset.from_tensor_slices((image_tensors, label_tensor))
-
-
-example_dataset = load_example_dataset(
-    "/storage/mlinderman/projects/sv/testing/npsv2/images/300x300.tfrecords.gz", 
-    #"/storage/mlinderman/projects/sv/testing/npsv2/test.tfrecords",
-    with_label=True, 
-    with_simulations=True,
-)
-train_dataset = example_dataset.flat_map(variant_to_training_pairs).batch(16)
-
-history = model.fit(train_dataset, epochs=5)
-
-# TODO: Add early stopping callback
-
-model.save('models/siamese_network') 
-
-
-def variant_to_test_pairs(features, original_label):
-    query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)] * 3)
-    support_images = tf.image.convert_image_dtype(
-        tf.stack([features[f"sim/{ac}/images"][0, :, :, :] for ac in range(3)]), dtype=tf.float32
-    )
+def _variant_to_real_training_triples(features, original_label):
+    # TODO: Make this a function of the number of replicates
+    query_images = tf.stack([tf.image.convert_image_dtype(features["image"], dtype=tf.float32)]*4)
+    support_images = tf.stack([
+        tf.image.convert_image_dtype(features["sim/images"][:,1], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,2], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,3], dtype=tf.float32),
+        tf.image.convert_image_dtype(features["sim/images"][:,4], dtype=tf.float32),
+    ])
 
     image_tensors = {
         "query": query_images,
         "support": support_images,
     }
 
-    return image_tensors, original_label
+    return tf.data.Dataset.from_tensor_slices((image_tensors, tf.repeat(original_label, 4)))
+ 
 
+def _variant_to_test_triples(features, original_label):
+    query_images = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+    support_images = tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32)
+   
+    image_tensors = {
+        "query": query_images,
+        "support": support_images,
+    }
+    return image_tensors, original_label, features["variant/encoded"]
 
-test_dataset = example_dataset.map(variant_to_test_pairs)
+class SiameseGenotyper:
+    def __init__(self, input_shape, replicates):
+        self.input_shape = input_shape
+        self.replicates = replicates
+    
+    def train_input(self, filenames, shuffle=1000, batch_size=24):
+        example_dataset = load_example_dataset(filenames, with_label=True, with_simulations=True)
 
-y_true = tf.concat(list(test_dataset.map(lambda _, label: label)), 0)
-y_pred = tf.reshape(model.predict(test_dataset), (-1, 3))
+        example_dataset = example_dataset.shuffle(1000, reshuffle_each_iteration=True)
+        #example_dataset = example_dataset.flat_map(_variant_to_allsim_training_triples)
+        example_dataset = example_dataset.flat_map(_variant_to_real_training_triples)
+        example_dataset = example_dataset.batch(batch_size)
+        
+        return example_dataset
 
-results = tf.keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-print(f"Final test accuracy: {np.mean(results)}")
+    def test_input(self, filenames):
+        example_dataset = load_example_dataset(filenames, with_label=True, with_simulations=True)
+        return example_dataset.map(_variant_to_test_triples).batch(1)
 
+    def validation_input(self, filenames, batch_size=24):
+        example_dataset = load_example_dataset(filenames, with_label=True, with_simulations=True)
 
+        # Strip off variant description and batch the same way as the training data
+        return example_dataset.map(_variant_to_test_triples).map(lambda image_tensors, original_label, _: (image_tensors, original_label)).batch(batch_size)
 
-# for example in test:
-#     print("test") #,example)
-# print(example_dataset.take(1))
-# train_ds = (
-#     load_example_dataset(
-#         params,
-#         "/storage/mlinderman/projects/sv/testing/npsv2/images/300x300.tfrecords",
-#         with_labels=True,
-#     )
-#     .shuffle(buffer_size=8192, reshuffle_each_iteration=True)
-#     .batch(batch_size=params.batch_size)
-#     .repeat(1)
-# )
+    def model_fn(self, params=None, model_path:str=None):
+        encoder = _inceptionv3_encoder(self.input_shape)
+        
+        query = layers.Input(self.input_shape, name="query")
+        query_embeddings = encoder(query)
+        
+        support = layers.Input((3,) + self.input_shape, name="support")
+        support_embeddings = layers.TimeDistributed(encoder)(support)
+        
+        def _variant_distances(tensors):
+            query, support = tensors
+            return tf.squeeze(tf.map_fn(_cdist, (tf.expand_dims(query, axis=1), support), dtype=tf.dtypes.float32), axis=1)
 
+        distances = layers.Lambda(_variant_distances, name="distances")([query_embeddings, support_embeddings])
+        output = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=1), name="genotypes")(distances) # Convert distance to probability
 
-# model.fit(example_dataset, epochs=5)
+        model = tf.keras.Model(inputs=[query, support], outputs=[output, distances], name="SiameseGenotyper")
+        if model_path:
+            encoder.load_weights(model_path)
 
-# l2_reg = tf.keras.regularizers.l2
+        if params:
+            optimizer = tf.keras.optimizers.Adam(learning_rate=params.learning_rate)
+            model.compile(
+                optimizer=optimizer,
+                loss={"genotypes": "sparse_categorical_crossentropy"},
+                metrics={"genotypes": ["sparse_categorical_accuracy"]},
+            )
 
-# # model = tf.keras.models.Sequential(
-# #     [
-# #         tf.keras.layers.Conv2D(
-# #             filters=32,
-# #             kernel_size=(3, 3),
-# #             activation=tf.nn.relu,
-# #             kernel_regularizer=l2_reg(params.l2),
-# #         ),
-# #         tf.keras.layers.Conv2D(filters=64, kernel_size=(3, 3), activation=tf.nn.relu),
-# #         tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
-# #         tf.keras.layers.Dropout(rate=0.25),
-# #         tf.keras.layers.Flatten(),
-# #         tf.keras.layers.Dense(units=3, activation="softmax"),
-# #     ]
-# # )
+        return model
 
-# # Adapt model from Nucleus demo (to 2-D)
-# model = tf.keras.models.Sequential(
-#     [
-#         tf.keras.layers.Conv2D(
-#             filters=16,
-#             kernel_size=(5, 5),
-#             activation=tf.nn.relu,
-#             kernel_regularizer=l2_reg(params.l2),
-#             input_shape=(300,300,1)
-#         ),
-#         tf.keras.layers.MaxPooling2D(pool_size=(3, 3)),
-#         tf.keras.layers.Conv2D(
-#             filters=16,
-#             kernel_size=(3, 3),
-#             activation=tf.nn.relu,
-#             kernel_regularizer=l2_reg(params.l2),
-#         ),
-#         tf.keras.layers.MaxPooling2D(pool_size=(3, 3)),
-#         tf.keras.layers.Flatten(),
-#         tf.keras.layers.Dense(
-#           units=16,
-#           activation=tf.nn.relu,
-#           kernel_regularizer=l2_reg(params.l2)),
-#         tf.keras.layers.Dropout(rate=0.3),
-#         tf.keras.layers.Dense(
-#           units=16,
-#           activation=tf.nn.relu,
-#           kernel_regularizer=l2_reg(params.l2)),
-#         tf.keras.layers.Dropout(rate=0.3),
-#         tf.keras.layers.Dense(units=3, activation="softmax"),
-#     ]
-# )
-
-
-# optimizer = tf.keras.optimizers.Adam(lr=params.learning_rate)
-# model.compile(
-#     optimizer=optimizer,
-#     loss=tf.keras.losses.sparse_categorical_crossentropy,
-#     metrics=["accuracy"],
-# )
-
-
-# train_ds = (
-#     load_example_dataset(
-#         params,
-#         "/storage/mlinderman/projects/sv/testing/npsv2/images/300x300.tfrecords",
-#         with_labels=True,
-#     )
-#     .shuffle(buffer_size=8192, reshuffle_each_iteration=True)
-#     .batch(batch_size=params.batch_size)
-#     .repeat(1)
-# )
-
-
-# model.fit(train_ds, epochs=params.total_epochs)
-# print(model.summary())
-
-# test_ds = load_example_dataset(
-#     params,
-#     "/storage/mlinderman/projects/sv/testing/npsv2/images/300x300.tfrecords.test",
-#     with_labels=True,
-# )
-
-# test_metrics = model.evaluate(test_ds.batch(batch_size=params.batch_size), verbose=0)
-# print(f"Final test metrics - loss: {test_metrics[0]}- accuracy: {test_metrics[1]}")
+    def save_model(self, model, model_path: str):
+        # We only save the encoder weights
+        encoder = model.get_layer("encoder")
+        encoder.save_weights(model_path)

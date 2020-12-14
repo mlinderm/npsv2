@@ -130,7 +130,7 @@ def make_argument_parser():
     parser_train = subparsers.add_parser(
         "train", help="Convert example to images", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser_train.add_argument("-i", "--input", help="Input tfrecords file", type=str, required=True)
+    parser_train.add_argument("-i", "--input", help="Input tfrecords file", type=str, action="append", required=True)
     parser_train.add_argument("-o", "--output", help="Path to save model", type=str, required=True)
     parser_train.add_argument("--epochs", help="Maximum number of epochs", type=int, default=5)
     parser_train.add_argument("--lr", dest="learning_rate", help="(Initial) learning rate", type=float, default=0.004)
@@ -142,8 +142,10 @@ def make_argument_parser():
     parser_evaluate = subparsers.add_parser(
         "evaluate", help="Evaluate model", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser_evaluate.add_argument(
+        "-i", "--input", help="Input tfrecords file", type=str, action="append", required=True
+    )
     parser_evaluate.add_argument("-m", "--model", help="Saved model", type=str, required=True)
-    parser_evaluate.add_argument("-d", "--dataset", help="Input tfrecords file", type=str, required=True)
 
     # Evaluation
     parser_embeddings = subparsers.add_parser(
@@ -236,15 +238,22 @@ def main():
         train(args, args.input, args.output)
 
     elif args.command == "evaluate":
+        import numpy as np
+        import pandas as pd
         from .training import evaluate_model
 
-        genotype_concordance, nonreference_concordance, confusion_matrix = evaluate_model(args.model, args.dataset)
+        table = evaluate_model(args.input, args.model)
+
+        # Print various metrics
+        gt_conc = np.mean(table.MATCH)
+        nr_conc = np.mean((table.LABEL != 0) == (table.AC != 0))
+        print(f"Accuracy - Genotype concordance: {gt_conc:.3}, Non-reference Concordance: {nr_conc:.3}")
+
+        confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True, dropna=False)
         print(confusion_matrix)
-        print(
-            "Accuracy - Genotype concordance: {:.3}, Non-reference Concordance: {:.3}".format(
-                genotype_concordance, nonreference_concordance
-            )
-        )
+
+        svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
+        print(table.groupby(svlen_bins)["MATCH"].mean())
 
     elif args.command == "embeddings":
         from .training import visualize_embeddings

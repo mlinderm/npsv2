@@ -1,7 +1,6 @@
 import datetime, functools, itertools, logging, os, random, sys
 import tensorflow as tf
 import tensorflow_addons as tfa
-import tensorflow_hub as hub
 import numpy as np
 import pandas as pd
 from scipy.spatial import distance
@@ -10,7 +9,7 @@ from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 from . import npsv2_pb2
-
+from . import models
 
 
 
@@ -265,63 +264,25 @@ def distance_accuracy(y_true, y_pred, threshold=0.5):
     return tf.keras.backend.mean(tf.math.equal(y_true, tf.cast(y_pred < threshold, y_true.dtype)), axis=-1)
 
 
-def train(params, tfrecords_path: str, model_path: str):
-    image_shape, replicates = _extract_metadata_from_first_example(tfrecords_path)
+def train(params, tfrecords_paths, model_path: str):
+    if isinstance(tfrecords_paths, str):
+        tfrecords_paths = [tfrecords_paths]
+    assert len(tfrecords_paths) > 0
 
-    #model = _siamese_model(image_shape)
-    model = _genotype_model(image_shape)
-    model.summary()
+    image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
 
-    # lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-    #     initial_learning_rate=params.learning_rate,
-    #     decay_steps=10000,  # e.g., set to the number of steps per epoch
-    #     decay_rate=0.99,
-    # )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=params.learning_rate) #lr_schedule)
+    genotyper = models.SiameseGenotyper(image_shape, replicates)
 
-    model.compile(
-        optimizer=optimizer,
-        # loss=tfa.losses.contrastive_loss,  # For models that just take euclidean distance...
-        # metrics=[distance_accuracy],
-        # loss=tf.keras.losses.binary_crossentropy,  # For Koch et al.-style siamese networks
-        # metrics=["binary_accuracy"],
-        loss="sparse_categorical_crossentropy",
-        metrics=["sparse_categorical_accuracy"],
-    )
-
-    example_dataset = load_example_dataset(
-        tfrecords_path,
-        with_label=True,
-        with_simulations=True,
-    )
-    # variant_to_training_pairs = functools.partial(_variant_to_training_pairs, image_shape=image_shape, replicates=replicates, max_pairs=sys.maxsize)
-    # train_dataset = (
-    #     example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(variant_to_training_pairs).batch(32)
-    # )
-
-    train_dataset = (
-        example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(_variant_to_training_triples).batch(24) #16)
-    )
-
-    # ref_example_dataset = load_example_dataset(
-    #     "images/HG002.manta.fp.tfrecords.gz",
-    #     with_label=True,
-    #     with_simulations=True,
-    # )
-    # ref_train_dataset = (
-    #     ref_example_dataset.shuffle(1000, reshuffle_each_iteration=True).flat_map(_variant_to_real_training_triples).batch(16)  # 24
-    # )
-    # train_dataset = train_dataset.concatenate(ref_train_dataset)
-
-    # TODO: Reserve some training data for validation
-    #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
+    keras_model = genotyper.model_fn(params=params)
+    keras_model.summary()
 
     checkpoint_filepath = os.path.join(params.tempdir, "checkpoint")
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
     )
+    #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
 
-    callbacks=[checkpoint_callback]#[early_stopping, checkpoint_callback]
+    callbacks=[checkpoint_callback] #,early_stopping]
     
     if params.log_dir:
         log_dir = os.path.join(params.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -330,15 +291,18 @@ def train(params, tfrecords_path: str, model_path: str):
         callbacks.append(tensorboard_callback)
 
 
-    model.fit(train_dataset, epochs=params.epochs, callbacks=callbacks)
+    keras_model.fit(
+        genotyper.train_input(tfrecords_paths),
+        validation_data=genotyper.validation_input(tfrecords_paths),
+        epochs=params.epochs,
+        callbacks=callbacks
+    )
    
-    # Load best model
-    model.load_weights(checkpoint_filepath)
-
-    # TODO: Further evaluation or validation
+    # Reload best checkpoint
+    keras_model.load_weights(checkpoint_filepath)
 
     logging.info("Saving model in: %s", model_path)
-    model.save(model_path)
+    genotyper.save_model(keras_model, model_path)
 
 
 def _variant_to_test_pairs(features, original_label):
@@ -362,55 +326,39 @@ def _variant_to_test_triples(features, original_label):
     return image_tensors, original_label, features["variant/encoded"]
 
 
-def evaluate_model(model, dataset):
-    if isinstance(model, str):
-        model = tf.keras.models.load_model(
-            model,
-            custom_objects={"distance_accuracy": distance_accuracy, "contrastive_loss": tfa.losses.contrastive_loss},
-        )
-    assert isinstance(model, tf.keras.Model), "Valid model or path not provided"
+def evaluate_model(tfrecords_paths, model_path: str):
+    if isinstance(tfrecords_paths, str):
+        tfrecords_paths = [tfrecords_paths]
+    assert len(tfrecords_paths) > 0
 
-    if isinstance(dataset, str):
-        dataset = load_example_dataset(dataset, with_label=True, with_simulations=True)
+    image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
 
-    test_dataset = dataset.map(_variant_to_test_triples)
-
-    # Unzip test dataset into pandas dataframe with genotypes and variant annotations
-    fp_count = 0
+    genotyper = models.SiameseGenotyper(image_shape, replicates)
+    model = genotyper.model_fn(model_path=model_path)
+    
     rows = []
-    for images, label, encoded_variant in test_dataset:
+    for images, label, encoded_variant in genotyper.test_input(tfrecords_paths):
         # Extract metadata for the variant
-        variant_proto = npsv2_pb2.StructuralVariant.FromString(encoded_variant.numpy())
+        variant_proto = npsv2_pb2.StructuralVariant.FromString(tf.squeeze(encoded_variant).numpy())
 
         # Predict genotype
-        genotype_probabilities = tf.reshape(model.predict(images), (-1, 3))
+        genotypes, *_ = model.predict(images)
 
-        #genotype_distances = tf.reshape(model.predict(images), (-1, 3))
-        #genotype_probabilities = tf.nn.softmax(-genotype_distances, axis=1)  # For models that produce distances
-
-        # if tf.math.argmax(genotype_probabilities, axis=1) != label and label == 1:
-        #     print(variant_proto, label, genotype_probabilities)
-        #     fp_count +=1
-        #     assert fp_count < 10
-            
-
-        rows.append(
-            pd.DataFrame(
-                dict(SVLEN=variant_proto.svlen, LABEL=label, AC=tf.math.argmax(genotype_probabilities, axis=1))
-            )
-        )
+        # Construct the DataFrame rows
+        rows.append(pd.DataFrame({
+            "SVLEN": variant_proto.svlen,
+            "LABEL": tf.squeeze(label).numpy(),
+            "AC": tf.math.argmax(genotypes, axis=1),
+        }))
 
     table = pd.concat(rows, ignore_index=True)
+    
+    table["AC"] = pd.Categorical(table["AC"], categories=[0, 1, 2])
+    table["LABEL"] = pd.Categorical(table["LABEL"], categories=[0, 1, 2])
     table["MATCH"] = table.LABEL == table.AC
+    
+    return table
 
-    genotype_concordance = np.mean(table.MATCH)
-    nonreference_concordance = np.mean((table.LABEL > 0) == (table.AC > 0))
-    confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True)
-
-    svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
-    print(table.groupby(svlen_bins)["MATCH"].mean())
-
-    return genotype_concordance, nonreference_concordance, confusion_matrix
 
 
 def _variant_to_visualize_pairs(features, original_label, image_shape, replicates):
