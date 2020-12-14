@@ -4,12 +4,13 @@ import pysam
 import tensorflow as tf
 from PIL import Image
 from tqdm import tqdm
+import ray
 
 from .variant import Variant
 from .range import Range
 from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment
 from . import npsv2_pb2
-from .realigner import FragmentRealigner, realign_fragment 
+from .realigner import FragmentRealigner, realign_fragment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
 from .sample import Sample
 
@@ -20,7 +21,7 @@ IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 PADDING = 100
 
-MAX_PIXEL_VALUE = 254 # Adapted from DeepVariant
+MAX_PIXEL_VALUE = 254  # Adapted from DeepVariant
 
 BASE_CHANNEL = 0
 ALIGNED_BASE_PIXEL = 255
@@ -75,7 +76,6 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
     if realigner is None:
         realigner = _create_realigner(params, variant, sample)
 
-    #pileup = Pileup(region)
     fragments = FragmentTracker()
 
     with pysam.AlignmentFile(read_path) as alignment_file:
@@ -87,12 +87,11 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
                 # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
                 continue
 
-            #pileup.add_read(read)
             fragments.add_read(read)
-    
+
     # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
     pileup = Pileup(region)
-    
+
     left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
     right_region = variant.right_flank_region(params.flank)
 
@@ -102,8 +101,8 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
         if fragment.reads_overlap(region):
             allele, _, _ = realign_fragment(realigner, fragment, assign_delta=1.0)
         else:
-            allele = AlleleAssignment.AMB    
-        
+            allele = AlleleAssignment.AMB
+
         # Only record the zscore for reads that straddle the event
         if fragment.fragment_straddles(left_region, right_region, min_aligned=3):
             ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
@@ -113,7 +112,6 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
             alt_zscore = None
 
         pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
-        
 
     for j, column in enumerate(pileup):
         for i, base in enumerate(column.ordered_bases(max_bases=tensor_shape[0])):
@@ -121,27 +119,13 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
             image_tensor[i, j, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[base.allele]
             image_tensor[i, j, MAPQ_CHANNEL] = min(base.mapq / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
             if base.ref_zscore is not None:
-                image_tensor[i, j, REF_INSERT_SIZE_CHANNEL] = np.clip(INSERT_SIZE_MEAN_PIXEL + base.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE)
+                image_tensor[i, j, REF_INSERT_SIZE_CHANNEL] = np.clip(
+                    INSERT_SIZE_MEAN_PIXEL + base.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+                )
             if base.alt_zscore is not None:
-                image_tensor[i, j, ALT_INSERT_SIZE_CHANNEL] = np.clip(INSERT_SIZE_MEAN_PIXEL + base.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE)
-      
-
-    # left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
-    # right_region = variant.right_flank_region(params.flank)
-
-    # realigned_reads = []
-
-    # irow = 0
-    # for fragment in fragments:
-    #     if irow < tensor_shape[0] and fragment.fragment_straddles(left_region, right_region, min_aligned=3):
-    #         ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-    #         image_tensor[irow, :, REF_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL
-    #         alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
-    #         image_tensor[irow, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL
-    #         irow += 1
-
-   
-
+                image_tensor[i, j, ALT_INSERT_SIZE_CHANNEL] = np.clip(
+                    INSERT_SIZE_MEAN_PIXEL + base.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+                )
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
@@ -177,7 +161,14 @@ def _int_feature(list_of_ints):
 
 
 def make_vcf_examples(
-    params, vcf_path: str, read_path: str, sample: Sample, image_shape=None, sample_or_label=None, simulate=False, region: str=None,
+    params,
+    vcf_path: str,
+    read_path: str,
+    sample: Sample,
+    image_shape=None,
+    sample_or_label=None,
+    simulate=False,
+    region: str = None,
 ):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
@@ -243,17 +234,12 @@ def make_vcf_examples(
                 if params.sample_ref:
                     # Sample random variants from the genome to create the 0/0 replicates
                     ac_to_sim = (1, 2)
-                
+
                     repl_encoded_images = []
                     for random_variant in random_variants.generate(variant, n=params.replicates):
                         random_variant_region = random_variant.reference_region.expand(padding)
                         synth_image_tensor = create_single_example(
-                            params,
-                            random_variant,
-                            read_path,
-                            random_variant_region,
-                            sample,
-                            image_shape=image_shape,
+                            params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
                         )
                         repl_encoded_images.append(synth_image_tensor)
 
@@ -279,7 +265,9 @@ def make_vcf_examples(
                         # Generate and image synthetic bam files
                         repl_encoded_images = []
                         for i in range(params.replicates):
-                            replicate_bam_path = simulate_variant_sequencing(params, fasta_path, allele_count, repl_samples[i], dir=tempdir)                           
+                            replicate_bam_path = simulate_variant_sequencing(
+                                params, fasta_path, allele_count, repl_samples[i], dir=tempdir
+                            )
                             synth_image_tensor = create_single_example(
                                 params,
                                 variant,
@@ -308,13 +296,21 @@ def _filename_to_compression(filename: str) -> str:
         return None
 
 
-def _region_generator(ref_path: str, vcf_path: str, chunk_size=30000000):
+def _chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
+    regions = []
     with pysam.FastaFile(ref_path) as ref_file, pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
         for contig, length in zip(ref_file.references, ref_file.lengths):
             if vcf_file.get_tid(contig) != -1:
                 for start in range(1, length, chunk_size):
-                    yield f"{contig}:{start}-{min(start + chunk_size, length)}"
-        
+                    regions.append(f"{contig}:{start}-{min(start + chunk_size, length)}")
+    return regions
+
+
+def _ray_iterator(obj_ids):
+    while obj_ids:
+        done, obj_ids = ray.wait(obj_ids)
+        yield ray.get(done[0])
+
 
 def vcf_to_tfrecords(
     params,
@@ -327,31 +323,58 @@ def vcf_to_tfrecords(
     simulate=False,
     progress_bar=False,
 ):
-    def _encoded_example_generator(region=None):
-        try:
-            # TF seems to encode the region string as bytes
-            region = region.decode()
-        except (UnicodeDecodeError, AttributeError):
-            pass
+
+    # Unfortunately we can't use TF's built-in multithreading because of the extensive use of Python (the GIL serializes the execution). Instead we use
+    # Ray and generate a separate file for each VCF chunk that are then merged at the end.
+
+    @ray.remote
+    def _chunk_to_tfrecords(output_path: str, region: str = None):
+        # Generate records for each region into a file
         all_examples = make_vcf_examples(
-            params, vcf_path, read_path, sample, image_shape=image_shape, sample_or_label=sample_or_label, simulate=simulate, region=region
+            params,
+            vcf_path,
+            read_path,
+            sample,
+            image_shape=image_shape,
+            sample_or_label=sample_or_label,
+            simulate=simulate,
+            region=region,
         )
-        for example in all_examples:
-            yield example.SerializeToString()
+        with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
+            total_variants = 0
+            for example in all_examples:
+                file_writer.write(example.SerializeToString())
+                total_variants += 1
+            return output_path, total_variants
 
-    def _generate_examples(region):
-        return tf.data.Dataset.from_generator(_encoded_example_generator, output_types=(tf.string), args=(region,),)
+    with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
+        # Create tasks for each genomic chunk
+        regions = _chunk_genome(params.reference, vcf_path)
+        ray_tasks = [
+            _chunk_to_tfrecords.remote(os.path.join(tempdir, f"chunk{i}.tfrecords.gz"), region)
+            for i, region in enumerate(regions)
+        ]
 
-    with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-        region_dataset = tf.data.Dataset.from_generator(lambda: _region_generator(params.reference, vcf_path), output_types=(tf.string))
-        example_dataset = region_dataset.interleave(
-            _generate_examples,
-            cycle_length=params.threads,
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
-            deterministic=False,
+        chunk_files, total_variants = [], 0
+        with tqdm(desc="Generating variant records (in chunks)", disable=not progress_bar) as pb:
+            for chunk_file, variants in _ray_iterator(ray_tasks):
+                pb.update(variants)
+                if variants > 0:
+                    chunk_files.append(chunk_file)
+                    total_variants += variants
+
+        # Merge the per-chunk dataset files into one
+        merged_dataset = tf.data.TFRecordDataset(
+            chunk_files, compression_type="GZIP", num_parallel_reads=params.threads
         )
-        for example in tqdm(example_dataset, desc="Writing VCF to TFRecords", disable=not progress_bar):
-            file_writer.write(example.numpy())
+        with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
+            for serialized_example in tqdm(
+                merged_dataset,
+                desc="Merging chunks into TFRecords file",
+                total=total_variants,
+                disable=not progress_bar,
+            ):
+                file_writer.write(serialized_example.numpy())
 
 
 def _features_variant(features):
@@ -422,8 +445,8 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         # mapq as alpha)...
         image_mode = "RGB"
         channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        #image_mode = "L"
-        #channels = ALT_INSERT_SIZE_CHANNEL
+        # image_mode = "L"
+        # channels = ALT_INSERT_SIZE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 
@@ -433,10 +456,8 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     if with_simulations and replicates > 0:
         height, width, _ = shape
         replicates = min(replicates, max_replicates)
-        
-        image = Image.new(
-            image_mode, (width + 2 * (width + margin), height + replicates * (height + margin))
-        )
+
+        image = Image.new(image_mode, (width + 2 * (width + margin), height + replicates * (height + margin)))
         image.paste(real_image, (width + margin, 0))
 
         synth_tensor = _example_sim_tensor(example)

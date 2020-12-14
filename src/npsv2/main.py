@@ -179,8 +179,12 @@ def main():
     _configure_gpu()
 
     if args.command == "examples":
+        import ray
         from .images import vcf_to_tfrecords
         from .sample import Sample, sample_name_from_bam
+
+        # Initialize parallel computing setup
+        ray.init(num_cpus=args.threads, num_gpus=0, _temp_dir=args.tempdir, include_dashboard=False)
 
         # Check if shared reference is loaded
         setattr(args, "shared_reference", _bwa_index_loaded(args.reference))

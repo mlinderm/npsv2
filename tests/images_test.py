@@ -4,6 +4,8 @@ import pysam
 import tensorflow as tf
 import numpy as np
 from PIL import Image
+import ray
+import warnings
 from npsv2.variant import Variant
 from npsv2.range import Range
 from npsv2 import images
@@ -12,6 +14,14 @@ from npsv2.simulation import RandomVariants
 from npsv2.sample import Sample
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+def setUpModule():
+    # Ignore resource warnings within Ray
+    warnings.simplefilter("ignore", ResourceWarning)
+    ray.init(num_cpus=1, num_gpus=0, local_mode=True, include_dashboard=False)
+
+def tearDownModule():
+    ray.shutdown()
 
 
 def _mock_simulate_variant_sequencing(params, fasta_path, allele_count, sample: Sample, dir=tempfile.gettempdir()):
@@ -24,8 +34,8 @@ def _mock_reference_sequence(reference_fasta, region):
         return ref_fasta.fetch(reference=region.contig, start=region.start  - 896921, end=region.end  - 896921)
 
 
-def _mock_region_generator(ref_path: str, vcf_path: str, chunk_size=30000000):
-    yield "1:1-249250621"
+def _mock_chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
+    return ["1:1-249250621"]
 
 
 def _mock_generate_deletions(size, n=1, flank=0):
@@ -263,11 +273,11 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def test_region_generator(self):
-        regions = list(images._region_generator(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
+    def test_region_dataset(self):
+        regions = list(images._chunk_genome(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
         self.assertIn("1:1-6067", regions)
 
-    @patch("npsv2.images._region_generator", side_effect=_mock_region_generator)
+    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
     def test_make_dataset(self, synth_ref, mock_ref, mock_reg):
@@ -301,7 +311,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
 
             self.assertEqual(features["sim/images"].shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
 
-    @patch("npsv2.images._region_generator", side_effect=_mock_region_generator)
+    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
     @patch(
         "npsv2.variant._reference_sequence",
         return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
