@@ -166,6 +166,17 @@ class Pileup:
     def __iter__(self):
         return iter(self._columns)
 
+    def region_columns(self, region: Range):
+        if region.contig != self._region.contig:
+            return []
+
+        pileup_start = region.start - self._region.start
+        next_slice = slice(max(pileup_start, 0), min(pileup_start + region.length, len(self._columns)))
+        if next_slice.stop > next_slice.start:
+            return [next_slice]
+        else:
+            return []
+
     def read_columns(self, read: pysam.AlignedSegment):
         if read.reference_name != self._region.contig:
             return None, []

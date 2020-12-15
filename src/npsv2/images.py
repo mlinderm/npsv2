@@ -21,7 +21,7 @@ IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 PADDING = 100
 
-MAX_PIXEL_VALUE = 254  # Adapted from DeepVariant
+MAX_PIXEL_VALUE = 254.0  # Adapted from DeepVariant
 
 BASE_CHANNEL = 0
 ALIGNED_BASE_PIXEL = 255
@@ -50,17 +50,21 @@ ALLELE_TO_PIXEL = {
 MAPQ_CHANNEL = 4
 MAX_MAPQ = 60
 
+VARIANT_BAND_HEIGHT = 5 # Adapted from DeepVariant
+VARIANT_MAPQ = 60
 
 def _fragment_zscore(sample: Sample, fragment_length: int):
     return (fragment_length - sample.mean_insert_size) / sample.std_insert_size
 
+def _variant_zscore(sample: Sample, variant_length: int):
+    return -variant_length / sample.std_insert_size
 
 def _create_realigner(params, variant, sample: Sample):
     fasta_path, _, _ = variant.synth_fasta(reference_fasta=params.reference, dir=params.tempdir, flank=params.flank)
     return FragmentRealigner(fasta_path, sample.mean_insert_size, sample.std_insert_size)
 
 
-def create_single_example(params, variant, read_path, region, sample: Sample, image_shape=None, realigner=None):
+def create_single_example(params, variant, read_path, region, sample: Sample, image_shape=None, realigner=None, variant_band_height=VARIANT_BAND_HEIGHT):
     if isinstance(region, str):
         region = Range.parse_literal(region)
 
@@ -79,7 +83,7 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
     fragments = FragmentTracker()
 
     with pysam.AlignmentFile(read_path) as alignment_file:
-        # Expand query region to capture straddling reads (TODO: Make flank a parameter)
+        # Expand query region to capture straddling reads
         for read in alignment_file.fetch(
             contig=region.contig, start=region.start - params.flank, stop=region.end + params.flank
         ):
@@ -92,7 +96,7 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
     # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
     pileup = Pileup(region)
 
-    left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI
+    left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CI?
     right_region = variant.right_flank_region(params.flank)
 
     for fragment in fragments:
@@ -113,8 +117,19 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
 
         pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
+    # Add variant strip at the top of the image, clipping out the variant region
+    image_tensor[:variant_band_height, :, BASE_CHANNEL] = ALIGNED_TO_PIXEL[BaseAlignment.ALIGNED]
+    image_tensor[:variant_band_height, :, MAPQ_CHANNEL] = min(VARIANT_MAPQ / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
+    image_tensor[:variant_band_height, :, REF_INSERT_SIZE_CHANNEL] = np.clip(
+        INSERT_SIZE_MEAN_PIXEL + _variant_zscore(sample, variant.length_change()) * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+    )
+    image_tensor[:variant_band_height, :, ALT_INSERT_SIZE_CHANNEL] = INSERT_SIZE_MEAN_PIXEL
+    for col_slice in pileup.region_columns(variant.reference_region):
+        image_tensor[:variant_band_height, col_slice, :] = 0
+
+
     for j, column in enumerate(pileup):
-        for i, base in enumerate(column.ordered_bases(max_bases=tensor_shape[0])):
+        for i, base in enumerate(column.ordered_bases(max_bases=tensor_shape[0] - variant_band_height), start=variant_band_height):
             image_tensor[i, j, BASE_CHANNEL] = ALIGNED_TO_PIXEL[base.aligned]
             image_tensor[i, j, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[base.allele]
             image_tensor[i, j, MAPQ_CHANNEL] = min(base.mapq / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
@@ -445,8 +460,8 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         # mapq as alpha)...
         image_mode = "RGB"
         channels = [BASE_CHANNEL, ALT_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        # image_mode = "L"
-        # channels = ALT_INSERT_SIZE_CHANNEL
+        #image_mode = "L"
+        #channels = MAPQ_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 
