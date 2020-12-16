@@ -133,6 +133,29 @@ RealignedReadPair::RealignedReadPair(const sl::BamRecord& first, const sl::BamRe
   score_ += log10(insert_size_prob);
 }
 
+namespace {
+  sl::GenomicRegion ReadRegion(const sl::BamRecord& read) {
+    // The read region is 0-indexed with a exclusive end coordinate, but SeqLib's operations on GenomicRegions
+    // assume 1-indexed regions with inclusive start and end coordinates. So we convert those coordinates here.
+    return sl::GenomicRegion(read.ChrID(), read.Position() + 1, read.PositionEnd());
+  }
+}
+
+sl::GenomicRegion RealignedReadPair::FragmentRegion() const {
+  if (left_ && right_ && left_->ChrID() == right_->ChrID()) {
+    if (left_->ChrID() == right_->ChrID()) {
+      return sl::GenomicRegion(left_->ChrID(), std::min(left_->Position(), right_->Position()) + 1,
+                               std::max(left_->PositionEnd(), right_->PositionEnd()));
+    }
+  } else if (left_) {
+    return ReadRegion(*left_);
+  } else if (right_) {
+    return ReadRegion(*right_);
+  }
+
+  return sl::GenomicRegion();
+}
+
 int32_t RealignedReadPair::InsertSize() const {
   return right_->PositionWithSClips() + right_->Length() - left_->PositionWithSClips();
 }
@@ -180,7 +203,7 @@ RealignedFragment::RealignedFragment(const sl::BamRecord& read1, const sl::BamRe
     RealignRead(index, read2, read2_alignments_, quality_offset);
   }
 
-  // Construct and score possible alignment pairs from these individual
+  // Construct and score possible alignment pairs
   if (!read1_alignments_.empty() && !read2_alignments_.empty()) {
     for (auto& align1 : read1_alignments_) {
       for (auto& align2 : read2_alignments_) {
@@ -243,7 +266,13 @@ FragmentRealigner::FragmentRealigner(const std::string& fasta_path, double inser
   }
 }
 
-std::map<std::string, double> FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
+namespace {
+  std::string ToString(const sl::GenomicRegion& region, const sl::BamHeader& header) {
+    return region.ChrName(header) + ":" + std::to_string(region.pos1) + "-" + std::to_string(region.pos2);
+  }
+}
+
+std::map<std::string, py::object> FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
                                                                  const std::string& read1_qual, py::kwargs kwargs) { 
   int offset = 0;
   if (kwargs && kwargs.contains("offset")) {
@@ -279,21 +308,32 @@ std::map<std::string, double> FragmentRealigner::RealignReadPair(const std::stri
   }
 
   RealignedFragment::score_type ref_quality = 0;
+  std::string ref_fragment_region;
   if (ref_realignment.HasBestPair()) {
-    ref_quality = LogProbToPhredQual(ref_realignment.BestPairLogProb() - total_log_prob, 40);
+    auto & best_pair = ref_realignment.BestPair();
+    ref_quality = LogProbToPhredQual(best_pair.Score() - total_log_prob, 40);
+    ref_fragment_region = ToString(best_pair.FragmentRegion(), RefHeader());
   }
 
   RealignedFragment::score_type max_alt_quality = 0;
-  for (const auto& alt_realignment : alt_realignments) {
+  std::string max_alt_fragment_region;
+  for (int i = 0; i < NumAltAlleles(); i++) {
+    const auto& alt_realignment = alt_realignments[i];
     if (alt_realignment.HasBestPair()) {
-      max_alt_quality =
-          std::max(max_alt_quality, LogProbToPhredQual(alt_realignment.BestPairLogProb() - total_log_prob, 40));
+      auto & best_pair = alt_realignment.BestPair();
+      auto alt_quality = LogProbToPhredQual(best_pair.Score() - total_log_prob, 40);
+      if (alt_quality >= max_alt_quality) {
+        max_alt_quality = alt_quality;
+        max_alt_fragment_region =  ToString(best_pair.FragmentRegion(), AltHeader(i));
+      }
     }
   }
 
-  std::map<std::string, double> results;
-  results["ref_quality"] = ref_quality;
-  results["max_alt_quality"] = max_alt_quality;
+  std::map<std::string, py::object> results;
+  results["ref_quality"] = py::cast(ref_quality);
+  results["ref_region"] = py::cast(ref_fragment_region);
+  results["max_alt_quality"] = py::cast(max_alt_quality);
+  results["max_alt_region"] = py::cast(max_alt_fragment_region);
   return results;
 }
 
@@ -314,7 +354,7 @@ std::vector<double> TestScoreAlignment(const std::string& ref_seq, const std::st
   return scores;
 }
 
-std::map<std::string, double> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
+std::map<std::string, py::object> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
                                                   const std::string& read1_seq, const std::string& read1_qual,
                                                   py::kwargs kwargs) {
   pyassert(kwargs && kwargs.contains("fragment_mean") && kwargs.contains("fragment_sd"),

@@ -21,6 +21,12 @@ class BaseAlignment(Enum):
     ALIGNED = 1
     SOFT_CLIP = 2
 
+    def __lt__(self, other):
+        if self.__class__ is other.__class__:
+            return self.value < other.value
+        return NotImplemented
+
+
 # def _read_region(read, cigar):
 #     first_op, first_len = cigar[0]
 #     if first_op == pysam.CSOFT_CLIP:
@@ -145,12 +151,13 @@ class PileupColumn:
         elif cigar_op in CIGAR_ALIGNED_BASE:
             self._bases.append(PileupBase(read_start, BaseAlignment.ALIGNED, **attributes))
 
-    def ordered_bases(self, max_bases=None):
+    def ordered_bases(self, max_bases=None, order="read_start"):
         if max_bases is None:
             max_bases = len(self._bases)
-        # Return bases sorted by read position, randomly downsampling if needed
-        bases = random.sample(self._bases, k=max_bases) if len(self._bases) > max_bases else self._bases
-        return sorted(bases, key=lambda base: base.read_start)
+        # Return bases sorted by specified field, randomly downsampling if needed
+        sort_idx = PileupBase._fields.index(order)
+        bases = random.sample(self._bases, k=max_bases) if len(self._bases) > max_bases else self._bases 
+        return sorted(bases, key=lambda base: base[sort_idx])
 
 class Pileup:
     def __init__(self, reference_region: Range):

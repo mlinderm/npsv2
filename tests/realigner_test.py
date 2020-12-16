@@ -50,6 +50,7 @@ class RealignerTest(unittest.TestCase):
             os.remove(sam_file.name)
 
     def test_realign_read_pair(self):
+        # FASTA has a 3000bp flank
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")
 
         header = pysam.AlignmentHeader.from_dict(
@@ -73,7 +74,7 @@ class RealignerTest(unittest.TestCase):
         read2_qual = "".join([chr(c) for c in read2.query_qualities])
         self.assertEqual(len(read2_seq), len(read2_qual))
 
-        scores = test_realign_read_pair(
+        results = test_realign_read_pair(
             fasta_path,
             read1.query_name,
             read1_seq,
@@ -84,6 +85,8 @@ class RealignerTest(unittest.TestCase):
             fragment_sd=self.params.fragment_sd,
             offset=0,  # Conversion already performed by pySAM
         )
+        for k in ("ref_quality", "ref_region", "max_alt_quality", "max_alt_region"):
+            self.assertIn(k, results)
 
     def test_realign_reads(self):
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")
@@ -107,7 +110,7 @@ class RealignerTest(unittest.TestCase):
 
         allele_counts = Counter()
         for fragment in fragments:
-            allele, ref_quality, alt_quality = realign_fragment(realigner, fragment, assign_delta=1.0)
+            allele, *_ = realign_fragment(realigner, fragment, assign_delta=1.0)
             allele_counts[allele] += 1
 
         self.assertEqual(allele_counts[AlleleAssignment.REF], 12)

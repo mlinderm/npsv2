@@ -44,8 +44,7 @@ class RealignedReadPair {
   bool operator<(const RealignedReadPair& other) const { return score_ < other.score_; }
   bool operator>(const RealignedReadPair& other) const { return score_ > other.score_; }
 
-  sl::GenomicRegion LeftReadRegion() const;
-  sl::GenomicRegion RightReadRegion() const;
+  sl::GenomicRegion FragmentRegion() const;
 
   friend std::ostream& operator<<(std::ostream&, const RealignedReadPair&);
 
@@ -109,7 +108,7 @@ class FragmentRealigner {
 
   AltIndexesSequence::size_type NumAltAlleles() const { return alt_indexes_.size(); }
 
-  std::map<std::string, double> RealignReadPair(const std::string& name, const std::string& read1_seq,
+  std::map<std::string, py::object> RealignReadPair(const std::string& name, const std::string& read1_seq,
                                                 const std::string& read1_qual, py::kwargs kwargs);
 
  private:
@@ -125,7 +124,7 @@ namespace test {
 
 std::vector<double> TestScoreAlignment(const std::string& ref_seq, const std::string& aln_path);
 
-std::map<std::string, double> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
+std::map<std::string, py::object> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
                                                   const std::string& read1_seq, const std::string& read1_qual,
                                                   py::kwargs kwargs);
 }  // namespace test

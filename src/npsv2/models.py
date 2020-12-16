@@ -34,7 +34,7 @@ def _cdist(tensors, squared: bool = False):
     )
     return distances
 
-def _inceptionv3_encoder(input_shape):
+def _inceptionv3_encoder(input_shape, normalize=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
     base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
@@ -47,6 +47,8 @@ def _inceptionv3_encoder(input_shape):
         layers.Dense(512),
         layers.BatchNormalization(),
     ], name="encoder")
+    if normalize:
+        encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
     return encoder
 
 def _variant_to_allsim_training_triples(features, original_label):
@@ -162,3 +164,33 @@ class SiameseGenotyper:
         # We only save the encoder weights
         encoder = model.get_layer("encoder")
         encoder.save_weights(model_path)
+
+# class TripletModel:
+#     def __init__(self, input_shape, replicates):
+#         self.input_shape = input_shape
+#         self.replicates = replicates
+
+#     def model_fn(self, params=None, model_path:str=None):
+#         encoder = _inceptionv3_encoder(self.input_shape)
+#         embedding_shape = encoder.output_shape
+        
+#         model = tf.keras.Sequential([
+#             layers.Input((3, self.replicates) + self.input_shape, name="support"))
+#             #layers.Reshape((3 * self.replicates,) + self.input_shape))
+#             layers.TimeDistributed(encoder))
+#             layers.Reshape(3 * self.replicates,)  + embedding_shape[-1:])
+#         ], "TripletModel")
+
+#         if model_path:
+#             encoder.load_weights(model_path)
+
+#         if params:
+#             # TODO: Set margin based on Facenet paper
+#             optimizer = tf.keras.optimizers.Adam(learning_rate=params.learning_rate)
+#             model.compile(
+#                 optimizer=optimizer,
+#                 loss=tfa.losses_triplet_semihard_loss,
+#             )
+
+
+#         return model

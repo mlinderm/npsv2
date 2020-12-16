@@ -107,7 +107,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
     def test_example_to_image(self, mock_ref):
         all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300))
 
-        png_path = os.path.join(self.params.tempdir, "test.png")
+        png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
         images.example_to_image(next(all_examples), png_path)
 
         self.assertTrue(os.path.exists(png_path))
