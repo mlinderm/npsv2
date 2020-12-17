@@ -275,7 +275,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
 
     def test_region_dataset(self):
         regions = list(images._chunk_genome(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
-        self.assertIn("1:1-6067", regions)
+        self.assertEqual(regions, ["1:1-6067"])
 
     @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)

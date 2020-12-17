@@ -62,6 +62,15 @@ class Fragment(object):
         )
 
     @property
+    def fragment_region(self):
+        assert self.is_properly_paired
+        return Range(self.read1.reference_name, self.read1.reference_start, self.read2.reference_end)
+
+    @property
+    def fragment_start(self):
+        return self.read1.reference_start
+
+    @property
     def fragment_length(self):
         # TODO: Handle weird pairs
         # if self.read1.template_length != (self.read2.reference_end - self.read1.reference_start):
@@ -69,7 +78,8 @@ class Fragment(object):
         #     print(self.read2)
         # assert self.read1.template_length == (self.read2.reference_end - self.read1.reference_start)
         return self.read1.template_length
-       
+
+    
 
     def add_read(self, read):
         assert Fragment.is_primary(read)
@@ -93,9 +103,7 @@ class Fragment(object):
         # TODO: Allow fragments with just one read
         if not self.is_properly_paired:
             return False
-
-        fragment_region = Range(self.read1.reference_name, self.read1.self.read1.reference_start, self.read2.reference_end)
-        return fragment_region.get_overlap(region) >= min_overlap
+        return self.fragment_region.get_overlap(region) >= min_overlap
 
     def reads_overlap(self, region: Range, min_overlap=3):
         return (self.read1 and (region.get_overlap(self.read1) >= 3)) or (self.read2 and (region.get_overlap(self.read2) >= 3))

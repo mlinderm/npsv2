@@ -85,8 +85,7 @@ class RealignerTest(unittest.TestCase):
             fragment_sd=self.params.fragment_sd,
             offset=0,  # Conversion already performed by pySAM
         )
-        for k in ("ref_quality", "ref_region", "max_alt_quality", "max_alt_region"):
-            self.assertIn(k, results)
+        self.assertEqual(len(results), 4)
 
     def test_realign_reads(self):
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")

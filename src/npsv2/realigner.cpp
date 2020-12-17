@@ -272,7 +272,7 @@ namespace {
   }
 }
 
-std::map<std::string, py::object> FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
+std::tuple<double, bool, double, bool> FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
                                                                  const std::string& read1_qual, py::kwargs kwargs) { 
   int offset = 0;
   if (kwargs && kwargs.contains("offset")) {
@@ -329,12 +329,7 @@ std::map<std::string, py::object> FragmentRealigner::RealignReadPair(const std::
     }
   }
 
-  std::map<std::string, py::object> results;
-  results["ref_quality"] = py::cast(ref_quality);
-  results["ref_region"] = py::cast(ref_fragment_region);
-  results["max_alt_quality"] = py::cast(max_alt_quality);
-  results["max_alt_region"] = py::cast(max_alt_fragment_region);
-  return results;
+  return std::make_tuple(ref_quality, false, max_alt_quality, false);
 }
 
 namespace test {
@@ -354,7 +349,7 @@ std::vector<double> TestScoreAlignment(const std::string& ref_seq, const std::st
   return scores;
 }
 
-std::map<std::string, py::object> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
+std::tuple<double, bool, double, bool> TestRealignReadPair(const std::string& fasta_path, const std::string& name,
                                                   const std::string& read1_seq, const std::string& read1_qual,
                                                   py::kwargs kwargs) {
   pyassert(kwargs && kwargs.contains("fragment_mean") && kwargs.contains("fragment_sd"),

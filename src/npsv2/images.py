@@ -67,18 +67,17 @@ class ImageConfig(Config):
 def _fragment_zscore(sample: Sample, fragment_length: int):
     return (fragment_length - sample.mean_insert_size) / sample.std_insert_size
 
-def _variant_zscore(sample: Sample, variant_length: int):
-    return -variant_length / sample.std_insert_size
 
 def _create_realigner(params, variant, sample: Sample):
     fasta_path, _, _ = variant.synth_fasta(reference_fasta=params.reference, dir=params.tempdir, flank=params.flank)
     return FragmentRealigner(fasta_path, sample.mean_insert_size, sample.std_insert_size)
 
-def _add_variant_strip(config: ImageConfig, variant: Variant, pileup: Pileup, image_tensor):
+
+def _add_variant_strip(config: ImageConfig, sample: Sample, variant: Variant, pileup: Pileup, image_tensor):
     image_tensor[:config.variant_band_height, :, BASE_CHANNEL] = ALIGNED_TO_PIXEL[BaseAlignment.ALIGNED]
     image_tensor[:config.variant_band_height, :, MAPQ_CHANNEL] = min(VARIANT_MAPQ / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
     
-    ref_zscore, alt_zscore = _variant_zscore(sample, variant.length_change()), 0
+    ref_zscore, alt_zscore = abs(variant.length_change() / sample.std_insert_size), 0
     image_tensor[:config.variant_band_height, :, REF_INSERT_SIZE_CHANNEL] = np.clip(
         INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
     )
@@ -124,7 +123,9 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
 
     # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
     pileup = Pileup(region)
+    
     realigned_reads = []
+    straddling_fragments = []
 
     left_region = variant.left_flank_region(params.flank)  # TODO: Incorporate CIPOS and CIEND?
     right_region = variant.right_flank_region(params.flank)
@@ -143,6 +144,7 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
         if fragment.fragment_straddles(left_region, right_region, min_aligned=3):
             ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
             alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+            straddling_fragments.append((fragment, ref_zscore, alt_zscore))
         else:
             ref_zscore = None
             alt_zscore = None
@@ -151,7 +153,7 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
 
     # Add variant strip at the top of the image, clipping out the variant region
     if config.variant_band_height > 0:
-        _add_variant_strip(config, variant, pileup, image_tensor)
+        _add_variant_strip(config, sample, variant, pileup, image_tensor)
 
     # Add pileup bases to the image
     read_pixels = tensor_shape[0] - config.variant_band_height
@@ -161,20 +163,20 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
             image_tensor[i, j, MAPQ_CHANNEL] = min(base.mapq / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
             #image_tensor[i, j, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[base.allele]
            
-            if base.ref_zscore is not None:
-                image_tensor[i, j, REF_INSERT_SIZE_CHANNEL] = np.clip(
-                    INSERT_SIZE_MEAN_PIXEL + base.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
-                )
-            if base.alt_zscore is not None:
-                image_tensor[i, j, ALT_INSERT_SIZE_CHANNEL] = np.clip(
-                    INSERT_SIZE_MEAN_PIXEL + base.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
-                )
+            # if base.ref_zscore is not None:
+            #     image_tensor[i, j, REF_INSERT_SIZE_CHANNEL] = np.clip(
+            #         INSERT_SIZE_MEAN_PIXEL + base.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+            #     )
+            # if base.alt_zscore is not None:
+            #     image_tensor[i, j, ALT_INSERT_SIZE_CHANNEL] = np.clip(
+            #         INSERT_SIZE_MEAN_PIXEL + base.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+            #     )
 
     # Render realigned reads as "full" reads, not as pileup "bases"
     def _filter_reads(realigned_read):
-        allele, read, (ref_qual, ref_region), (alt_qual, alt_region) = realigned_read
+        allele, read, (ref_qual, _), (alt_qual, _) = realigned_read
         # Keep reads in the image window that overlap one of the variant breakpoints
-        return read and region.get_overlap(read) > 0
+        return read and allele != AlleleAssignment.AMB and region.get_overlap(read) > 0
     
     realigned_reads = [read[:2] for read in realigned_reads if _filter_reads(read)]
     if len(realigned_reads) > read_pixels:
@@ -185,6 +187,19 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
         _, col_slices = pileup.read_columns(read)
         for col_slice, _ in col_slices:
             image_tensor[i, col_slice, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[allele]
+
+    # Render fragment insert size as "bars" since straddling reads may not be in the image
+    if len(straddling_fragments) > read_pixels:
+        straddling_fragments = random.sample(straddling_fragments, k=read_pixels)
+    straddling_fragments.sort(key = lambda x: x[0].fragment_start)
+    for i, (fragment, ref_zscore, alt_zscore) in enumerate(straddling_fragments, start=config.variant_band_height):
+        for col_slice in pileup.region_columns(fragment.fragment_region):
+            image_tensor[i, col_slice, REF_INSERT_SIZE_CHANNEL] = np.clip(
+                INSERT_SIZE_MEAN_PIXEL + ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+            )
+            image_tensor[i, col_slice, ALT_INSERT_SIZE_CHANNEL] = np.clip(
+                INSERT_SIZE_MEAN_PIXEL + alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+            )
 
     # Create consistent image size
     if image_shape and image_tensor.shape[:2] != image_shape:
@@ -385,6 +400,7 @@ def vcf_to_tfrecords(
 
     # Unfortunately we can't use TF's built-in multithreading because of the extensive use of Python (the GIL serializes the execution). Instead we use
     # Ray and generate a separate file for each VCF chunk that are then merged at the end.
+    ray.init(num_cpus=params.threads, num_gpus=0, _temp_dir=params.tempdir, ignore_reinit_error=True, include_dashboard=False)
 
     @ray.remote
     def _chunk_to_tfrecords(output_path: str, region: str = None):
@@ -506,10 +522,10 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     elif len(shape) == 3 or shape[2] > 3:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        #image_mode = "RGB"
-        #channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALT_INSERT_SIZE_CHANNEL]
-        image_mode = "L"
-        channels = ALLELE_CHANNEL
+        image_mode = "RGB"
+        channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+        #image_mode = "L"
+        #channels = ALT_INSERT_SIZE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 

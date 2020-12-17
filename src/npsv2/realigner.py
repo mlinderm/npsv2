@@ -16,10 +16,8 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
         kw["read2_seq"] = fragment.read2.query_sequence
         kw["read2_qual"] = _quality_string(fragment.read2)
     
-    results = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
+    ref_quality, ref_break, alt_quality, alt_break = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
     
-    alt_quality = results["max_alt_quality"]
-    ref_quality = results["ref_quality"]
     if abs(alt_quality - ref_quality) < assign_delta:
         allele = AlleleAssignment.AMB  
     elif alt_quality > ref_quality: 
@@ -27,4 +25,4 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
     else:
         allele = AlleleAssignment.REF
 
-    return allele, (ref_quality, results["ref_region"] or None), (alt_quality, results["max_alt_region"] or None)
+    return allele, (ref_quality, None), (alt_quality, None)
