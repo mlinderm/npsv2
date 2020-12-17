@@ -274,5 +274,57 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_region_dataset(self):
-        regions = list(images.chunk_genome(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
-        self.assertEqual(regions, ["1:1-6067"])
+        regions = list(images._chunk_genome(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
+        self.assertIn("1:1-6067", regions)
+
+    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_make_dataset(self, synth_ref, mock_ref, mock_reg):
+        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
+        images.vcf_to_tfrecords(
+            self.params,
+            self.vcf_path,
+            self.bam_path,
+            dataset_path,
+            self.sample,
+            image_shape=(300, 300),
+            sample_or_label="HG002",
+            simulate=True,
+        )
+
+        self.assertEqual(mock_ref.call_count, 4)
+        for args, _ in mock_ref.call_args_list:
+            self.assertEqual(args[1], Range("1", 899921, 899993))
+
+        self.assertTrue(os.path.exists(dataset_path))
+
+        # Load dataset with simulated data
+        dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
+        for features, label in dataset:
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
+            self.assertEqual(label, 2)
+
+            # png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
+            # image = Image.fromarray(features["image"].numpy()[:,:,0], mode="L")
+            # image.save(png_path)
+
+            self.assertEqual(features["sim/images"].shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
+
+    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
+    @patch(
+        "npsv2.variant._reference_sequence",
+        return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
+    )
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_compressed_dataset_roundtrip(self, synth_ref, mock_ref, mock_reg):
+        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord.gz")
+        images.vcf_to_tfrecords(
+            self.params, self.vcf_path, self.bam_path, dataset_path, self.sample, image_shape=(300, 300), sample_or_label="HG002",
+        )
+        self.assertTrue(os.path.exists(dataset_path))
+        # Load dataset with simulated data
+        dataset = images.load_example_dataset(dataset_path, with_label=True)
+        for features, label in dataset:
+            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
+            self.assertEqual(label, 2)

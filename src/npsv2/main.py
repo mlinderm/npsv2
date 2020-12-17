@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse, logging, os, subprocess, sys, tempfile
+import tensorflow as tf
 from tqdm import tqdm
 
 
@@ -24,8 +25,6 @@ def _configure_gpu():
     """
     Configure GPU options (seems to be required for RTX GPUs)
     """
-    import tensorflow as tf
-
     try:
         gpus = tf.config.experimental.list_physical_devices("GPU")
         if gpus:
@@ -43,13 +42,6 @@ def _image_size(arg: str):
         return (row, cols)
     except:
         raise argparse.ArgumentTypeError("Image size must be of the form 'row,col'")
-
-
-def _ray_iterator(obj_ids):
-    import ray
-    while obj_ids:
-        done, obj_ids = ray.wait(obj_ids)
-        yield ray.get(done[0])
 
 
 def make_argument_parser():
@@ -186,8 +178,11 @@ def main():
     parser = make_argument_parser()
     args = parser.parse_args()
 
+    _configure_gpu()
+
     if args.command == "examples":
         import ray
+        from .images import vcf_to_tfrecords
         from .sample import Sample, sample_name_from_bam
 
         # Initialize parallel computing setup
@@ -213,55 +208,20 @@ def main():
                 std_insert_size=args.fragment_sd,
             )
 
-        @ray.remote
-        def _chunk_to_tfrecords(output_path: str, region: str = None):
-            # Try to not import tf unless inside remote function
-            from .images import vcf_to_tfrecords
-
-            return vcf_to_tfrecords(
-                args,
-                args.vcf,
-                args.bam,
-                output_path,
-                sample,
-                image_shape=args.size,
-                sample_or_label=args.sample,
-                simulate=args.replicates > 0,
-                region=region,
-            )
-
-        with tempfile.TemporaryDirectory(dir=args.tempdir) as tempdir:
-            import tensorflow as tf
-            from .images import chunk_genome, filename_to_compression
-
-            # Create tasks for each genomic chunk
-            regions = chunk_genome(args.reference, args.vcf)
-            ray_tasks = [
-                _chunk_to_tfrecords.remote(os.path.join(tempdir, f"chunk{i}.tfrecords.gz"), region)
-                for i, region in enumerate(regions)
-            ]
-
-            chunk_files, total_variants = [], 0
-            with tqdm(desc="Generating variant records (in chunks)") as pb:
-                for chunk_file, variants in _ray_iterator(ray_tasks):
-                    pb.update(variants)
-                    if variants > 0:
-                        chunk_files.append(chunk_file)
-                        total_variants += variants
-
-            # Merge the per-chunk dataset files into one
-            merged_dataset = tf.data.TFRecordDataset(
-                chunk_files, compression_type="GZIP", num_parallel_reads=args.threads
-            )
-            with tf.io.TFRecordWriter(args.output, filename_to_compression(args.output)) as file_writer:
-                for serialized_example in tqdm(merged_dataset, desc="Merging TFRecords files", total=total_variants,):
-                    file_writer.write(serialized_example.numpy())
+        vcf_to_tfrecords(
+            args,
+            args.vcf,
+            args.bam,
+            args.output,
+            sample,
+            image_shape=(100, 300),
+            sample_or_label=args.sample,
+            simulate=args.replicates > 0,
+            progress_bar=True,
+        )
 
     elif args.command == "visualize":
-        import tensorflow as tf
         from .images import example_to_image, _filename_to_compression
-
-        _configure_gpu()
 
         dataset = tf.data.TFRecordDataset(filenames=args.input, compression_type=_filename_to_compression(args.input))
         for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
@@ -275,7 +235,6 @@ def main():
     elif args.command == "train":
         from .training import train
 
-        _configure_gpu()
         train(args, args.input, args.output)
 
     elif args.command == "evaluate":
@@ -283,7 +242,6 @@ def main():
         import pandas as pd
         from .training import evaluate_model
 
-        _configure_gpu()
         table = evaluate_model(args.input, args.model)
 
         # Print various metrics
@@ -291,9 +249,7 @@ def main():
         nr_conc = np.mean((table.LABEL != 0) == (table.AC != 0))
         print(f"Accuracy - Genotype concordance: {gt_conc:.3}, Non-reference Concordance: {nr_conc:.3}")
 
-        confusion_matrix = pd.crosstab(
-            table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True, dropna=False
-        )
+        confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True, dropna=False)
         print(confusion_matrix)
 
         svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
@@ -302,7 +258,6 @@ def main():
     elif args.command == "embeddings":
         from .training import visualize_embeddings
 
-        _configure_gpu()
         visualize_embeddings(args.model, args.dataset)
 
     elif args.command == "simgc":
