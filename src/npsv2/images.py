@@ -308,7 +308,7 @@ def make_vcf_examples(
                     ac_to_sim = (0, 1, 2)
 
                 # If we are augmenting the simulated data, use the provided statistics for the first example, so it
-                # will hopefully be similar to the real data and the augment the remaining replicates
+                # will hopefully be similar to the real data and then augment the remaining replicates
                 if params.augment:
                     repl_samples = augment_samples(sample, params.replicates, keep_original=True)
                 else:
@@ -348,14 +348,13 @@ def make_vcf_examples(
             yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
-def _filename_to_compression(filename: str) -> str:
+def filename_to_compression(filename: str) -> str:
     if filename.endswith(".gz"):
         return "GZIP"
     else:
         return None
 
-
-def _chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
+def chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
     regions = []
     with pysam.FastaFile(ref_path) as ref_file, pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
         for contig, length in zip(ref_file.references, ref_file.lengths):
@@ -363,12 +362,6 @@ def _chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
                 for start in range(1, length, chunk_size):
                     regions.append(f"{contig}:{start}-{min(start + chunk_size, length)}")
     return regions
-
-
-def _ray_iterator(obj_ids):
-    while obj_ids:
-        done, obj_ids = ray.wait(obj_ids)
-        yield ray.get(done[0])
 
 
 def vcf_to_tfrecords(
@@ -380,64 +373,33 @@ def vcf_to_tfrecords(
     image_shape=None,
     sample_or_label=None,
     simulate=False,
-    progress_bar=False,
+    region: str=None,
 ):
 
     # Unfortunately we can't use TF's built-in multithreading because of the extensive use of Python (the GIL serializes the execution). Instead we use
     # Ray and generate a separate file for each VCF chunk that are then merged at the end.
 
-    @ray.remote
-    def _chunk_to_tfrecords(output_path: str, region: str = None):
-        # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
-        tf.config.threading.set_inter_op_parallelism_threads(1)
-        tf.config.threading.set_intra_op_parallelism_threads(1)
+    # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    tf.config.threading.set_intra_op_parallelism_threads(1)
 
-        # Generate records for each region into a file
-        all_examples = make_vcf_examples(
-            params,
-            vcf_path,
-            read_path,
-            sample,
-            image_shape=image_shape,
-            sample_or_label=sample_or_label,
-            simulate=simulate,
-            region=region,
-        )
-        with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-            total_variants = 0
-            for example in all_examples:
-                file_writer.write(example.SerializeToString())
-                total_variants += 1
-            return output_path, total_variants
-
-    with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
-        # Create tasks for each genomic chunk
-        regions = _chunk_genome(params.reference, vcf_path)
-        ray_tasks = [
-            _chunk_to_tfrecords.remote(os.path.join(tempdir, f"chunk{i}.tfrecords.gz"), region)
-            for i, region in enumerate(regions)
-        ]
-
-        chunk_files, total_variants = [], 0
-        with tqdm(desc="Generating variant records (in chunks)", disable=not progress_bar) as pb:
-            for chunk_file, variants in _ray_iterator(ray_tasks):
-                pb.update(variants)
-                if variants > 0:
-                    chunk_files.append(chunk_file)
-                    total_variants += variants
-
-        # Merge the per-chunk dataset files into one
-        merged_dataset = tf.data.TFRecordDataset(
-            chunk_files, compression_type="GZIP", num_parallel_reads=params.threads
-        )
-        with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-            for serialized_example in tqdm(
-                merged_dataset,
-                desc="Merging chunks into TFRecords file",
-                total=total_variants,
-                disable=not progress_bar,
-            ):
-                file_writer.write(serialized_example.numpy())
+    # Generate records for each region into a file
+    all_examples = make_vcf_examples(
+        params,
+        vcf_path,
+        read_path,
+        sample,
+        image_shape=image_shape,
+        sample_or_label=sample_or_label,
+        simulate=simulate,
+        region=region,
+    )
+    with tf.io.TFRecordWriter(output_path, filename_to_compression(output_path)) as file_writer:
+        total_variants = 0
+        for example in all_examples:
+            file_writer.write(example.SerializeToString())
+            total_variants += 1
+        return output_path, total_variants
 
 
 def _features_variant(features):
@@ -478,7 +440,7 @@ def _example_sim_tensor(example):
 
 def _extract_metadata_from_first_example(filename):
     raw_example = next(
-        iter(tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)))
+        iter(tf.data.TFRecordDataset(filenames=filename, compression_type=filename_to_compression(filename)))
     )
     example = tf.train.Example.FromString(raw_example.numpy())
 
@@ -581,7 +543,7 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False) ->
         else:
             return features, None
 
-    return tf.data.TFRecordDataset(filenames=filenames, compression_type=_filename_to_compression(filenames[0])).map(
+    return tf.data.TFRecordDataset(filenames=filenames, compression_type=filename_to_compression(filenames[0])).map(
         map_func=_process_input
     )
 
