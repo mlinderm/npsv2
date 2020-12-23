@@ -1,9 +1,13 @@
+import datetime, logging, os, tempfile
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
+
+from .util.config import Config, merge_config
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
+
 
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
@@ -33,6 +37,7 @@ def _cdist(tensors, squared: bool = False):
         tf.cast(tf.math.logical_not(error_mask), dtype=tf.dtypes.float32),
     )
     return distances
+
 
 def _inceptionv3_encoder(input_shape, normalize=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
@@ -165,32 +170,135 @@ class SiameseGenotyper:
         encoder = model.get_layer("encoder")
         encoder.save_weights(model_path)
 
-# class TripletModel:
-#     def __init__(self, input_shape, replicates):
-#         self.input_shape = input_shape
-#         self.replicates = replicates
+class GenotypingModelConfig(Config):
+    temp_dir: str = tempfile.gettempdir()
+    log_dir: str = None
+    learning_rate: float = 0.004
+    epochs: int = 20
 
-#     def model_fn(self, params=None, model_path:str=None):
-#         encoder = _inceptionv3_encoder(self.input_shape)
-#         embedding_shape = encoder.output_shape
+class GenotypingModel:
+    def summary(self):
+        self._model.summary()
+
+    def save(self, model_path: str):
+        # We only save the encoder weights
+        encoder = self._model.get_layer("encoder")
+        encoder.save_weights(model_path)
+
+    def _fit(self, config, training_dataset, validation_dataset=None, **kwargs):
+        checkpoint_filepath = os.path.join(config.tempdir, "checkpoint")
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
+        )
+        #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
+
+        callbacks=[checkpoint_callback] #,early_stopping]
+    
+        if config.log_dir:
+            log_dir = os.path.join(config.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            logging.info("Logging TensorBoard data to: %s", log_dir)
+            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+            callbacks.append(tensorboard_callback)
+
+        self._model.fit(
+            training_dataset,
+            validation_data=validation_dataset,
+            epochs=config.epochs,
+            callbacks=callbacks,
+        )
+    
+        # Reload best checkpoint
+        self._model.load_weights(checkpoint_filepath)
+
+
+class TripletModelConfig(GenotypingModelConfig):
+    shuffle: int = 1000
+
+class TripletModel(GenotypingModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        self.config = merge_config(TripletModelConfig(), kwargs)
         
-#         model = tf.keras.Sequential([
-#             layers.Input((3, self.replicates) + self.input_shape, name="support"))
-#             #layers.Reshape((3 * self.replicates,) + self.input_shape))
-#             layers.TimeDistributed(encoder))
-#             layers.Reshape(3 * self.replicates,)  + embedding_shape[-1:])
-#         ], "TripletModel")
+        self.image_shape = image_shape
+        self.replicates = replicates
 
-#         if model_path:
-#             encoder.load_weights(model_path)
+        encoder = _inceptionv3_encoder(image_shape, normalize=True)
+        
+        if model_path:
+            encoder.load_weights(model_path)
+        
+        self._model = TripletModel._model_from_encoder(encoder, image_shape, replicates)
 
-#         if params:
-#             # TODO: Set margin based on Facenet paper
-#             optimizer = tf.keras.optimizers.Adam(learning_rate=params.learning_rate)
-#             model.compile(
-#                 optimizer=optimizer,
-#                 loss=tfa.losses_triplet_semihard_loss,
-#             )
+    @classmethod
+    def _model_from_encoder(cls, encoder, image_shape, replicates):
+        embedding_shape = encoder.output_shape
+        support = layers.Input((3, replicates) + image_shape, batch_size=1, name="support")
+        support_embeddings = layers.Reshape((3 * replicates,) + image_shape)(support)
+        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_embeddings)
+        
+        query = layers.Input(image_shape, batch_size=1, name="query")
+        query_embeddings = encoder(query)
+        
+        # An alternate approach could use the genotype "cluster" means instead of cluster minimum
+        def _query_distances(tensors):
+            query_embeddings, support_batch = tensors
+            
+            support_distances =  _cdist([query_embeddings, tf.squeeze(support_batch, axis=0)])
+            cluster_distances = tf.math.reduce_min(tf.reshape(support_distances, (-1, 3, replicates)), axis=-1)
+            return cluster_distances
+
+        distances = layers.Lambda(_query_distances, name="distances")([query_embeddings, support_embeddings])
+        
+        # Convert distance to probability
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
+
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances, support_embeddings])
+
+    
+    def _train_input(self, config, dataset):
+        def _variant_to_training(features, original_label):
+            return ({ 
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32),
+            }, {
+                "support_embeddings": tf.repeat(range(3), repeats=self.replicates),
+                "genotypes": original_label,
+            })
+        
+        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(1)
+        
+
+    def fit(self, training_dataset, validation_dataset=None, **kwargs):
+        config = merge_config(self.config, kwargs)
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
+        
+        def _loss_wrapper(y_true, y_pred):
+            # We need to strip the batch size off for the provided triplet loss function
+            return tfa.losses.triplet_semihard_loss(tf.squeeze(y_true, axis=0), tf.squeeze(y_pred, axis=0))
+
+        self._model.compile(
+            optimizer=optimizer,
+            loss={ "support_embeddings": _loss_wrapper, "genotypes": "sparse_categorical_crossentropy" },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        )
+                
+        self._model.fit(
+            self._train_input(config, training_dataset),
+            epochs=config.epochs,
+        )
+
+    def _test_input(self, dataset):
+        def _variant_to_test(features, original_label):
+            return {
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=1),
+            }, original_label
+
+        return dataset.map(_variant_to_test).batch(1)
 
 
-#         return model
+    def predict(self, dataset, **kwargs):
+        # Build a simplified version of the model that expects only one replicate
+        encoder = self._model.get_layer("encoder")
+        model = TripletModel._model_from_encoder(encoder, self.image_shape, replicates=1)
+        return model.predict(self._test_input(dataset))

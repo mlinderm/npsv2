@@ -241,7 +241,7 @@ def main():
         import pandas as pd
         from .training import evaluate_model
 
-        table = evaluate_model(args.input, args.model)
+        table = evaluate_model(args, args.input, args.model)
 
         # Print various metrics
         gt_conc = np.mean(table.MATCH)

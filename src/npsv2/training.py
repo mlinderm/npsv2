@@ -270,39 +270,13 @@ def train(params, tfrecords_paths, model_path: str):
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-
-    genotyper = models.SiameseGenotyper(image_shape, replicates)
-
-    keras_model = genotyper.model_fn(params=params)
-    keras_model.summary()
-
-    checkpoint_filepath = os.path.join(params.tempdir, "checkpoint")
-    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
-    )
-    #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
-
-    callbacks=[checkpoint_callback] #,early_stopping]
+    genotyper = models.TripletModel(image_shape, replicates)
     
-    if params.log_dir:
-        log_dir = os.path.join(params.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-        logging.info("Logging TensorBoard data to: %s", log_dir)
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
-        callbacks.append(tensorboard_callback)
-
-
-    keras_model.fit(
-        genotyper.train_input(tfrecords_paths),
-        validation_data=genotyper.validation_input(tfrecords_paths),
-        epochs=params.epochs,
-        callbacks=callbacks
-    )
-   
-    # Reload best checkpoint
-    keras_model.load_weights(checkpoint_filepath)
-
+    dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
+    genotyper.fit(dataset, validation_dataset=dataset, epochs=params.epochs, learning_rate=params.learning_rate)
+    
     logging.info("Saving model in: %s", model_path)
-    genotyper.save_model(keras_model, model_path)
+    genotyper.save(model_path)
 
 
 def _variant_to_test_pairs(features, original_label):
@@ -326,33 +300,32 @@ def _variant_to_test_triples(features, original_label):
     return image_tensors, original_label, features["variant/encoded"]
 
 
-def evaluate_model(tfrecords_paths, model_path: str):
+def evaluate_model(params, tfrecords_paths, model_path: str):
     if isinstance(tfrecords_paths, str):
         tfrecords_paths = [tfrecords_paths]
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-
-    genotyper = models.SiameseGenotyper(image_shape, replicates)
-    model = genotyper.model_fn(model_path=model_path)
+    genotyper = models.TripletModel(image_shape, replicates, model_path=model_path)
     
     rows = []
-    for images, label, encoded_variant in genotyper.test_input(tfrecords_paths):
+    for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
         # Extract metadata for the variant
-        variant_proto = npsv2_pb2.StructuralVariant.FromString(tf.squeeze(encoded_variant).numpy())
+        variant_proto = npsv2_pb2.StructuralVariant.FromString(features.pop("variant/encoded").numpy())
 
         # Predict genotype
-        genotypes, *_ = model.predict(images)
-
+        dataset = tf.data.Dataset.from_tensors((features, original_label))
+        genotypes, *_  = genotyper.predict(dataset)
+        
         # Construct the DataFrame rows
         rows.append(pd.DataFrame({
             "SVLEN": variant_proto.svlen,
-            "LABEL": tf.squeeze(label).numpy(),
+            "LABEL": original_label,
             "AC": tf.math.argmax(genotypes, axis=1),
         }))
 
     table = pd.concat(rows, ignore_index=True)
-    
+
     table["AC"] = pd.Categorical(table["AC"], categories=[0, 1, 2])
     table["LABEL"] = pd.Categorical(table["LABEL"], categories=[0, 1, 2])
     table["MATCH"] = table.LABEL == table.AC
