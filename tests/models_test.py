@@ -5,7 +5,7 @@ from npsv2.images import load_example_dataset
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-@unittest.skip("Development")
+@unittest.skip("Development only")
 class TripletModelTest(unittest.TestCase):
     def test_construct_model(self):
         model = TripletModel((100, 300, 5), 5)

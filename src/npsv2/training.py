@@ -307,7 +307,8 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
     genotyper = models.TripletModel(image_shape, replicates, model_path=model_path)
-    
+    predict_fn = genotyper.make_predict()
+
     rows = []
     for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
         # Extract metadata for the variant
@@ -315,8 +316,15 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
 
         # Predict genotype
         dataset = tf.data.Dataset.from_tensors((features, original_label))
-        genotypes, *_  = genotyper.predict(dataset)
+        genotypes, distances, *_  = predict_fn(dataset)
         
+        print(variant_proto, genotypes, distances)
+        # if tf.math.argmax(genotypes, axis=1) == label and label == 2:
+        #     print(variant_proto, genotypes, distances)
+        #     errors += 1
+        # assert errors < 10
+
+
         # Construct the DataFrame rows
         rows.append(pd.DataFrame({
             "SVLEN": variant_proto.svlen,
@@ -344,46 +352,44 @@ def _variant_to_visualize_pairs(features, original_label, image_shape, replicate
     }
     return image_tensors, original_label, features["variant/encoded"]
 
-def visualize_embeddings(model, dataset, image_shape=None, replicates=None):
-    if isinstance(model, str):
-        model = tf.keras.models.load_model(
-            model,
-            custom_objects={"distance_accuracy": distance_accuracy, "contrastive_loss": tfa.losses.contrastive_loss},
-        )
-    assert isinstance(model, tf.keras.Model), "Valid model or path not provided"
+def visualize_embeddings(tfrecords_paths, model_path, labels=["Hom. ref.", "Het.", "Hom. alt."], colors=["red", "green", "blue"]):
+    # Setup for plotting
+    import matplotlib.pyplot as plt
+    from sklearn import decomposition
+    from sklearn.preprocessing import StandardScaler
+    
+    pca = decomposition.PCA(n_components=2)
 
-    if isinstance(dataset, str):
-        image_shape, replicates = _extract_metadata_from_first_example(dataset)
-        dataset = load_example_dataset(dataset, with_label=True, with_simulations=True)
+    if isinstance(tfrecords_paths, str):
+        tfrecords_paths = [tfrecords_paths]
+    assert len(tfrecords_paths) > 0
 
-    model.summary()
-    # encoder = model.get_layer("encoder")
-    # encoder.summary()
+    image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
 
-    variant_to_visualize_pairs = functools.partial(_variant_to_visualize_pairs, image_shape=image_shape, replicates=replicates)
-    test_dataset = dataset.map(variant_to_visualize_pairs)
-
-    for images, label, encoded_variant in test_dataset:
+    # Extract underlying encoder
+    genotyper = models.SiameseGenotyper(image_shape, replicates)
+    model = genotyper.model_fn(model_path=model_path)
+    encoder = model.get_layer("encoder")
+    
+    example_dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
+    for i, (features, original_label) in enumerate(example_dataset):
+        query_embeddings = encoder.predict(tf.expand_dims(tf.image.convert_image_dtype(features["image"], dtype=tf.float32), axis=0))
         
-        rows = []
-        for (r1, r2) in itertools.combinations(range(3 * replicates), 2):
-            p = model.predict({ 
-                "query": tf.reshape(images["support"][r1 // replicates][r1 % replicates], (1,) + image_shape),
-                "support": tf.reshape(images["support"][r2 // replicates][r2 % replicates], (1,) + image_shape),
-            })
-            print(r1, r2, p)
+        support_images = tf.reshape(tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32), (-1,) + image_shape)
+        support_embeddings = encoder.predict(support_images)
 
-            rows.append(
-                pd.DataFrame(
-                    dict(AC1=r1 // replicates, AC2=r2 // replicates, SIM=p[0])
-                )
-            )
-
-        table = pd.concat(rows, ignore_index=True)
-
-        print(table.groupby(["AC1", "AC2"]).mean())
-    #   print(model.predict(images))
-    #     query_embeddings = encoder.predict(tf.reshape(images["query"], (1,) + image_shape))
-    #     support_embeddings = encoder.predict(tf.reshape(images["support"], (-1,) + image_shape))
-    #     print(distance.cdist(query_embeddings, support_embeddings))
+        embeddings = tf.concat([support_embeddings, query_embeddings], axis=0)
+        embeddings_std = StandardScaler().fit_transform(embeddings.numpy())
+        embeddings_2d = pca.fit_transform(embeddings_std)
+        
+        plt, ax = plt.subplots()
+        for ac in range(3):
+            ac_embeddings = embeddings_2d[ac*replicates:(ac+1)*replicates,:]
+            ax.scatter(ac_embeddings[:,0], ac_embeddings[:,1], c=colors[ac], label=labels[ac])
+        
+        real_embeddings = embeddings_2d[3 * replicates, :]
+        ax.scatter(real_embeddings[0], real_embeddings[1], marker="x", c="black", label="Real")
+        ax.legend()
+        plt.savefig(f"variant{i}.png")
+    
         

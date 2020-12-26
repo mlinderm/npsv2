@@ -305,23 +305,7 @@ def make_vcf_examples(
 
                 # Generate synthetic training images
                 ac_encoded_images = [None] * 3
-                if params.sample_ref:
-                    # Sample random variants from the genome to create the 0/0 replicates
-                    ac_to_sim = (1, 2)
-
-                    repl_encoded_images = []
-                    for random_variant in random_variants.generate(variant, n=params.replicates):
-                        random_variant_region = random_variant.reference_region.expand(padding)
-                        synth_image_tensor = create_single_example(
-                            params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
-                        )
-                        repl_encoded_images.append(synth_image_tensor)
-
-                    # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
-                    ac_encoded_images[0] = np.stack(repl_encoded_images)
-                else:
-                    ac_to_sim = (0, 1, 2)
-
+           
                 # If we are augmenting the simulated data, use the provided statistics for the first example, so it
                 # will hopefully be similar to the real data and the augment the remaining replicates
                 if params.augment:
@@ -329,7 +313,7 @@ def make_vcf_examples(
                 else:
                     repl_samples = [sample] * params.replicates
 
-                for allele_count in ac_to_sim:
+                for allele_count in range(3):
                     with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
                         # Generate the FASTA file for this zygosity
                         fasta_path, ref_contig, alt_contig = variant.synth_fasta(
@@ -338,7 +322,9 @@ def make_vcf_examples(
 
                         # Generate and image synthetic bam files
                         repl_encoded_images = []
-                        for i in range(params.replicates):
+                        
+                        replicates = params.replicates if allele_count != 0 or not params.sample_ref else 3         
+                        for i in range(replicates):
                             replicate_bam_path = simulate_variant_sequencing(
                                 params, fasta_path, allele_count, repl_samples[i], dir=tempdir
                             )
@@ -352,6 +338,15 @@ def make_vcf_examples(
                                 realigner=realigner,
                             )
                             repl_encoded_images.append(synth_image_tensor)
+
+                        # Fill remaining images with sampled reference variants
+                        if allele_count == 0 and params.sample_ref:
+                            for random_variant in random_variants.generate(variant, n=2): #params.replicates-1):
+                                random_variant_region = random_variant.reference_region.expand(padding)
+                                synth_image_tensor = create_single_example(
+                                    params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
+                                )
+                                repl_encoded_images.append(synth_image_tensor)
 
                         # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
                         ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
@@ -525,7 +520,7 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image_mode = "RGB"
         channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
         #image_mode = "L"
-        #channels = ALT_INSERT_SIZE_CHANNEL
+        #channels = ALLELE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 

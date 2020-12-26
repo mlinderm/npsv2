@@ -147,12 +147,14 @@ def make_argument_parser():
     )
     parser_evaluate.add_argument("-m", "--model", help="Saved model", type=str, required=True)
 
-    # Evaluation
+    # Plot embeddings
     parser_embeddings = subparsers.add_parser(
         "embeddings", help="Plot embeddings", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser_embeddings.add_argument(
+        "-i", "--input", help="Input tfrecords file", type=str, action="append", required=True
+    )
     parser_embeddings.add_argument("-m", "--model", help="Saved model", type=str, required=True)
-    parser_embeddings.add_argument("-d", "--dataset", help="Input tfrecords file", type=str, required=True)
 
     # Simulate effect of GC on sequencing coverage
     parser_sim_gc = subparsers.add_parser("simgc", help="Model effect of GC on sequencing coverage")
@@ -223,6 +225,9 @@ def main():
         from .images import example_to_image, _filename_to_compression
 
         dataset = tf.data.TFRecordDataset(filenames=args.input, compression_type=_filename_to_compression(args.input))
+        
+        # Filter by region if specified
+        
         for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
             example = tf.train.Example()
             example.ParseFromString(record.numpy())
@@ -257,7 +262,7 @@ def main():
     elif args.command == "embeddings":
         from .training import visualize_embeddings
 
-        visualize_embeddings(args.model, args.dataset)
+        visualize_embeddings(args.input, args.model)
 
     elif args.command == "simgc":
         from .simulation import filter_reads_gc

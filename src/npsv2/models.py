@@ -118,9 +118,9 @@ class SiameseGenotyper:
     def train_input(self, filenames, shuffle=1000, batch_size=24):
         example_dataset = load_example_dataset(filenames, with_label=True, with_simulations=True)
 
-        example_dataset = example_dataset.shuffle(1000, reshuffle_each_iteration=True)
-        #example_dataset = example_dataset.flat_map(_variant_to_allsim_training_triples)
-        example_dataset = example_dataset.flat_map(_variant_to_real_training_triples)
+        example_dataset = example_dataset.shuffle(shuffle, reshuffle_each_iteration=True)
+        example_dataset = example_dataset.flat_map(_variant_to_allsim_training_triples)
+        #example_dataset = example_dataset.flat_map(_variant_to_real_training_triples)
         example_dataset = example_dataset.batch(batch_size)
         
         return example_dataset
@@ -134,6 +134,7 @@ class SiameseGenotyper:
 
         # Strip off variant description and batch the same way as the training data
         return example_dataset.map(_variant_to_test_triples).map(lambda image_tensors, original_label, _: (image_tensors, original_label)).batch(batch_size)
+        #return None
 
     def model_fn(self, params=None, model_path:str=None):
         encoder = _inceptionv3_encoder(self.input_shape)
@@ -176,7 +177,7 @@ class GenotypingModelConfig(Config):
     learning_rate: float = 0.004
     epochs: int = 20
 
-class GenotypingModel:
+class GenotypingModel:    
     def summary(self):
         self._model.summary()
 
@@ -212,7 +213,9 @@ class GenotypingModel:
 
 
 class TripletModelConfig(GenotypingModelConfig):
+    variants_per_batch: int = 8
     shuffle: int = 1000
+
 
 class TripletModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
@@ -221,8 +224,7 @@ class TripletModel(GenotypingModel):
         self.image_shape = image_shape
         self.replicates = replicates
 
-        encoder = _inceptionv3_encoder(image_shape, normalize=True)
-        
+        encoder = _inceptionv3_encoder(image_shape, normalize=True)       
         if model_path:
             encoder.load_weights(model_path)
         
@@ -231,18 +233,23 @@ class TripletModel(GenotypingModel):
     @classmethod
     def _model_from_encoder(cls, encoder, image_shape, replicates):
         embedding_shape = encoder.output_shape
-        support = layers.Input((3, replicates) + image_shape, batch_size=1, name="support")
+        
+        support = layers.Input((3, replicates) + image_shape, name="support")
         support_embeddings = layers.Reshape((3 * replicates,) + image_shape)(support)
         support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_embeddings)
-        
-        query = layers.Input(image_shape, batch_size=1, name="query")
+       
+        query = layers.Input(image_shape, name="query")
         query_embeddings = encoder(query)
         
-        # An alternate approach could use the genotype "cluster" means instead of cluster minimum
         def _query_distances(tensors):
             query_embeddings, support_batch = tensors
-            
-            support_distances =  _cdist([query_embeddings, tf.squeeze(support_batch, axis=0)])
+
+            # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
+            # distances between query example and all support examples
+            support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), dtype=tf.dtypes.float32)
+            support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+
+            # An alternate approach could use the genotype "cluster" means instead of cluster minimum
             cluster_distances = tf.math.reduce_min(tf.reshape(support_distances, (-1, 3, replicates)), axis=-1)
             return cluster_distances
 
@@ -255,16 +262,18 @@ class TripletModel(GenotypingModel):
 
     
     def _train_input(self, config, dataset):
-        def _variant_to_training(features, original_label):
+        def _variant_to_training(index, element):
+            features, original_label = element
+            triplet_labels = range(3*index, 3*(index + 1))
             return ({ 
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
                 "support": tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32),
             }, {
-                "support_embeddings": tf.repeat(range(3), repeats=self.replicates),
+                "support_embeddings": tf.repeat(triplet_labels, repeats=self.replicates),
                 "genotypes": original_label,
             })
         
-        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(1)
+        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).enumerate().map(_variant_to_training).batch(config.variants_per_batch)
         
 
     def fit(self, training_dataset, validation_dataset=None, **kwargs):
@@ -273,12 +282,16 @@ class TripletModel(GenotypingModel):
         optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
         
         def _loss_wrapper(y_true, y_pred):
-            # We need to strip the batch size off for the provided triplet loss function
-            return tfa.losses.triplet_semihard_loss(tf.squeeze(y_true, axis=0), tf.squeeze(y_pred, axis=0))
+            # "Flatten" batch size (assuming unique label for each variant)
+            embedding_shape = tf.shape(y_pred)
+            y_true = tf.reshape(y_true, (-1,))
+            y_pred = tf.reshape(y_pred, (-1, embedding_shape[-1]))
+            return tfa.losses.triplet_semihard_loss(y_true, y_pred)
 
         self._model.compile(
             optimizer=optimizer,
-            loss={ "support_embeddings": _loss_wrapper, "genotypes": "sparse_categorical_crossentropy" },
+            #loss={ "support_embeddings": _loss_wrapper, "genotypes": "sparse_categorical_crossentropy" },
+            loss={ "genotypes": "sparse_categorical_crossentropy" },
             metrics={ "genotypes": ["sparse_categorical_accuracy"] },
         )
                 
@@ -297,8 +310,13 @@ class TripletModel(GenotypingModel):
         return dataset.map(_variant_to_test).batch(1)
 
 
-    def predict(self, dataset, **kwargs):
+    def make_predict(self, **kwargs):
         # Build a simplified version of the model that expects only one replicate
         encoder = self._model.get_layer("encoder")
         model = TripletModel._model_from_encoder(encoder, self.image_shape, replicates=1)
-        return model.predict(self._test_input(dataset))
+        
+        return lambda dataset: model.predict(self._test_input(dataset))
+
+    def predict(self, dataset, **kwargs):
+        predict_fn = self.make_predict(**kwargs)
+        return predict_fn(dataset)
