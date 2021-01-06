@@ -17,12 +17,14 @@ class Sample:
     def __init__(self, name, **kwargs):
         self.name = name
         
+        self.bam = kwargs.get("bam", None)
         self.gender = kwargs.get("gender", 0)  # Use PED encoding
-        self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
-
-        # Fields initialized to None
-        for k in _SAMPLE_STATS_FIELDS + ("bam",):
+        
+        # Statistics fields initialized to None
+        for k in _SAMPLE_STATS_FIELDS:
             setattr(self, k, kwargs.get(k, None))
+
+        self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
         
 
     def gc_normalized_coverage(self, gc_fraction: int) -> float:
