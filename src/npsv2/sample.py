@@ -21,7 +21,7 @@ class Sample:
         self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
 
         # Fields initialized to None
-        for k in ("sequencer", "read_length", "mean_coverage", "mean_insert_size", "std_insert_size"):
+        for k in _SAMPLE_STATS_FIELDS + ("bam",):
             setattr(self, k, kwargs.get(k, None))
         
 
@@ -34,6 +34,9 @@ class Sample:
             sample_info = json.load(file)
 
             fields = {k: sample_info[k] for k in _SAMPLE_STATS_FIELDS}
+
+            # Optional fields
+            fields["bam"] = sample_info.get("bam", None)
 
             # Filter GC entries with limited data
             gc_normalized_coverage = {}
