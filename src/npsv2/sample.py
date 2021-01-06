@@ -17,12 +17,14 @@ class Sample:
     def __init__(self, name, **kwargs):
         self.name = name
         
+        self.bam = kwargs.get("bam", None)
         self.gender = kwargs.get("gender", 0)  # Use PED encoding
-        self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
-
-        # Fields initialized to None
-        for k in ("sequencer", "read_length", "mean_coverage", "mean_insert_size", "std_insert_size"):
+        
+        # Statistics fields initialized to None
+        for k in _SAMPLE_STATS_FIELDS:
             setattr(self, k, kwargs.get(k, None))
+
+        self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
         
 
     def gc_normalized_coverage(self, gc_fraction: int) -> float:
@@ -34,6 +36,9 @@ class Sample:
             sample_info = json.load(file)
 
             fields = {k: sample_info[k] for k in _SAMPLE_STATS_FIELDS}
+
+            # Optional fields
+            fields["bam"] = sample_info.get("bam", None)
 
             # Filter GC entries with limited data
             gc_normalized_coverage = {}

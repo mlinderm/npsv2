@@ -234,15 +234,95 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
+def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, **kwargs):
+    # TODO: Handle odd sized variants when padding
+    variant_region = variant.reference_region
+    padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
+    example_region = variant_region.expand(padding)
+
+    # Construct realigner once for all images for this variant
+    realigner = _create_realigner(params, variant, sample)
+
+    # Construct image for "real" data
+    image_tensor = create_single_example(
+        params, variant, read_path, example_region, sample, realigner=realigner, **kwargs
+    )
+    feature = {
+        "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
+        "image/shape": _int_feature(image_tensor.shape),
+        "image/encoded": _bytes_feature(tf.io.serialize_tensor(image_tensor)),
+    }
+
+    if label is not None:
+        feature["label"] = _int_feature([label])
+
+    if simulate and params.replicates > 0:
+        # A 5-D tensor for simulated images (AC, REPLICATES, ROW, COLS, CHANNELS)
+        feature["sim/images/shape"] = _int_feature((3, params.replicates) + image_tensor.shape)
+
+        # Generate synthetic training images
+        ac_encoded_images = [None] * 3
+    
+        # If we are augmenting the simulated data, use the provided statistics for the first example, so it
+        # will hopefully be similar to the real data and the augment the remaining replicates
+        if params.augment:
+            repl_samples = augment_samples(sample, params.replicates, keep_original=True)
+        else:
+            repl_samples = [sample] * params.replicates
+
+        for allele_count in range(3):
+            with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
+                # Generate the FASTA file for this zygosity
+                fasta_path, ref_contig, alt_contig = variant.synth_fasta(
+                    reference_fasta=params.reference, ac=allele_count, flank=params.flank, dir=tempdir
+                )
+
+                # Generate and image synthetic bam files
+                repl_encoded_images = []
+                
+                replicates = params.replicates if allele_count != 0 or not params.sample_ref else 3         
+                for i in range(replicates):
+                    replicate_bam_path = simulate_variant_sequencing(
+                        params, fasta_path, allele_count, repl_samples[i], dir=tempdir
+                    )
+                    synth_image_tensor = create_single_example(
+                        params,
+                        variant,
+                        replicate_bam_path,
+                        example_region,
+                        repl_samples[i],
+                        image_shape=image_shape,
+                        realigner=realigner,
+                    )
+                    repl_encoded_images.append(synth_image_tensor)
+
+                # Fill remaining images with sampled reference variants
+                if allele_count == 0 and params.sample_ref:
+                    for random_variant in random_variants.generate(variant, n=2): #params.replicates-1):
+                        random_variant_region = random_variant.reference_region.expand(padding)
+                        synth_image_tensor = create_single_example(
+                            params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
+                        )
+                        repl_encoded_images.append(synth_image_tensor)
+
+                # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
+                ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
+
+        # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into 5-D tensor
+        sim_image_tensor = np.stack(ac_encoded_images)
+        feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
+
+    return tf.train.Example(features=tf.train.Features(feature=feature))
+
+
 def make_vcf_examples(
     params,
     vcf_path: str,
     read_path: str,
     sample: Sample,
-    image_shape=None,
     sample_or_label=None,
-    simulate=False,
     region: str = None,
+    **kwargs,
 ):
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
@@ -277,85 +357,9 @@ def make_vcf_examples(
             if region and not query_range.contains(variant.start):
                 continue
 
-            # TODO: Handle odd sized variants when padding
-            variant_region = variant.reference_region
-            padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
-            example_region = variant_region.expand(padding)
-
-            # Construct realigner once for all images for this variant
-            realigner = _create_realigner(params, variant, sample)
-
-            # Construct image for "real" data
-            image_tensor = create_single_example(
-                params, variant, read_path, example_region, sample, image_shape=image_shape, realigner=realigner
-            )
-            feature = {
-                "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
-                "image/shape": _int_feature(image_tensor.shape),
-                "image/encoded": _bytes_feature(tf.io.serialize_tensor(image_tensor)),
-            }
-
             label = label_extractor(variant)
-            if label is not None:
-                feature["label"] = _int_feature([label])
-
-            if simulate and params.replicates > 0:
-                # A 5-D tensor for simulated images (AC, REPLICATES, ROW, COLS, CHANNELS)
-                feature["sim/images/shape"] = _int_feature((3, params.replicates) + image_tensor.shape)
-
-                # Generate synthetic training images
-                ac_encoded_images = [None] * 3
+            yield make_variant_example(params, variant, read_path, sample,  label=label, **kwargs)
            
-                # If we are augmenting the simulated data, use the provided statistics for the first example, so it
-                # will hopefully be similar to the real data and the augment the remaining replicates
-                if params.augment:
-                    repl_samples = augment_samples(sample, params.replicates, keep_original=True)
-                else:
-                    repl_samples = [sample] * params.replicates
-
-                for allele_count in range(3):
-                    with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
-                        # Generate the FASTA file for this zygosity
-                        fasta_path, ref_contig, alt_contig = variant.synth_fasta(
-                            reference_fasta=params.reference, ac=allele_count, flank=params.flank, dir=tempdir
-                        )
-
-                        # Generate and image synthetic bam files
-                        repl_encoded_images = []
-                        
-                        replicates = params.replicates if allele_count != 0 or not params.sample_ref else 3         
-                        for i in range(replicates):
-                            replicate_bam_path = simulate_variant_sequencing(
-                                params, fasta_path, allele_count, repl_samples[i], dir=tempdir
-                            )
-                            synth_image_tensor = create_single_example(
-                                params,
-                                variant,
-                                replicate_bam_path,
-                                example_region,
-                                repl_samples[i],
-                                image_shape=image_shape,
-                                realigner=realigner,
-                            )
-                            repl_encoded_images.append(synth_image_tensor)
-
-                        # Fill remaining images with sampled reference variants
-                        if allele_count == 0 and params.sample_ref:
-                            for random_variant in random_variants.generate(variant, n=2): #params.replicates-1):
-                                random_variant_region = random_variant.reference_region.expand(padding)
-                                synth_image_tensor = create_single_example(
-                                    params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
-                                )
-                                repl_encoded_images.append(synth_image_tensor)
-
-                        # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
-                        ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
-
-                # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into 5-D tensor
-                sim_image_tensor = np.stack(ac_encoded_images)
-                feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
-
-            yield tf.train.Example(features=tf.train.Features(feature=feature))
 
 
 def _filename_to_compression(filename: str) -> str:
@@ -409,10 +413,10 @@ def vcf_to_tfrecords(
             vcf_path,
             read_path,
             sample,
-            image_shape=image_shape,
             sample_or_label=sample_or_label,
-            simulate=simulate,
             region=region,
+            image_shape=image_shape,
+            simulate=simulate,
         )
         with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
             total_variants = 0
@@ -480,7 +484,7 @@ def _example_sim_images_shape(example):
         return (3, 0, None, None, None)
 
 
-def _example_sim_tensor(example):
+def _example_sim_images(example):
     image_data = tf.io.parse_tensor(
         example.features.feature["sim/images/encoded"].bytes_list.value[0], tf.uint8
     ).numpy()
@@ -534,7 +538,7 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
         image = Image.new(image_mode, (width + 2 * (width + margin), height + replicates * (height + margin)))
         image.paste(real_image, (width + margin, 0))
 
-        synth_tensor = _example_sim_tensor(example)
+        synth_tensor = _example_sim_images(example)
         for ac in (0, 1, 2):
             for repl in range(replicates):
                 synth_image_tensor = synth_tensor[ac, repl]
@@ -570,9 +574,6 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False) ->
                 "sim/images/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
             }
         )
-
-    def _decode_image(image_feature):
-        return tf.reshape(tf.io.decode_raw(image_feature, tf.uint8), shape)
 
     # Adapted from Nucleus example
     def _process_input(proto_string):
