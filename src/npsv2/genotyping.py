@@ -17,7 +17,8 @@ def ac_to_genotype(ac):
 def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: str, image_shape, progress_bar=False,):
     # Create genotyper model
     # TODO: Extract shape from saved model
-    genotyper = models.TripletModel(image_shape + (images.IMAGE_CHANNELS,), 1, model_path=model_path)
+    genotyper = models.JointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), 1, model_path=model_path)
+    predict_fn = genotyper.make_predict()
 
     with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 
@@ -47,7 +48,7 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
                 dst_samples = []
                 for sample in ordered_samples:
                     # TODO: Set the minimum number of replicates for genotyping here
-                    example = images.make_variant_example(params, variant, sample.bam, sample, label=None, simulate=True)
+                    example = images.make_variant_example(params, variant, sample.bam, sample, label=None, simulate=True, image_shape=image_shape)
                     
                     # Convert example to features
                     features = {
@@ -57,7 +58,7 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
 
                     # Predict genotype
                     dataset = tf.data.Dataset.from_tensors((features, None))
-                    genotypes, distances, *_  = genotyper.predict(dataset)
+                    genotypes, distances, *_  = predict_fn(dataset)
                     
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     dst_samples.append({

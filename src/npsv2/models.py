@@ -43,6 +43,7 @@ def _inceptionv3_encoder(input_shape, normalize=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
     base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+    #base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
     base_model.trainable = True
     
     encoder = tf.keras.models.Sequential([
@@ -314,6 +315,114 @@ class TripletModel(GenotypingModel):
         # Build a simplified version of the model that expects only one replicate
         encoder = self._model.get_layer("encoder")
         model = TripletModel._model_from_encoder(encoder, self.image_shape, replicates=1)
+        
+        return lambda dataset: model.predict(self._test_input(dataset))
+
+    def predict(self, dataset, **kwargs):
+        predict_fn = self.make_predict(**kwargs)
+        return predict_fn(dataset)
+
+
+class JointEmbeddingsModelConfig(GenotypingModelConfig):
+    variants_per_batch: int = 8
+    shuffle: int = 1000
+
+
+class JointEmbeddingsModel(GenotypingModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        self.config = merge_config(JointEmbeddingsModelConfig(), kwargs)
+        
+        self.image_shape = image_shape
+        self.replicates = replicates
+
+        encoder = _inceptionv3_encoder(image_shape, normalize=True)       
+        if model_path:
+            encoder.load_weights(model_path)
+        
+        self._model = JointEmbeddingsModel._model_from_encoder(encoder, image_shape, replicates)
+    
+    @classmethod
+    def _model_from_encoder(cls, encoder, image_shape, replicates):
+        embedding_shape = encoder.output_shape
+        
+        support = layers.Input((3, replicates) + image_shape, name="support")
+        support_embeddings = layers.Reshape((3 * replicates,) + image_shape)(support)
+        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_embeddings)
+       
+        query = layers.Input(image_shape, name="query")
+        query_embeddings = encoder(query)
+        
+        def _query_distances(tensors):
+            query_embeddings, support_batch = tensors
+
+            # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
+            # distances between query example and all support examples
+            support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), dtype=tf.dtypes.float32)
+            support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+
+            return support_distances
+
+        support_distances = layers.Lambda(_query_distances, name="support_distances")([query_embeddings, support_embeddings])
+        
+        # An alternate approach could use the genotype "cluster" means instead of cluster minimum
+        distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, replicates)), axis=-1), name="distances")(support_distances)
+        
+        # Convert distance to probability
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
+
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances, support_distances])
+
+    def _train_input(self, config, dataset):
+        def _variant_to_training(features, original_label):
+            contrastive_labels = tf.one_hot(original_label, depth=3, dtype=tf.float32)
+
+            return ({ 
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32),
+            }, {
+                "support_distances": tf.repeat(contrastive_labels, repeats=self.replicates),
+                "genotypes": original_label,
+            })
+        
+        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(config.variants_per_batch)
+        
+
+    def fit(self, training_dataset, validation_dataset=None, **kwargs):
+        config = merge_config(self.config, kwargs)
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
+        
+        def _loss_wrapper(y_true, y_pred):
+            # "Flatten" batch size
+            y_true = tf.reshape(y_true, (-1,))
+            y_pred = tf.reshape(y_pred, (-1,))
+            return tfa.losses.contrastive_loss(y_true, y_pred)
+
+        self._model.compile(
+            optimizer=optimizer,
+            loss={ "support_distances": _loss_wrapper },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        )
+                
+        self._model.fit(
+            self._train_input(config, training_dataset),
+            epochs=config.epochs,
+        )
+
+    def _test_input(self, dataset):
+        def _variant_to_test(features, original_label):
+            return {
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=1),
+            }, original_label
+
+        return dataset.map(_variant_to_test).batch(1)
+
+
+    def make_predict(self, **kwargs):
+        # Build a simplified version of the model that expects only one replicate
+        encoder = self._model.get_layer("encoder")
+        model = JointEmbeddingsModel._model_from_encoder(encoder, self.image_shape, replicates=1)
         
         return lambda dataset: model.predict(self._test_input(dataset))
 

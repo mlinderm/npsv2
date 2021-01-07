@@ -270,7 +270,7 @@ def train(params, tfrecords_paths, model_path: str):
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-    genotyper = models.TripletModel(image_shape, replicates)
+    genotyper = models.JointEmbeddingsModel(image_shape, replicates)
     
     dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
     genotyper.fit(dataset, validation_dataset=dataset, epochs=params.epochs, learning_rate=params.learning_rate)
@@ -306,7 +306,7 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-    genotyper = models.TripletModel(image_shape, replicates, model_path=model_path)
+    genotyper = models.JointEmbeddingsModel(image_shape, replicates, model_path=model_path)
     predict_fn = genotyper.make_predict()
 
     rows = []
@@ -367,8 +367,8 @@ def visualize_embeddings(tfrecords_paths, model_path, labels=["Hom. ref.", "Het.
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
 
     # Extract underlying encoder
-    genotyper = models.SiameseGenotyper(image_shape, replicates)
-    model = genotyper.model_fn(model_path=model_path)
+    genotyper = models.JointEmbeddingsModel(image_shape, replicates, model_path=model_path)
+    model = genotyper._model
     encoder = model.get_layer("encoder")
     
     example_dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)

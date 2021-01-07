@@ -291,8 +291,8 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                         replicate_bam_path,
                         example_region,
                         repl_samples[i],
-                        image_shape=image_shape,
                         realigner=realigner,
+                        **kwargs
                     )
                     repl_encoded_images.append(synth_image_tensor)
 
@@ -301,7 +301,7 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                     for random_variant in random_variants.generate(variant, n=2): #params.replicates-1):
                         random_variant_region = random_variant.reference_region.expand(padding)
                         synth_image_tensor = create_single_example(
-                            params, random_variant, read_path, random_variant_region, sample, image_shape=image_shape,
+                            params, random_variant, read_path, random_variant_region, sample, **kwargs
                         )
                         repl_encoded_images.append(synth_image_tensor)
 
@@ -521,10 +521,10 @@ def example_to_image(example: tf.train.Example, out_path: str, with_simulations=
     elif len(shape) == 3 or shape[2] > 3:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        image_mode = "RGB"
-        channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        #image_mode = "L"
-        #channels = ALLELE_CHANNEL
+        #image_mode = "RGB"
+        #channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+        image_mode = "L"
+        channels = ALLELE_CHANNEL
     else:
         raise ValueError("Unsupported image shape")
 
