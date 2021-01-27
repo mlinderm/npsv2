@@ -1,7 +1,10 @@
+from collections import defaultdict
 from pysam.libcutils import parse_region
 from pysam import AlignedSegment
+from intervaltree import Interval, IntervalTree
 
 class Range(object):
+    # Zero indexed start, 0-indexed exclusive end
     def __init__(self, contig, start, end):
         self.contig = contig
         self.start = start
@@ -49,3 +52,27 @@ class Range(object):
             return max(0, min(self.end, other.end) - max(self.start, other.start))
         else:
             raise NotImplementedError()
+
+    def union(self, other: "Range") -> "Range":
+        if self.contig != other.contig:
+            raise ValueError("Can't union Ranges with different contigs")
+        return Range(self.contig, min(self.start, other.start), max(self.end, other.end))
+
+class RangeTree:
+    def __init__(self):
+        self._trees = defaultdict(IntervalTree)
+
+    def add(self, region: Range, data):
+        return self._trees[region.contig].addi(region.start, region.end, data)
+
+    def overlap(self, region: Range):
+        return self._trees[region.contig].overlap(region.start, region.end)
+
+    def merge_overlaps(self, **kwargs):
+        for tree in self._trees.values():
+            tree.merge_overlaps(**kwargs)
+
+    def values(self):
+        for tree in self._trees.values():
+            for _, _, data in tree.items():
+                yield data

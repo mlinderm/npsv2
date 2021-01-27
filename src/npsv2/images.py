@@ -234,7 +234,7 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, **kwargs):
+def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, replicates=0, **kwargs):
     # TODO: Handle odd sized variants when padding
     variant_region = variant.reference_region
     padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
@@ -256,9 +256,9 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
     if label is not None:
         feature["label"] = _int_feature([label])
 
-    if simulate and params.replicates > 0:
+    if simulate and replicates > 0:
         # A 5-D tensor for simulated images (AC, REPLICATES, ROW, COLS, CHANNELS)
-        feature["sim/images/shape"] = _int_feature((3, params.replicates) + image_tensor.shape)
+        feature["sim/images/shape"] = _int_feature((3, replicates) + image_tensor.shape)
 
         # Generate synthetic training images
         ac_encoded_images = [None] * 3
@@ -266,9 +266,9 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
         # If we are augmenting the simulated data, use the provided statistics for the first example, so it
         # will hopefully be similar to the real data and the augment the remaining replicates
         if params.augment:
-            repl_samples = augment_samples(sample, params.replicates, keep_original=True)
+            repl_samples = augment_samples(sample, replicates, keep_original=True)
         else:
-            repl_samples = [sample] * params.replicates
+            repl_samples = [sample] * replicates
 
         for allele_count in range(3):
             with tempfile.TemporaryDirectory(dir=params.tempdir) as tempdir:
@@ -280,11 +280,16 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                 # Generate and image synthetic bam files
                 repl_encoded_images = []
                 
-                replicates = params.replicates if allele_count != 0 or not params.sample_ref else 3         
-                for i in range(replicates):
-                    replicate_bam_path = simulate_variant_sequencing(
-                        params, fasta_path, allele_count, repl_samples[i], dir=tempdir
-                    )
+                sim_replicates = replicates if allele_count != 0 or not params.sample_ref else 3         
+                for i in range(sim_replicates):
+                    try:
+                        replicate_bam_path = simulate_variant_sequencing(
+                            params, fasta_path, allele_count, repl_samples[i], dir=tempdir
+                        )
+                    except ValueError:
+                        logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
+                        raise
+
                     synth_image_tensor = create_single_example(
                         params,
                         variant,
@@ -358,7 +363,7 @@ def make_vcf_examples(
                 continue
 
             label = label_extractor(variant)
-            yield make_variant_example(params, variant, read_path, sample,  label=label, **kwargs)
+            yield make_variant_example(params, variant, read_path, sample,  label=label, replicates=params.replicates, **kwargs)
            
 
 

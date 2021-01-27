@@ -394,9 +394,10 @@ class JointEmbeddingsModel(GenotypingModel):
         
         def _loss_wrapper(y_true, y_pred):
             # "Flatten" batch size
-            y_true = tf.reshape(y_true, (-1,))
+            y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
             y_pred = tf.reshape(y_pred, (-1,))
-            return tfa.losses.contrastive_loss(y_true, y_pred)
+            weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
+            return tfa.losses.contrastive_loss(y_true, y_pred) * weights
 
         self._model.compile(
             optimizer=optimizer,

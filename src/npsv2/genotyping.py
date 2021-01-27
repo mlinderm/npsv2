@@ -1,4 +1,7 @@
+import typing
+from functools import partial
 import pysam
+import ray
 import tensorflow as tf
 import numpy as np
 from tqdm import tqdm
@@ -15,9 +18,14 @@ def ac_to_genotype(ac):
 
 
 def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: str, image_shape, progress_bar=False,):
+    assert params.replicates >= 1, "At least one replicate is required for genotyping"
+    
+    # We currently just use ray for the CPU-side work, specifically simulating the SVs
+    ray.init(num_cpus=params.threads, num_gpus=0, _temp_dir=params.tempdir, ignore_reinit_error=True, include_dashboard=False)
+
     # Create genotyper model
     # TODO: Extract shape from saved model
-    genotyper = models.JointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), 1, model_path=model_path)
+    genotyper = models.JointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
     predict_fn = genotyper.make_predict()
 
     with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
@@ -33,22 +41,45 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
 
         # Add NPSV2-specific header lines
         # TODO: Add metadata about the model, etc.
-        dst_header.add_line("##FORMAT=<ID=GT,Number=1,Type=String,Description='Genotype'>")
-        dst_header.add_line("##FORMAT=<ID=DS,Number=G,Type=Float,Description='Distance between real and simulated data'>")
+        dst_header.add_line('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
+        dst_header.add_line('##FORMAT=<ID=DS,Number=G,Type=Float,Description="Distance between real and simulated data">')
         
         ordered_samples = []
         for name, sample in samples.items():
             dst_header.add_sample(name)
             ordered_samples.append(sample)
 
+        def _vcf_shard(num_shards: int, index: int) -> typing.Iterator[tf.train.Example]:
+            """Generator of tf.train.Example for use as a Ray parallel iterator
+
+            Args:
+                num_shards (int): Number of shards executing in parallel
+                index (int): Worker index
+            """
+            # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
+            tf.config.threading.set_inter_op_parallelism_threads(1)
+            tf.config.threading.set_intra_op_parallelism_threads(1)
+            
+            with pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
+                for i, record in enumerate(vcf_file):
+                    if i % num_shards == index:
+                        variant = Variant.from_pysam(record)
+                        examples = [images.make_variant_example(params, variant, sample.bam, sample, label=None, simulate=True, image_shape=image_shape, replicates=params.replicates) for sample in ordered_samples]
+                        yield examples
+
+
         with pysam.VariantFile(output_path, mode="w", header=dst_header) as dst_vcf_file:
-            for record in tqdm(src_vcf_file, desc="Genotyping variants", disable=not progress_bar):
+            # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
+            it = ray.util.iter.from_iterators([partial(_vcf_shard, params.threads, i) for i in range(params.threads)])
+            
+            # gather_sync ensures variants are generated in order at the cost of load imbalance
+            for record, examples in tqdm(zip(src_vcf_file, it.gather_sync()), desc="Genotyping variants", disable=not progress_bar):
                 variant = Variant.from_pysam(record)
 
                 dst_samples = []
-                for sample in ordered_samples:
-                    # TODO: Set the minimum number of replicates for genotyping here
-                    example = images.make_variant_example(params, variant, sample.bam, sample, label=None, simulate=True, image_shape=image_shape)
+                for example in examples:                    
+                    example_variant = images._example_variant(example)
+                    assert example_variant.start == variant.start and example_variant.end == variant.end, "Mismatch VCF variant and result from threading"
                     
                     # Convert example to features
                     features = {

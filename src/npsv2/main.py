@@ -190,6 +190,13 @@ def make_argument_parser():
     parser_genotype.add_argument("--size", help="Size of images to generate", type=_image_size, default=(100, 300))
     simulation_options(parser_genotype)
     
+    # Refine VCF
+    parser_refine = subparsers.add_parser(
+        "refine", help="Refine proposal VCF", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser_refine.add_argument("-i", "--input", help="Input VCF file", type=str, required=True)
+    parser_refine.add_argument("-o", "--output", help="Output VCF file", type=str, required=True)
+    
     return parser
 
 
@@ -310,7 +317,6 @@ def main():
         from .sample import Sample, sample_name_from_bam
         from .genotyping import genotype_vcf
 
-        # TODO: BAM files to samples (for simulation)
         samples = {}
         if args.stats_paths:
             for stat_path in args.stats_paths:
@@ -335,6 +341,11 @@ def main():
         _check_shared_reference(args)
 
         genotype_vcf(args, args.model, args.input, samples, args.output, args.size, progress_bar=True)
+
+    elif args.command == "refine":
+        from .propose.refine import refine_vcf
+
+        refine_vcf(args, args.input, args.output, progress_bar=True)
 
 if __name__ == "__main__":
     main()
