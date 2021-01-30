@@ -1,4 +1,4 @@
-import logging, os, tempfile, textwrap
+import logging, math, os, tempfile, textwrap
 import pysam
 from .range import Range
 from . import npsv2_pb2
@@ -26,6 +26,7 @@ class Variant(object):
     @classmethod
     def from_pysam(cls, record):
         # TODO: Actually detect SV kind
+        assert record.info["SVTYPE"] == "DEL"
         return DeletionVariant(record)
 
     @property
@@ -132,3 +133,22 @@ class DeletionVariant(Variant):
             return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
         else:
             return ref_seq[: flank] + ref_seq[-flank :]
+
+    def window_regions(self, window_size: int, flank_windows: int):
+        # We anchor windows on the breakpoints
+        assert window_size % 2 == 0, "Window size must be evenly split in half"
+        breakpoint_flank = window_size // 2
+        
+        # Create overlapping window in the center of the event if needed
+        interior = self.reference_region
+        interior_windows = ((interior.length - window_size) // 2) // window_size 
+        
+        left_region = self.left_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
+        right_region = self.right_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
+        if left_region.end == right_region.start:
+            # Regions abut!
+            return left_region.window(window_size) + right_region.window(window_size)
+        else:
+            center_region = interior.center.expand(breakpoint_flank)
+            assert center_region.length <= window_size, "Should only be one potentially overlapping 'center' region"
+            return left_region.window(window_size) + [center_region] + right_region.window(window_size)

@@ -2,6 +2,7 @@ import random
 from enum import Enum
 from typing import NamedTuple
 import pysam
+from intervaltree import Interval
 from .range import Range
 
 
@@ -12,10 +13,21 @@ CIGAR_ADVANCE_PILEUP = frozenset(
 CIGAR_ALIGNED_BASE = frozenset([pysam.CMATCH, pysam.CEQUAL, pysam.CDIFF,])
 
 
+def _read_region(read, cigar):
+    first_op, first_len = cigar[0]
+    if first_op == pysam.CSOFT_CLIP:
+        read_start = read.reference_start - first_len
+    else:
+        read_start = read.reference_start
+    aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
+    return (read_start, read_start + aligned_length)
+
+
 class AlleleAssignment(Enum):
     AMB = -1
     REF = 0
     ALT = 1
+
 
 class BaseAlignment(Enum):
     ALIGNED = 1
@@ -25,16 +37,6 @@ class BaseAlignment(Enum):
         if self.__class__ is other.__class__:
             return self.value < other.value
         return NotImplemented
-
-
-# def _read_region(read, cigar):
-#     first_op, first_len = cigar[0]
-#     if first_op == pysam.CSOFT_CLIP:
-#         read_start = read.reference_start - first_len
-#     else:
-#         read_start = read.reference_start
-#     aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
-#     return read_start, read_start + aligned_length
 
 
 class Fragment(object):
@@ -79,8 +81,6 @@ class Fragment(object):
         # assert self.read1.template_length == (self.read2.reference_end - self.read1.reference_start)
         return self.read1.template_length
 
-    
-
     def add_read(self, read):
         assert Fragment.is_primary(read)
         assert read.is_paired and read.query_name == self.read1.query_name
@@ -106,7 +106,8 @@ class Fragment(object):
         return self.fragment_region.get_overlap(region) >= min_overlap
 
     def reads_overlap(self, region: Range, min_overlap=3):
-        return (self.read1 and (region.get_overlap(self.read1) >= 3)) or (self.read2 and (region.get_overlap(self.read2) >= 3))
+        return (self.read1 and (region.get_overlap(self.read1) >= min_overlap)) or (self.read2 and (region.get_overlap(self.read2) >= min_overlap))
+
 
 class FragmentTracker(object):
     def __init__(self):
@@ -160,11 +161,12 @@ class PileupColumn:
             self._bases.append(PileupBase(read_start, BaseAlignment.ALIGNED, **attributes))
 
     def ordered_bases(self, max_bases=None, order="read_start"):
-        if max_bases is None:
-            max_bases = len(self._bases)
         # Return bases sorted by specified field, randomly downsampling if needed
+        if max_bases is not None and len(self._bases) > max_bases:
+            bases = random.sample(self._bases, k=max_bases)
+        else:
+            bases = self._bases
         sort_idx = PileupBase._fields.index(order)
-        bases = random.sample(self._bases, k=max_bases) if len(self._bases) > max_bases else self._bases 
         return sorted(bases, key=lambda base: base[sort_idx])
 
 class Pileup:
@@ -225,6 +227,79 @@ class Pileup:
         for col_slice, cigar_op in slices:
             for column in self._columns[col_slice]:
                 column.add_base(read_start, cigar_op, mapq=read.mapping_quality, **attributes)
+
+    def add_fragment(self, fragment: Fragment, **attributes):
+        if fragment.read1:
+            self.add_read(fragment.read1, **attributes)
+        if fragment.read2:
+            self.add_read(fragment.read2, **attributes)
+
+# TODO: Consolidate these Pileup classes with a common base class
+class PileupRead:
+    def __init__(self, read, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float):
+        self._read = read
+        self.interval = _read_region(read, read.cigartuples)
+        self.allele = allele
+        self.ref_zscore = ref_zscore
+        self.alt_zscore = alt_zscore
+
+    @property
+    def read_start(self):
+        return self.interval[0]
+
+    @property
+    def mapq(self):
+        return self._read.mapping_quality
+
+
+class ReadPileup:
+    def __init__(self, reference_regions):
+        self._reads = { Interval(r.start, r.end):[] for r in reference_regions }
+
+    def read_columns(self, region: Range, pileup_read: PileupRead):
+        read = pileup_read._read
+        if read.reference_name != region.contig:
+            return None, []
+        
+        cigar = read.cigartuples
+        if not cigar:
+            return None, []
+        
+        first_op, first_len = cigar[0]
+        if first_op == pysam.CSOFT_CLIP:
+            read_start = read.reference_start - first_len
+        else:
+            read_start = read.reference_start
+        
+        if read_start >= region.end:
+            return read_start, []
+        
+        slices = []
+        pileup_start = read_start - region.start
+        pileup_end = region.length
+        for cigar_op, cigar_len in cigar:
+            if cigar_op in CIGAR_ADVANCE_PILEUP:
+                next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, pileup_end))
+                if next_slice.stop > next_slice.start:
+                    if cigar_op == pysam.CSOFT_CLIP:
+                        slices.append((next_slice, BaseAlignment.SOFT_CLIP))
+                    elif cigar_op in CIGAR_ALIGNED_BASE:
+                        slices.append((next_slice, BaseAlignment.ALIGNED))
+                pileup_start += cigar_len
+
+        return slices
+
+    def overlapping_reads(self, region: Range, max_reads: int=None):
+        reads = self._reads[Interval(region.start, region.end)]
+        if len(reads) > max_reads:
+            reads = random.sample(reads, k=max_reads)
+        return sorted(reads, key=lambda read: read.read_start)
+
+    def add_read(self, read: pysam.AlignedSegment, **attributes):
+        pileup_read = PileupRead(read, **attributes)
+        for region, reads in self._reads.items():
+            if region.overlaps(*pileup_read.interval):
+                reads.append(pileup_read)
 
     def add_fragment(self, fragment: Fragment, **attributes):
         if fragment.read1:

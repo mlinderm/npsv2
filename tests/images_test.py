@@ -31,7 +31,7 @@ def _mock_simulate_variant_sequencing(params, fasta_path, allele_count, sample: 
 def _mock_reference_sequence(reference_fasta, region):
     assert region.contig == "1"
     with pysam.FastaFile(os.path.join(FILE_DIR, "1_896922_902998.fasta")) as ref_fasta:
-        return ref_fasta.fetch(reference=region.contig, start=region.start  - 896921, end=region.end  - 896921)
+        return ref_fasta.fetch(reference=region.contig, start=region.start-896921, end=region.end-896921)
 
 
 def _mock_chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
@@ -107,7 +107,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
     def test_example_to_image(self, mock_ref):
         all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300))
 
-        png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
+        png_path = os.path.join(self.params.tempdir, "test.png")
         images.example_to_image(next(all_examples), png_path)
 
         self.assertTrue(os.path.exists(png_path))
@@ -328,3 +328,115 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
         for features, label in dataset:
             self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
             self.assertEqual(label, 2)
+
+class CreateWindowedImageTest(unittest.TestCase):
+    def setUp(self):
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
+
+        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.params = argparse.Namespace(
+            reference=os.path.join(FILE_DIR, "1_896922_902998.fasta"),
+            tempdir=self.tempdir.name,
+            flank=1000,
+            augment=False,
+            exclude_bed=None,
+            sample_ref=False,
+            replicates=1,
+        )
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_image_sizing(self, mock_ref):
+        image_tensor = images.create_windowed_example(
+            self.params,
+            self.variant,
+            self.bam_path,
+            [Range.parse_literal("1:899898-899947"), Range.parse_literal("1:899968-900017")], 
+            self.sample,
+        )
+        # There should be 5 windows in the image
+        self.assertEqual(image_tensor.shape, (2, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
+
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_variant_to_example(self, mock_ref):
+        example = images.make_variant_example(
+            self.params,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            single_image=False,
+            window_size=50,
+            flank_windows=1,
+        )
+        # There should be 5 windows in this example
+        self.assertEqual(images._example_image_shape(example), (5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
+    
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_variant_to_image(self, mock_ref):
+        example = images.make_variant_example(
+            self.params,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            single_image=False,
+            window_size=50,
+            flank_windows=1,
+        )
+        
+        png_path = os.path.join(self.params.tempdir, "test.png")
+        images.example_to_image(example, png_path)
+
+        self.assertTrue(os.path.exists(png_path))
+        with Image.open(png_path) as image:
+            self.assertEqual(image.size, (250, images.IMAGE_HEIGHT))
+
+
+    # Since simulate_variant_sequencing is imported into images, we mock there...
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_simulate_variant_to_example(self, synth_ref, mock_ref):
+        example = images.make_variant_example(
+            self.params,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            single_image=False,
+            window_size=50,
+            flank_windows=1,
+            simulate=True,
+            replicates=self.params.replicates,
+        )
+        
+        # There should be 5 windows in this example
+        self.assertEqual(images._example_image_shape(example), (5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
+        self.assertEqual(images._example_sim_images_shape(example), (3, 1, 5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
+    
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_simulate_variant_to_image(self, synth_ref, mock_ref):
+        example = images.make_variant_example(
+            self.params,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            single_image=False,
+            window_size=50,
+            flank_windows=1,
+            simulate=True,
+            replicates=self.params.replicates,
+        )
+        
+        png_path = os.path.join(self.params.tempdir, "test.png")
+        images.example_to_image(example, png_path, with_simulations=True, margin=10, max_replicates=1)
+
+        self.assertTrue(os.path.exists(png_path))
+        with Image.open(png_path) as image:
+            # There should be 5 windows in this example 
+            self.assertEqual(image.size, (3*5*50 + 20, 2*images.IMAGE_HEIGHT + 10))

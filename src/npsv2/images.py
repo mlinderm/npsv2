@@ -1,4 +1,4 @@
-import logging, os, random, subprocess, sys, tempfile
+import functools, logging, os, random, subprocess, sys, tempfile
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -8,7 +8,7 @@ import ray
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment
+from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
@@ -62,6 +62,9 @@ class ImageConfig(Config):
     variant_band_height: int = 0 
 
     assign_delta: float = 1.0
+
+    window_size: int = 50
+    flank_windows: int = 1
 
 
 def _fragment_zscore(sample: Sample, fragment_length: int):
@@ -210,6 +213,69 @@ def create_single_example(params, variant, read_path, region, sample: Sample, im
     return image_tensor
 
 
+def create_windowed_example(params, variant, read_path, regions, sample: Sample, realigner=None, **kwargs):
+    config = merge_config(ImageConfig(), kwargs)
+
+    tensor_shape = (len(regions), IMAGE_HEIGHT, regions[0].length, IMAGE_CHANNELS)
+    image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
+    for region in regions[1:]:
+        assert region.length == regions[0].length, "All regions must have identical lengths"
+
+    if realigner is None:
+        realigner = _create_realigner(params, variant, sample)
+
+    # Determine the outer extent of all windows
+    region = functools.reduce(lambda a, b: a.union(b), regions)
+
+    fragments = FragmentTracker()
+    
+    with pysam.AlignmentFile(read_path) as alignment_file:
+        # Expand query region to capture straddling reads
+        for read in alignment_file.fetch(
+            contig=region.contig, start=region.start - params.flank, stop=region.end + params.flank
+        ):
+            if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
+                # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
+                continue
+
+            fragments.add_read(read)
+
+    pileup = ReadPileup(regions)
+
+    for fragment in fragments:
+        # At present we render reads based on the original alignment so skip any read that doesn't map to the image
+        # region
+        if not fragment.reads_overlap(region):
+            continue
+        
+        # Realign reads
+        allele, ref_meta, alt_meta = realign_fragment(realigner, fragment, assign_delta=config.assign_delta)
+
+        # Determine the Z-score for all reads 
+        ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+        alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+       
+        pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+
+    read_pixels = tensor_shape[1]
+    for w, window_region in enumerate(regions):
+        # Get and potential downsample reads overlapping this window
+        window_reads = pileup.overlapping_reads(window_region, max_reads=read_pixels)
+        for i, read in enumerate(window_reads):
+            for col_slice, aligned in pileup.read_columns(window_region, read):
+                image_tensor[w, i, col_slice, ALLELE_CHANNEL] = ALLELE_TO_PIXEL[read.allele]
+                image_tensor[w, i, col_slice, BASE_CHANNEL] = ALIGNED_TO_PIXEL[aligned]
+                image_tensor[w, i, col_slice, MAPQ_CHANNEL] = min(read.mapq / MAX_MAPQ, 1.0) * MAX_PIXEL_VALUE
+                image_tensor[w, i, col_slice, REF_INSERT_SIZE_CHANNEL] = np.clip(
+                    INSERT_SIZE_MEAN_PIXEL + read.ref_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+                )
+                image_tensor[w, i, col_slice, ALT_INSERT_SIZE_CHANNEL] = np.clip(
+                    INSERT_SIZE_MEAN_PIXEL + read.alt_zscore * INSERT_SIZE_SD_PIXEL, 1, MAX_PIXEL_VALUE
+                )
+
+    return image_tensor
+
+
 def _genotype_to_label(genotype, alleles={1}):
     # TODO: Handle no-calls
     count = 0
@@ -234,19 +300,30 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, replicates=0, **kwargs):
-    # TODO: Handle odd sized variants when padding
-    variant_region = variant.reference_region
-    padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
-    example_region = variant_region.expand(padding)
-
+def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, replicates=0, single_image=True, **kwargs):
+    config = merge_config(ImageConfig(), kwargs)
+    
     # Construct realigner once for all images for this variant
     realigner = _create_realigner(params, variant, sample)
 
     # Construct image for "real" data
-    image_tensor = create_single_example(
-        params, variant, read_path, example_region, sample, realigner=realigner, **kwargs
-    )
+    if single_image:
+        # Construct a single "padded" region to render as the pileup image
+        variant_region = variant.reference_region
+        padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
+        example_region = variant_region.expand(padding)
+
+        image_tensor = create_single_example(
+            params, variant, read_path, example_region, sample, realigner=realigner, **kwargs
+        )
+    else:
+        # Constructing a windowed image by centering breakpoints in a window and tiling the interior of the event
+        example_regions = variant.window_regions(config.window_size, config.flank_windows)
+        image_tensor = create_windowed_example(
+            params, variant, read_path, example_regions, sample, realigner=realigner, **kwargs
+        )
+
+
     feature = {
         "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
         "image/shape": _int_feature(image_tensor.shape),
@@ -257,7 +334,7 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
         feature["label"] = _int_feature([label])
 
     if simulate and replicates > 0:
-        # A 5-D tensor for simulated images (AC, REPLICATES, ROW, COLS, CHANNELS)
+        # A 5/6-D tensor for simulated images (AC, REPLICATES) + (WINDOWS?, ROW, COLS, CHANNELS)
         feature["sim/images/shape"] = _int_feature((3, replicates) + image_tensor.shape)
 
         # Generate synthetic training images
@@ -280,7 +357,7 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                 # Generate and image synthetic bam files
                 repl_encoded_images = []
                 
-                sim_replicates = replicates if allele_count != 0 or not params.sample_ref else 3         
+                sim_replicates = replicates if allele_count != 0 or not params.sample_ref else 0         
                 for i in range(sim_replicates):
                     try:
                         replicate_bam_path = simulate_variant_sequencing(
@@ -290,30 +367,48 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
                         raise
 
-                    synth_image_tensor = create_single_example(
-                        params,
-                        variant,
-                        replicate_bam_path,
-                        example_region,
-                        repl_samples[i],
-                        realigner=realigner,
-                        **kwargs
-                    )
+                    if single_image:
+                        synth_image_tensor = create_single_example(
+                            params,
+                            variant,
+                            replicate_bam_path,
+                            example_region,
+                            repl_samples[i],
+                            realigner=realigner,
+                            **kwargs
+                        )
+                    else:
+                        synth_image_tensor = create_windowed_example(
+                            params,
+                            variant,
+                            replicate_bam_path,
+                            example_regions,
+                            repl_samples[i],
+                            realigner=realigner,
+                            **kwargs
+                        )
+ 
                     repl_encoded_images.append(synth_image_tensor)
 
                 # Fill remaining images with sampled reference variants
                 if allele_count == 0 and params.sample_ref:
-                    for random_variant in random_variants.generate(variant, n=2): #params.replicates-1):
-                        random_variant_region = random_variant.reference_region.expand(padding)
-                        synth_image_tensor = create_single_example(
-                            params, random_variant, read_path, random_variant_region, sample, **kwargs
-                        )
+                    for random_variant in random_variants.generate(variant, replicates - sim_replicates):
+                        if single_image:
+                            random_variant_region = random_variant.reference_region.expand(padding)
+                            synth_image_tensor = create_single_example(
+                                params, random_variant, read_path, random_variant_region, sample, **kwargs
+                            )
+                        else:
+                            random_variant_regions = random_variant.window_regions(config.window_size, config.flank_windows)
+                            synth_image_tensor =  create_windowed_example(
+                                params, random_variant, read_path, random_variant_regions, sample, **kwargs
+                            )
                         repl_encoded_images.append(synth_image_tensor)
 
-                # Stack all of the image replicates into 4-D tensor (REPLICATES, ROW, COLS, CHANNELS)
+                # Stack all of the image replicates into a tensor
                 ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
 
-        # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into 5-D tensor
+        # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into tensor
         sim_image_tensor = np.stack(ac_encoded_images)
         feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
 
@@ -475,7 +570,7 @@ def _example_image(example):
 
 
 def _example_image_shape(example):
-    return tuple(example.features.feature["image/shape"].int64_list.value[0:3])
+    return tuple(example.features.feature["image/shape"].int64_list.value)
 
 
 def _example_label(example):
@@ -484,7 +579,7 @@ def _example_label(example):
 
 def _example_sim_images_shape(example):
     if "sim/images/shape" in example.features.feature:
-        return tuple(example.features.feature["sim/images/shape"].int64_list.value[0:5])
+        return tuple(example.features.feature["sim/images/shape"].int64_list.value)
     else:
         return (3, 0, None, None, None)
 
@@ -511,43 +606,48 @@ def _extract_metadata_from_first_example(filename):
     return image_shape, replicates
 
 
+def _flatten_image(image_tensor):
+    # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
+    # mapq as alpha)...
+    channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
+    return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
+
+
+def _tensor_to_image(image_tensor):
+    shape = image_tensor.shape
+    if len(shape) == 3:
+        return _flatten_image(image_tensor)
+    elif len(shape) == 4:
+        windows, height, width, _ = shape
+        composite_image = Image.new("RGB", (windows*width, height))
+        for i in range(windows):
+            sub_image = _flatten_image(image_tensor[i])
+            composite_image.paste(sub_image, (i*width, 0))
+        return composite_image
+    else:
+        assert False
+
+
 def example_to_image(example: tf.train.Example, out_path: str, with_simulations=False, margin=10, max_replicates=1):
     # Adapted from DeepVariant
     features = example.features.feature
 
     image_tensor = _example_image(example)
-    shape = image_tensor.shape
-    if len(shape) == 3 and shape[2] == 3:
-        image_mode = "RGB"
-        channels = [0, 1, 2]
-    elif len(shape) == 2 or shape[2] == 1:
-        image_mode = "L"
-        channels = 0
-    elif len(shape) == 3 or shape[2] > 3:
-        # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
-        # mapq as alpha)...
-        #image_mode = "RGB"
-        #channels = [BASE_CHANNEL, REF_INSERT_SIZE_CHANNEL, ALLELE_CHANNEL]
-        image_mode = "L"
-        channels = ALLELE_CHANNEL
-    else:
-        raise ValueError("Unsupported image shape")
-
-    real_image = Image.fromarray(image_tensor[:, :, channels], mode=image_mode)
+    real_image = _tensor_to_image(image_tensor)
 
     _, replicates, *_ = _example_sim_images_shape(example)
     if with_simulations and replicates > 0:
-        height, width, _ = shape
+        width, height = real_image.size
         replicates = min(replicates, max_replicates)
 
-        image = Image.new(image_mode, (width + 2 * (width + margin), height + replicates * (height + margin)))
+        image = Image.new(real_image.mode,  (width + 2 * (width + margin), height + replicates * (height + margin)))
         image.paste(real_image, (width + margin, 0))
 
         synth_tensor = _example_sim_images(example)
-        for ac in (0, 1, 2):
+        for ac in range(3):
             for repl in range(replicates):
                 synth_image_tensor = synth_tensor[ac, repl]
-                synth_image = Image.fromarray(synth_image_tensor[:, :, channels], mode=image_mode)
+                synth_image = _tensor_to_image(synth_image_tensor)
 
                 coord = (ac * (width + margin), (repl + 1) * (height + margin))
                 image.paste(synth_image, coord)

@@ -52,6 +52,14 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         proto = self.variant.as_proto()
         self.assertEqual(proto.start, 899921)
 
+    def test_window_regions(self):
+        regions = self.variant.window_regions(50, 1)
+        self.assertEqual(len(regions), 5)
+        for region in regions:
+            self.assertEqual(region.length, 50)
+        expected = ['1:899848-899897', '1:899898-899947', '1:899933-899982', '1:899968-900017', '1:900018-900067']
+        self.assertEqual(regions, [Range.parse_literal(r) for r in expected])
+
 class SymbolicDELVariantTestSuite(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

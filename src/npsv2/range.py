@@ -29,6 +29,11 @@ class Range(object):
     def pysam_fetch(self):
         return dict(contig=self.contig, start=self.start, stop=self.end)
 
+    @property
+    def center(self):
+        start = self.start + self.length // 2
+        return Range(self.contig, start, start)
+
     def contains(self, point: int):
         return self.start <= point < self.end
 
@@ -57,6 +62,10 @@ class Range(object):
         if self.contig != other.contig:
             raise ValueError("Can't union Ranges with different contigs")
         return Range(self.contig, min(self.start, other.start), max(self.end, other.end))
+
+    def window(self, size):
+        assert self.length % size == 0
+        return [Range(self.contig, s, s+size) for s in range(self.start, self.end, size)]
 
 class RangeTree:
     def __init__(self):
