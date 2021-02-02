@@ -300,14 +300,14 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, replicates=0, single_image=True, **kwargs):
+def make_variant_example(params, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, replicates=0, **kwargs):
     config = merge_config(ImageConfig(), kwargs)
     
     # Construct realigner once for all images for this variant
     realigner = _create_realigner(params, variant, sample)
 
     # Construct image for "real" data
-    if single_image:
+    if params.single_image:
         # Construct a single "padded" region to render as the pileup image
         variant_region = variant.reference_region
         padding = max((IMAGE_WIDTH - variant_region.length) // 2, PADDING)
@@ -367,7 +367,7 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
                         raise
 
-                    if single_image:
+                    if params.single_image:
                         synth_image_tensor = create_single_example(
                             params,
                             variant,
@@ -393,7 +393,7 @@ def make_variant_example(params, variant: Variant, read_path: str, sample: Sampl
                 # Fill remaining images with sampled reference variants
                 if allele_count == 0 and params.sample_ref:
                     for random_variant in random_variants.generate(variant, replicates - sim_replicates):
-                        if single_image:
+                        if params.single_image:
                             random_variant_region = random_variant.reference_region.expand(padding)
                             synth_image_tensor = create_single_example(
                                 params, random_variant, read_path, random_variant_region, sample, **kwargs
@@ -495,6 +495,7 @@ def vcf_to_tfrecords(
     sample_or_label=None,
     simulate=False,
     progress_bar=False,
+    **kwargs,
 ):
 
     # Unfortunately we can't use TF's built-in multithreading because of the extensive use of Python (the GIL serializes the execution). Instead we use
@@ -517,6 +518,7 @@ def vcf_to_tfrecords(
             region=region,
             image_shape=image_shape,
             simulate=simulate,
+            **kwargs,
         )
         with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
             total_variants = 0
@@ -668,14 +670,14 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False) ->
     proto_features = {
         "variant/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "image/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
-        "image/shape": tf.io.FixedLenFeature(shape=[3], dtype=tf.int64),
+        "image/shape": tf.io.FixedLenFeature(shape=(len(shape),), dtype=tf.int64),
     }
     if with_label:
-        proto_features["label"] = tf.io.FixedLenFeature(shape=[1], dtype=tf.int64)
+        proto_features["label"] = tf.io.FixedLenFeature(shape=(1,), dtype=tf.int64)
     if with_simulations and replicates > 0:
         proto_features.update(
             {
-                "sim/images/shape": tf.io.FixedLenFeature(shape=[5], dtype=tf.int64),
+                "sim/images/shape": tf.io.FixedLenFeature(shape=(len(shape) + 2,), dtype=tf.int64),
                 "sim/images/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
             }
         )

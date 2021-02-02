@@ -77,7 +77,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.params = argparse.Namespace(
-            tempdir=self.tempdir.name, reference=None, flank=1000, replicates=1, sample_ref=False, exclude_bed=None, augment=False,
+            tempdir=self.tempdir.name, reference=None, flank=1000, replicates=1, sample_ref=False, exclude_bed=None, augment=False, single_image=True,
         )
 
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
@@ -265,6 +265,7 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             sample_ref=False,
             exclude_bed=None,
             augment=False,
+            single_image=True,
         )
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
@@ -344,6 +345,7 @@ class CreateWindowedImageTest(unittest.TestCase):
             exclude_bed=None,
             sample_ref=False,
             replicates=1,
+            single_image=False,
         )
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
 
@@ -370,7 +372,6 @@ class CreateWindowedImageTest(unittest.TestCase):
             self.variant,
             self.bam_path,
             self.sample,
-            single_image=False,
             window_size=50,
             flank_windows=1,
         )
@@ -384,7 +385,6 @@ class CreateWindowedImageTest(unittest.TestCase):
             self.variant,
             self.bam_path,
             self.sample,
-            single_image=False,
             window_size=50,
             flank_windows=1,
         )
@@ -406,7 +406,6 @@ class CreateWindowedImageTest(unittest.TestCase):
             self.variant,
             self.bam_path,
             self.sample,
-            single_image=False,
             window_size=50,
             flank_windows=1,
             simulate=True,
@@ -426,7 +425,6 @@ class CreateWindowedImageTest(unittest.TestCase):
             self.variant,
             self.bam_path,
             self.sample,
-            single_image=False,
             window_size=50,
             flank_windows=1,
             simulate=True,

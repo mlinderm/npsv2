@@ -430,3 +430,173 @@ class JointEmbeddingsModel(GenotypingModel):
     def predict(self, dataset, **kwargs):
         predict_fn = self.make_predict(**kwargs)
         return predict_fn(dataset)
+
+
+
+
+
+def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, padding="same", dropout_rate=0.2, name="residual_block"):
+    init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
+
+    sequence = layers.Input(embedding_shape, name="sequence")
+    transform = tf.keras.models.Sequential([
+        layers.Input(embedding_shape),
+        layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init),
+        layers.BatchNormalization(axis=-1),
+		layers.Activation("relu"),
+		layers.Dropout(rate=dropout_rate), # Should this be spatial dropout?
+        layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init),
+        layers.BatchNormalization(axis=-1),
+		layers.Activation("relu"),
+		layers.Dropout(rate=dropout_rate),                    
+    ], name="residual_layers")(sequence)
+
+    matched_sequence = sequence
+    if filters != embedding_shape[-1]:
+        # Match the input and temporal block shapes
+        matched_sequence = layers.Conv1D(filters=filters, kernel_size=1, padding="same", kernel_initializer=init)(sequence)
+
+    residual = layers.Add()([matched_sequence, transform])
+    residual = layers.Activation("relu")(residual)
+    return tf.keras.Model(inputs=sequence, outputs=residual)
+
+
+def _resnet50v2_encoder(input_shape, normalize=False):
+    assert tf.keras.backend.image_data_format() == "channels_last"
+
+    base_model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+    base_model.trainable = True
+    
+    encoder = tf.keras.models.Sequential([
+        layers.Input(input_shape),
+        base_model,
+        layers.Flatten(),
+    ], name="image_encoder")
+    if normalize:
+        encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
+    return encoder
+
+
+def _tcn_encoder(input_shape, tcn_filters=128):
+    windows = layers.Input((None,) + input_shape[-3:], name="windows")
+
+    window_encoder = _resnet50v2_encoder(input_shape=input_shape[-3:], normalize=False)
+    window_embeddings = layers.TimeDistributed(window_encoder, name="window_embeddings")(windows)
+   
+    tcn_input_shape = (None, window_encoder.output_shape[-1])
+    tcn_output_shape = (None, tcn_filters)
+
+    tcn = tf.keras.models.Sequential([
+        _residual_block(tcn_input_shape, tcn_filters, dilation_rate=1, name="residual_block_1"),
+        _residual_block(tcn_output_shape, tcn_filters, dilation_rate=2, name="residual_block_2"),
+        _residual_block(tcn_output_shape, tcn_filters, dilation_rate=4, name="residual_block_4"),
+        _residual_block(tcn_output_shape, tcn_filters, dilation_rate=8, name="residual_block_8"),
+        _residual_block(tcn_output_shape, tcn_filters, dilation_rate=16, name="residual_block_16"),
+    ], name="tcn")
+
+    #tcn = _residual_block((None, window_embedding_shape[-1]), tcn_filters)
+    tcn_embeddings = tcn(window_embeddings)
+    tcn_embeddings = layers.Lambda(lambda tcn_seq: tcn_seq[:, -1, :])(tcn_embeddings) # Select last value in sequence
+
+    return tf.keras.Model(inputs=windows, outputs=tcn_embeddings)
+
+
+def _support_reshape(support):
+    # https://stackoverflow.com/a/54983612
+    support_shape = tf.shape(support)
+    distributed_input_shape = tf.concat(
+        [support_shape[:-6], tf.math.reduce_prod(support_shape[-6:-4], keepdims=True), support_shape[-4:]], 0,
+    )
+    return tf.reshape(support, distributed_input_shape)
+
+
+class WindowedJointEmbeddingsModelConfig(GenotypingModelConfig):
+    variants_per_batch: int = 8
+    shuffle: int = 1000
+
+class WindowedJointEmbeddingsModel(GenotypingModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        assert len(image_shape) == 3, "Expect 3-D image shape"
+        self.config = merge_config(JointEmbeddingsModelConfig(), kwargs)
+        
+        self.image_shape = image_shape
+        self.replicates = replicates
+
+        encoder = _tcn_encoder(image_shape)
+    
+        if model_path:
+            encoder.load_weights(model_path)
+        
+        self._model = WindowedJointEmbeddingsModel._model_from_encoder(encoder, image_shape, replicates)
+    
+    @classmethod
+    def _model_from_encoder(cls, encoder, image_shape, replicates):
+        support = layers.Input((3, replicates, None) + image_shape, name="support")
+        query = layers.Input((None,) + image_shape, name="query")
+
+        # We need to reshape with 2 unknown dimensions (batch size and sequence length) so we need to use a Lambda layer
+        # with dynamic tf.shape
+        support_images = layers.Lambda(lambda x: _support_reshape(x))(support)
+        support_images.set_shape((None, 3*replicates, None) + image_shape)
+        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_images)
+       
+        query_embeddings = encoder(query)
+        
+        def _query_distances(tensors):
+            query_embeddings, support_batch = tensors
+
+            # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
+            # distances between query example and all support examples
+            support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), dtype=tf.dtypes.float32)
+            support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+
+            return support_distances
+
+        support_distances = layers.Lambda(_query_distances, name="support_distances")([query_embeddings, support_embeddings])
+        
+        # An alternate approach could use the genotype "cluster" means instead of cluster minimum
+        distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, replicates)), axis=-1), name="distances")(support_distances)
+        
+        # Convert distance to probability
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
+
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances, support_distances])
+
+    def _train_input(self, config, dataset):
+        def _variant_to_training(features, original_label):
+            contrastive_labels = tf.one_hot(original_label, depth=3, dtype=tf.float32)
+
+            return ({ 
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32),
+            }, {
+                "support_distances": tf.repeat(contrastive_labels, repeats=self.replicates),
+                "genotypes": original_label,
+            })
+        
+        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(config.variants_per_batch)
+        
+
+    def fit(self, training_dataset, validation_dataset=None, **kwargs):
+        config = merge_config(self.config, kwargs)
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
+        
+        def _loss_wrapper(y_true, y_pred):
+            # "Flatten" batch size
+            y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
+            y_pred = tf.reshape(y_pred, (-1,))
+            return tfa.losses.contrastive_loss(y_true, y_pred)
+            #weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
+            #return tfa.losses.contrastive_loss(y_true, y_pred) * weights
+
+        self._model.compile(
+            optimizer=optimizer,
+            loss={ "support_distances": _loss_wrapper },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        )
+                
+        self._model.fit(
+            self._train_input(config, training_dataset),
+            epochs=config.epochs,
+        )
