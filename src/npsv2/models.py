@@ -173,7 +173,7 @@ class SiameseGenotyper:
         encoder.save_weights(model_path)
 
 class GenotypingModelConfig(Config):
-    temp_dir: str = tempfile.gettempdir()
+    tempdir: str = tempfile.gettempdir()
     log_dir: str = None
     learning_rate: float = 0.004
     epochs: int = 20
@@ -419,17 +419,11 @@ class JointEmbeddingsModel(GenotypingModel):
 
         return dataset.map(_variant_to_test).batch(1)
 
-
-    def make_predict(self, **kwargs):
-        # Build a simplified version of the model that expects only one replicate
-        encoder = self._model.get_layer("encoder")
-        model = JointEmbeddingsModel._model_from_encoder(encoder, self.image_shape, replicates=1)
-        
-        return lambda dataset: model.predict(self._test_input(dataset))
-
     def predict(self, dataset, **kwargs):
-        predict_fn = self.make_predict(**kwargs)
-        return predict_fn(dataset)
+        assert self.replicates == 1, "Predict assumes a single replicate"
+
+        config = merge_config(self.config, kwargs)
+        return self._model.predict(self._test_input(config, dataset))
 
 
 
@@ -498,7 +492,7 @@ def _tcn_encoder(input_shape, tcn_filters=128):
     tcn_embeddings = tcn(window_embeddings)
     tcn_embeddings = layers.Lambda(lambda tcn_seq: tcn_seq[:, -1, :])(tcn_embeddings) # Select last value in sequence
 
-    return tf.keras.Model(inputs=windows, outputs=tcn_embeddings)
+    return tf.keras.Model(inputs=windows, outputs=tcn_embeddings, name="encoder")
 
 
 def _support_reshape(support):
@@ -511,13 +505,13 @@ def _support_reshape(support):
 
 
 class WindowedJointEmbeddingsModelConfig(GenotypingModelConfig):
-    variants_per_batch: int = 8
+    variants_per_batch: int = 1
     shuffle: int = 1000
 
 class WindowedJointEmbeddingsModel(GenotypingModel):
-    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+    def __init__(self, image_shape, replicates=1, model_path: str=None, **kwargs):
         assert len(image_shape) == 3, "Expect 3-D image shape"
-        self.config = merge_config(JointEmbeddingsModelConfig(), kwargs)
+        self.config = merge_config(WindowedJointEmbeddingsModelConfig(), kwargs)
         
         self.image_shape = image_shape
         self.replicates = replicates
@@ -596,7 +590,24 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
             metrics={ "genotypes": ["sparse_categorical_accuracy"] },
         )
                 
-        self._model.fit(
-            self._train_input(config, training_dataset),
-            epochs=config.epochs,
+        self._fit(
+            config,
+            training_dataset=self._train_input(config, training_dataset),
+            validation_dataset=validation_dataset,
         )
+
+    def _test_input(self, config, dataset):
+        def _variant_to_test(features, original_label):
+            return {
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=1),
+            }, original_label
+
+        return dataset.map(_variant_to_test).batch(1)
+
+
+    def predict(self, dataset, **kwargs):
+        assert self.replicates == 1, "Predict assumes a single replicate"
+
+        config = merge_config(self.config, kwargs)
+        return self._model.predict(self._test_input(config, dataset))

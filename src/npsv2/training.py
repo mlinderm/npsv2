@@ -270,10 +270,10 @@ def train(params, tfrecords_paths, model_path: str):
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-    genotyper = models.JointEmbeddingsModel(image_shape, replicates)
+    genotyper = models.WindowedJointEmbeddingsModel(image_shape[-3:], replicates)
     
     dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
-    genotyper.fit(dataset, validation_dataset=dataset, epochs=params.epochs, learning_rate=params.learning_rate)
+    genotyper.fit(dataset, epochs=params.epochs, learning_rate=params.learning_rate)
     
     logging.info("Saving model in: %s", model_path)
     genotyper.save(model_path)
@@ -306,8 +306,7 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-    genotyper = models.JointEmbeddingsModel(image_shape, replicates, model_path=model_path)
-    predict_fn = genotyper.make_predict()
+    genotyper = models.WindowedJointEmbeddingsModel(image_shape[-3:], model_path=model_path)
 
     rows = []
     for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
@@ -316,7 +315,7 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
 
         # Predict genotype
         dataset = tf.data.Dataset.from_tensors((features, original_label))
-        genotypes, distances, *_  = predict_fn(dataset)
+        genotypes, distances, *_  = genotyper.predict(dataset)
         
         print(variant_proto, genotypes, distances)
         # if tf.math.argmax(genotypes, axis=1) == label and label == 2:

@@ -22,7 +22,7 @@ def _configure_gpu():
 def _image_size(arg: str):
     try:
         rows, cols = map(int, arg.split(","))
-        return (row, cols)
+        return (rows, cols)
     except:
         raise argparse.ArgumentTypeError("Image size must be of the form 'row,col'")
 

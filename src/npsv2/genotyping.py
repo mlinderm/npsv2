@@ -25,8 +25,7 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
 
     # Create genotyper model
     # TODO: Extract shape from saved model
-    genotyper = models.JointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
-    predict_fn = genotyper.make_predict()
+    genotyper = models.WindowedJointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
 
     with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 
@@ -89,7 +88,7 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
 
                     # Predict genotype
                     dataset = tf.data.Dataset.from_tensors((features, None))
-                    genotypes, distances, *_  = predict_fn(dataset)
+                    genotypes, distances, *_  = genotyper.predict(dataset)
                     
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     dst_samples.append({

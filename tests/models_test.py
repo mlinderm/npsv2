@@ -1,6 +1,8 @@
 import argparse, os, tempfile, unittest
 from unittest.mock import patch, call
 
+import numpy as np
+
 from npsv2.models import TripletModel, JointEmbeddingsModel, WindowedJointEmbeddingsModel
 from npsv2.images import load_example_dataset, vcf_to_tfrecords
 from npsv2.sample import Sample
@@ -69,7 +71,7 @@ class WindowedJointEmbeddingsModelTest(unittest.TestCase):
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-    
+
     def tearDown(self):
         self.tempdir.cleanup()
 
@@ -79,6 +81,7 @@ class WindowedJointEmbeddingsModelTest(unittest.TestCase):
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test-windows.tfrecord.gz")), "No test inputs available")
     def test_fit_model(self):
+        # To generate dataset
         # npsv2 examples -r /data/human_g1k_v37.fasta -i tests/data/1_899922_899992_DEL.vcf.gz -b tests/data/1_896922_902998.bam -o tests/data/test-windows.tfrecord.gz --stats-path tests/data/stats.json --replicates 2 -s HG002 --windowed
         
         model = WindowedJointEmbeddingsModel((100, 50, 5), 2)  
@@ -87,3 +90,13 @@ class WindowedJointEmbeddingsModelTest(unittest.TestCase):
         )
 
         model.fit(dataset, epochs=1)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test-windows.tfrecord.gz")), "No test inputs available")
+    def test_predict_model(self):
+        model = WindowedJointEmbeddingsModel((100, 50, 5))  
+        dataset = load_example_dataset(
+            os.path.join(FILE_DIR, "test-windows.tfrecord.gz"), with_simulations=True, with_label=True
+        )
+
+        genotypes, distances, *_ = model.predict(dataset)
+        self.assertEqual(np.argmax(genotypes), np.argmin(distances))
