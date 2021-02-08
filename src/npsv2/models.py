@@ -438,11 +438,15 @@ def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, pa
         layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init),
         layers.BatchNormalization(axis=-1),
 		layers.Activation("relu"),
-		layers.Dropout(rate=dropout_rate), # Should this be spatial dropout?
+		layers.Dropout(rate=dropout_rate),
         layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init),
         layers.BatchNormalization(axis=-1),
 		layers.Activation("relu"),
-		layers.Dropout(rate=dropout_rate),                    
+		layers.Dropout(rate=dropout_rate),
+        # tfa.layers.WeightNormalization(layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init, activation="relu")),
+        # layers.SpatialDropout1D(rate=dropout_rate),
+        # tfa.layers.WeightNormalization(layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init, activation="relu")),
+        # layers.SpatialDropout1D(rate=dropout_rate),                    
     ], name="residual_layers")(sequence)
 
     matched_sequence = sequence
@@ -463,6 +467,7 @@ def _resnet50v2_encoder(input_shape, normalize=False):
     
     encoder = tf.keras.models.Sequential([
         layers.Input(input_shape),
+        layers.Lambda(lambda x: tf.keras.applications.resnet_v2.preprocess_input(x)),
         base_model,
         layers.Flatten(),
     ], name="image_encoder")
@@ -525,15 +530,10 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
     
     @classmethod
     def _model_from_encoder(cls, encoder, image_shape, replicates):
-        support = layers.Input((3, replicates, None) + image_shape, name="support")
+        support = layers.Input((3, None) + image_shape, name="support")
         query = layers.Input((None,) + image_shape, name="query")
 
-        # We need to reshape with 2 unknown dimensions (batch size and sequence length) so we need to use a Lambda layer
-        # with dynamic tf.shape
-        support_images = layers.Lambda(lambda x: _support_reshape(x))(support)
-        support_images.set_shape((None, 3*replicates, None) + image_shape)
-        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_images)
-       
+        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support)
         query_embeddings = encoder(query)
         
         def _query_distances(tensors):
@@ -546,39 +546,65 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
 
             return support_distances
 
-        support_distances = layers.Lambda(_query_distances, name="support_distances")([query_embeddings, support_embeddings])
-        
+        support_distances = layers.Lambda(_query_distances, name="distances")([query_embeddings, support_embeddings])
         # An alternate approach could use the genotype "cluster" means instead of cluster minimum
-        distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, replicates)), axis=-1), name="distances")(support_distances)
+        #distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, replicates)), axis=-1), name="distances")(support_distances)
         
         # Convert distance to probability
-        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
-
-        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances, support_distances])
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(support_distances) 
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, support_distances])
 
     def _train_input(self, config, dataset):
         def _variant_to_training(features, original_label):
             contrastive_labels = tf.one_hot(original_label, depth=3, dtype=tf.float32)
+            
+            # At present is doesn't look like we can use the tf.data.experimental.bucket_by_sequence_length function here.
+            # At a minimum we would need to manually set the shape for the images (it seems to be lost in this function), but
+            # the padding seems to be limited to rank 5 and support has rank 6.
+            query_images = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+            query_images = tf.repeat(tf.expand_dims(query_images, 0), self.replicates, axis=0)
+            #query_images.set_shape((None,) + self.image_shape)
 
-            return ({ 
-                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
-                "support": tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32),
-            }, {
-                "support_distances": tf.repeat(contrastive_labels, repeats=self.replicates),
-                "genotypes": original_label,
-            })
+            support_images = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+            support_images = tf.transpose(support_images, (1, 0, 2, 3, 4, 5))
+            #support_images.set_shape((3, self.replicates, None) + self.image_shape)
+
+            return tf.data.Dataset.from_tensor_slices(({ 
+                "query": query_images,
+                "support": support_images,
+            }, tf.repeat(original_label, self.replicates)))
         
-        return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(config.variants_per_batch)
+        # def _num_windows(x, y=None):
+        #     query = x["query"]
+        #     return tf.shape(query)[0]  # The number of windows 
+
+
+        # bucketing = tf.data.experimental.bucket_by_sequence_length(
+        #     _num_windows, 
+        #     bucket_boundaries=[5, 9, 20],
+        #     bucket_batch_sizes=[8, 8, 4, 1],
+        #     drop_remainder=False,
+        #     pad_to_bucket_boundary=True,
+        # )
+        #.apply(bucketing)
+
+        return dataset.flat_map(_variant_to_training).batch(self.replicates)  
+
+        #return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(1)
         
 
     def fit(self, training_dataset, validation_dataset=None, **kwargs):
         config = merge_config(self.config, kwargs)
 
+        # for x, y in self._train_input(config, training_dataset):
+        #     print(x["query"].shape, x["support"].shape, y)
+        #assert False
         optimizer = tf.keras.optimizers.Adam(learning_rate=config.learning_rate)
         
         def _loss_wrapper(y_true, y_pred):
-            # "Flatten" batch size
-            y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
+            # Convert sparse labels to binary match/non-match and "flatten" genotypes across the batch
+            y_true = tf.one_hot(tf.squeeze(y_true), depth=3, dtype=y_pred.dtype)
+            y_true = tf.reshape(y_true, (-1,))
             y_pred = tf.reshape(y_pred, (-1,))
             return tfa.losses.contrastive_loss(y_true, y_pred)
             #weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
@@ -586,7 +612,7 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
 
         self._model.compile(
             optimizer=optimizer,
-            loss={ "support_distances": _loss_wrapper },
+            loss={ "distances": _loss_wrapper },
             metrics={ "genotypes": ["sparse_categorical_accuracy"] },
         )
                 
