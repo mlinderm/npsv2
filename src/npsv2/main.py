@@ -128,6 +128,7 @@ def make_argument_parser():
     parser_train.add_argument(
         "--log-dir", dest="log_dir", help="Directory to write time-stamped TensorBoard logs", type=str, default=None
     )
+    parser_train.add_argument("-m", "--model", help="Saved model to use as a starting point for training", type=str, default=None)
 
     # Evaluation
     parser_evaluate = subparsers.add_parser(
@@ -276,7 +277,7 @@ def main():
     elif args.command == "train":
         from .training import train
 
-        train(args, args.input, args.output)
+        train(args, args.input, args.output, starting_model_path=args.model)
 
     elif args.command == "evaluate":
         import numpy as np

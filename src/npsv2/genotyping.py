@@ -25,7 +25,9 @@ def genotype_vcf(params, model_path: str, vcf_path: str, samples, output_path: s
 
     # Create genotyper model
     # TODO: Extract shape from saved model
-    genotyper = models.WindowedJointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
+    #genotyper = models.WindowedJointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
+    genotyper = models.JointEmbeddingsModel(image_shape + (images.IMAGE_CHANNELS,), params.replicates, model_path=model_path)
+    
 
     with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 

@@ -177,6 +177,7 @@ class GenotypingModelConfig(Config):
     log_dir: str = None
     learning_rate: float = 0.004
     epochs: int = 20
+    threads: int = 1
 
 class GenotypingModel:    
     def summary(self):
@@ -410,7 +411,7 @@ class JointEmbeddingsModel(GenotypingModel):
             epochs=config.epochs,
         )
 
-    def _test_input(self, dataset):
+    def _test_input(self, config, dataset):
         def _variant_to_test(features, original_label):
             return {
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
@@ -429,7 +430,7 @@ class JointEmbeddingsModel(GenotypingModel):
 
 
 
-def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, padding="same", dropout_rate=0.2, name="residual_block"):
+def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, padding="causal", dropout_rate=0.2, name="residual_block"):
     init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
 
     sequence = layers.Input(embedding_shape, name="sequence")
@@ -446,8 +447,10 @@ def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, pa
         # tfa.layers.WeightNormalization(layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init, activation="relu")),
         # layers.SpatialDropout1D(rate=dropout_rate),
         # tfa.layers.WeightNormalization(layers.Conv1D(filters=filters, kernel_size=kernel_size, dilation_rate=dilation_rate, padding=padding, kernel_initializer=init, activation="relu")),
-        # layers.SpatialDropout1D(rate=dropout_rate),                    
+        # layers.SpatialDropout1D(rate=dropout_rate),
     ], name="residual_layers")(sequence)
+
+      
 
     matched_sequence = sequence
     if filters != embedding_shape[-1]:
@@ -459,17 +462,26 @@ def _residual_block(embedding_shape, filters, kernel_size=2, dilation_rate=1, pa
     return tf.keras.Model(inputs=sequence, outputs=residual)
 
 
-def _resnet50v2_encoder(input_shape, normalize=False):
+def _resnet50v2_encoder(input_shape, normalize=False, dropout_rate=0.2, embedding_size=128):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
-    base_model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+    #base_model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+    #base_model = tf.keras.applications.EfficientNetB0(include_top=False, weights=None, input_shape=input_shape, pooling=None)
+    base_model = tf.keras.applications.ResNet50V2(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+    
     base_model.trainable = True
     
     encoder = tf.keras.models.Sequential([
         layers.Input(input_shape),
-        layers.Lambda(lambda x: tf.keras.applications.resnet_v2.preprocess_input(x)),
+        #layers.Lambda(lambda x: tf.keras.applications.resnet_v2.preprocess_input(x)),
+        #layers.Lambda(lambda x: tf.keras.applications.efficientnet.preprocess_input(x)),
+        layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with ResNet (input [-1, 1])
         base_model,
+        layers.BatchNormalization(),
+        layers.Dropout(rate=dropout_rate),
         layers.Flatten(),
+        layers.Dense(embedding_size),
+        layers.BatchNormalization(),
     ], name="image_encoder")
     if normalize:
         encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
@@ -485,6 +497,7 @@ def _tcn_encoder(input_shape, tcn_filters=128):
     tcn_input_shape = (None, window_encoder.output_shape[-1])
     tcn_output_shape = (None, tcn_filters)
 
+    # This should create a receptive field of 24 windows... (4-1)*8
     tcn = tf.keras.models.Sequential([
         _residual_block(tcn_input_shape, tcn_filters, dilation_rate=1, name="residual_block_1"),
         _residual_block(tcn_output_shape, tcn_filters, dilation_rate=2, name="residual_block_2"),
@@ -562,36 +575,55 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
             # At a minimum we would need to manually set the shape for the images (it seems to be lost in this function), but
             # the padding seems to be limited to rank 5 and support has rank 6.
             query_images = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
-            query_images = tf.repeat(tf.expand_dims(query_images, 0), self.replicates, axis=0)
-            #query_images.set_shape((None,) + self.image_shape)
+            query_images = tf.repeat(tf.expand_dims(query_images, axis=0), self.replicates, axis=0)
+            # For some reason we need to set the shape after the above operations here...
+            query_images.set_shape((self.replicates, None,) + self.image_shape)
 
             support_images = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+            support_images.set_shape((3, self.replicates, None) + self.image_shape)
             support_images = tf.transpose(support_images, (1, 0, 2, 3, 4, 5))
-            #support_images.set_shape((3, self.replicates, None) + self.image_shape)
 
             return tf.data.Dataset.from_tensor_slices(({ 
                 "query": query_images,
                 "support": support_images,
             }, tf.repeat(original_label, self.replicates)))
         
-        # def _num_windows(x, y=None):
-        #     query = x["query"]
-        #     return tf.shape(query)[0]  # The number of windows 
+        #return dataset.flat_map(_variant_to_training).batch(self.replicates)  
 
+        def _num_windows(x, y=None):
+            query = x["query"]
+            return tf.shape(query)[0]  # The number of windows 
 
-        # bucketing = tf.data.experimental.bucket_by_sequence_length(
-        #     _num_windows, 
-        #     bucket_boundaries=[5, 9, 20],
-        #     bucket_batch_sizes=[8, 8, 4, 1],
-        #     drop_remainder=False,
-        #     pad_to_bucket_boundary=True,
-        # )
-        #.apply(bucketing)
+        buckets = list(range(5, 25))
 
-        return dataset.flat_map(_variant_to_training).batch(self.replicates)  
+        bucketing = tf.data.experimental.bucket_by_sequence_length(
+            _num_windows, 
+            bucket_boundaries=buckets,
+            bucket_batch_sizes=([32]*5) + ([16]*10) + ([8]*6),  
+            drop_remainder=False,
+            pad_to_bucket_boundary=False,
+        )
 
-        #return dataset.shuffle(config.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(1)
+        return dataset.interleave(_variant_to_training, block_length=self.replicates, num_parallel_calls=config.threads, deterministic=False).shuffle(config.shuffle, reshuffle_each_iteration=True).apply(bucketing)
         
+    def _validation_input(self, config, dataset):
+        def _variant_to_training(features, original_label):
+            contrastive_labels = tf.one_hot(original_label, depth=3, dtype=tf.float32)
+
+            print(features["sim/images"].shape)
+            support_images = tf.tile(tf.image.convert_image_dtype(features["sim/images"][:,0:1], dtype=tf.float32), (1, self.replicates, 1, 1, 1, 1))
+            print(support_images.shape)
+
+            return ({ 
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": support_images,
+            }, {
+                "support_distances": tf.repeat(contrastive_labels, repeats=self.replicates),
+                "genotypes": original_label,
+            })
+        
+        return dataset.map(_variant_to_training).batch(1)
+ 
 
     def fit(self, training_dataset, validation_dataset=None, **kwargs):
         config = merge_config(self.config, kwargs)
@@ -619,14 +651,14 @@ class WindowedJointEmbeddingsModel(GenotypingModel):
         self._fit(
             config,
             training_dataset=self._train_input(config, training_dataset),
-            validation_dataset=validation_dataset,
+            validation_dataset=self._train_input(config, training_dataset), #validation_dataset,
         )
 
     def _test_input(self, config, dataset):
         def _variant_to_test(features, original_label):
             return {
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
-                "support": tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=1),
+                "support": tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
             }, original_label
 
         return dataset.map(_variant_to_test).batch(1)

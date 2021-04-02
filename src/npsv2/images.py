@@ -15,7 +15,7 @@ from .simulation import RandomVariants, simulate_variant_sequencing, augment_sam
 from .sample import Sample
 from .util.config import Config, merge_config
 
-IMAGE_HEIGHT = 100
+IMAGE_HEIGHT = 50 #100
 IMAGE_WIDTH = 300
 IMAGE_CHANNELS = 5
 IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)

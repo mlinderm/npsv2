@@ -264,16 +264,16 @@ def distance_accuracy(y_true, y_pred, threshold=0.5):
     return tf.keras.backend.mean(tf.math.equal(y_true, tf.cast(y_pred < threshold, y_true.dtype)), axis=-1)
 
 
-def train(params, tfrecords_paths, model_path: str):
+def train(params, tfrecords_paths, model_path: str, starting_model_path: str = None):
     if isinstance(tfrecords_paths, str):
         tfrecords_paths = [tfrecords_paths]
     assert len(tfrecords_paths) > 0
 
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-    genotyper = models.WindowedJointEmbeddingsModel(image_shape[-3:], replicates)
+    genotyper = models.WindowedJointEmbeddingsModel(image_shape[-3:], replicates, model_path=starting_model_path)
     
     dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
-    genotyper.fit(dataset, epochs=params.epochs, learning_rate=params.learning_rate)
+    genotyper.fit(dataset, epochs=params.epochs, learning_rate=params.learning_rate, log_dir=params.log_dir, threads=params.threads)
     
     logging.info("Saving model in: %s", model_path)
     genotyper.save(model_path)
@@ -308,6 +308,7 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
     image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
     genotyper = models.WindowedJointEmbeddingsModel(image_shape[-3:], model_path=model_path)
 
+    errors = 0
     rows = []
     for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
         # Extract metadata for the variant
@@ -317,8 +318,17 @@ def evaluate_model(params, tfrecords_paths, model_path: str):
         dataset = tf.data.Dataset.from_tensors((features, original_label))
         genotypes, distances, *_  = genotyper.predict(dataset)
         
-        print(variant_proto, genotypes, distances)
-        # if tf.math.argmax(genotypes, axis=1) == label and label == 2:
+        # if variant_proto.start == 1161692:
+        #     print(variant_proto, genotypes, distances)
+        #     assert False
+
+        # if tf.math.argmax(genotypes, axis=1) != original_label:
+        #     print(variant_proto, genotypes, distances)
+        #     errors += 1
+        # assert errors < 10
+
+        #print(variant_proto, genotypes, distances)
+        # if tf.math.argmax(genotypes, axis=1) == 2 and original_label == 1:
         #     print(variant_proto, genotypes, distances)
         #     errors += 1
         # assert errors < 10
