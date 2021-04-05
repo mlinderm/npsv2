@@ -85,14 +85,14 @@ def _art_read_length(read_length, profile):
 
 def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
     hap_coverage =  sample.mean_coverage / 2
-    shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
+    shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
         
     replicate_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
     replicate_bam.close()
 
     synth_commandline = f"synthBAM \
         -t {quote(dir)} \
-        -R {quote(params.reference)} \
+        -R {quote(reference)} \
         {shared_ref_arg} \
         -c {hap_coverage:0.1f} \
         -m {sample.mean_insert_size} \

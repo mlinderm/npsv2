@@ -1,6 +1,6 @@
 # @package _group_
 image_width: 300
-image_height: 50
+image_height: 100
 num_channels: 5
 
 variant_padding: 100

@@ -4,7 +4,18 @@ defaults:
   - pileup_generator: ${defaults.1.generator}
     optional: true
   - simulation: augmented
+  - model: joint_embeddings
+  - training
+
+command: genotype
+threads: 1
 
 reference: ???
 shared_reference: null
-threads: 1
+stats_path: ???
+
+input: ???
+reads: ???
+output: ???
+
+sample: null

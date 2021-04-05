@@ -485,7 +485,7 @@ def vcf_to_tfrecords(
     it = ray.util.iter.from_iterators([functools.partial(_vcf_shard, cfg.threads, i) for i in range(cfg.threads)])
     
     with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-        for example in tqdm(it.gather_sync(), desc="Generating variant images", disable=not progress_bar):
+        for example in tqdm(it.gather_async(), desc="Generating variant images", disable=not progress_bar):
             file_writer.write(example.SerializeToString()) 
 
 
