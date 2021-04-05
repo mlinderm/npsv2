@@ -1,0 +1,4 @@
+# @package _global_
+pileup:
+  image_width: 50
+  flank_windows: 1

@@ -1,0 +1,10 @@
+defaults:
+  - pileup: five_channel
+  - generator: single
+  - pileup_generator: ${defaults.1.generator}
+    optional: true
+  - simulation: augmented
+
+reference: ???
+shared_reference: null
+threads: 1

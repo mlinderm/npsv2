@@ -6,6 +6,9 @@ import numpy as np
 from PIL import Image
 import ray
 import warnings
+import hydra
+from hydra.experimental import compose, initialize
+from omegaconf import OmegaConf
 from npsv2.variant import Variant
 from npsv2.range import Range
 from npsv2 import images
@@ -20,11 +23,13 @@ def setUpModule():
     warnings.simplefilter("ignore", ResourceWarning)
     ray.init(num_cpus=1, num_gpus=0, local_mode=True, include_dashboard=False)
 
+    initialize(config_path="../src/npsv2/conf")
+
 def tearDownModule():
     ray.shutdown()
 
 
-def _mock_simulate_variant_sequencing(params, fasta_path, allele_count, sample: Sample, dir=tempfile.gettempdir()):
+def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
 
@@ -43,42 +48,163 @@ def _mock_generate_deletions(size, n=1, flank=0):
         for record in vcf_file:
             yield Variant.from_pysam(record)
 
+class ImageGeneratorConfigTest(unittest.TestCase):
+    def test_composed_config(self):
+        cfg = compose(config_name="config", overrides=[])
+        self.assertEqual(cfg.pileup.num_channels, 5)
 
-class CreateSingleImageTest(unittest.TestCase):
+    def test_instantiate_generator(self):
+        cfg = compose(config_name="config", overrides=[])
+        generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+        self.assertIsInstance(generator, images.SingleImageGenerator)
+
+    def test_override_generator(self):
+        cfg = compose(config_name="config", overrides=["generator=windowed"])
+        generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+        self.assertIsInstance(generator, images.WindowedImageGenerator)
+        self.assertIn("flank_windows", cfg.pileup)
+
+class SingleImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "pileup.image_width=200",
+            "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+            "simulation.replicates=1",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
         self.variant = Variant.from_pysam(record)
-
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(
-            reference=os.path.join(FILE_DIR, "1_896922_902998.fasta"),
-            tempdir=self.tempdir.name,
-            flank=1000,
-            augment=False,
-        )
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
 
     def tearDown(self):
         self.tempdir.cleanup()
 
+    def test_image_shape(self):
+        self.assertEqual(self.generator.image_shape, (self.cfg.pileup.image_height, 200, self.cfg.pileup.num_channels))
+
+    def test_region(self):
+        image_region = self.generator.image_regions(self.variant)
+        # Since the variant is less than the image width (and evenly sized), pad out to image width
+        self.assertEqual(image_region.length, max(70 + 2*self.cfg.pileup.variant_padding, 200))
+
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    def test_resizing_image(self, mock_ref):
-        image_tensor = images.create_single_example(self.params, self.variant, self.bam_path, "1:899722-900192", self.sample)
-        self.assertNotEqual(image_tensor.shape, (images.IMAGE_HEIGHT, 300, images.IMAGE_CHANNELS))
+    def test_generate(self,  mock_ref):
+        image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, self.generator.image_shape)
+        
+        
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
 
-        image_tensor = images.create_single_example(
-            self.params, self.variant, self.bam_path, "1:899722-900192", self.sample, image_shape=(300, 300),
+    # Since simulate_variant_sequencing is imported into images, we mock there...
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_simulate_variant_to_example(self, synth_ref, mock_ref):
+        example = images.make_variant_example(
+            self.cfg,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            simulate=True,
+            generator=self.generator,
         )
-        self.assertEqual(image_tensor.shape, (300, 300, images.IMAGE_CHANNELS))
+        
+        self.assertEqual(images._example_image_shape(example), self.generator.image_shape)
+        self.assertEqual(images._example_sim_images_shape(example), (3, 1,) + self.generator.image_shape)
+    
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True)
+        self.assertTrue(os.path.exists(png_path))
 
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_generate_with_variant_strip(self,  mock_ref):
+        # Reconfigure with variant band
+        cfg = OmegaConf.merge(self.cfg, { "pileup": { "variant_band_height": 5 }})
+        generator = hydra.utils.instantiate(self.cfg.generator, cfg=cfg)
+        
+        image_tensor = generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, self.generator.image_shape)
+        
+        # The first 5 rows should all be identical
+        for i in range(1,5):
+            self.assertTrue(np.array_equal(image_tensor[i], image_tensor[0]))
+
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
+
+
+class WindowedImageGeneratorClassTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+            "generator=windowed",
+            "simulation.replicates=1",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
+        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_image_shape(self):
+        self.assertEqual(self.generator.image_shape, (None, self.cfg.pileup.image_height, 50, self.cfg.pileup.num_channels))
+
+    def test_region(self):
+        image_regions = self.generator.image_regions(self.variant)
+        self.assertEqual(len(image_regions), 5)
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_generate(self,  mock_ref):
+        image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, (5,) + self.generator.image_shape[1:])
+        
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
+    
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_simulate_variant_to_example(self, synth_ref, mock_ref):
+        example = images.make_variant_example(
+            self.cfg,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            simulate=True,
+            generator=self.generator,
+        )
+        
+        self.assertEqual(images._example_image_shape(example), (5,) + self.generator.image_shape[1:])
+        self.assertEqual(images._example_sim_images_shape(example), (3, 1, 5) + self.generator.image_shape[1:])
+    
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True)
+        self.assertTrue(os.path.exists(png_path))
+    
 
 class VCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(
-            tempdir=self.tempdir.name, reference=None, flank=1000, replicates=1, sample_ref=False, exclude_bed=None, augment=False, single_image=True,
-        )
+        self.cfg = compose(config_name="config", overrides=[
+            "reference=placeholder.fasta",
+            "simulation.replicates=1",
+            "simulation.sample_ref=false",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
@@ -89,40 +215,30 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_vcf_generator_runs_without_error(self, mock_ref):
-        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample)
+        all_examples = images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample)
         self.assertEqual(len(list(all_examples)), 1)
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_label_extraction(self, mock_ref):
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample))
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample))
         self.assertNotIn("label", example.features.feature)
 
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, sample_or_label="HG002"))
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, sample_or_label="HG002"))
         self.assertEqual(images._example_label(example), 2)
 
-        example = next(images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, sample_or_label=1))
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, sample_or_label=1))
         self.assertEqual(images._example_label(example), 1)
 
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    def test_example_to_image(self, mock_ref):
-        all_examples = images.make_vcf_examples(self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300))
-
-        png_path = os.path.join(self.params.tempdir, "test.png")
-        images.example_to_image(next(all_examples), png_path)
-
-        self.assertTrue(os.path.exists(png_path))
-        with Image.open(png_path) as image:
-            self.assertEqual(image.size, (300, 300))
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_dataset_roundtrip(self, mock_ref):
         example = next(
             images.make_vcf_examples(
-                self.params, self.vcf_path, self.bam_path, self.sample, image_shape=(300, 300), sample_or_label="HG002",
+                self.cfg, self.vcf_path, self.bam_path, self.sample, sample_or_label="HG002",
             )
         )
 
-        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
+        dataset_path = os.path.join(self.tempdir.name, "test.tfrecord")
         with tf.io.TFRecordWriter(dataset_path) as dataset:
             dataset.write(example.SerializeToString())
         self.assertTrue(os.path.exists(dataset_path))
@@ -130,7 +246,8 @@ class VCFExampleGenerateTest(unittest.TestCase):
         dataset = images.load_example_dataset(dataset_path, with_label=True)
         for features, label in dataset:
             self.assertIn("image", features)
-            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
+            self.assertEqual(features["image"].shape, self.generator.image_shape)
+            
             example_image = images._example_image(example)
             self.assertTrue(np.array_equal(features["image"], example_image))
 
@@ -139,157 +256,17 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
             self.assertEqual(label, 2)
 
-    # Since simulate_variant_sequencing is imported into images, we mock there...
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_variant(self, synth_ref, mock_ref):
-        example = next(
-            images.make_vcf_examples(
-                self.params,
-                self.vcf_path,
-                self.bam_path,
-                self.sample,
-                image_shape=(300, 300),
-                sample_or_label="HG002",
-                simulate=True,
-            )
-        )
-        self.assertEqual(mock_ref.call_count, 4)
-        reference_query_region = Range("1", 899922, 899992).expand(self.params.flank)
-        for args, _ in mock_ref.call_args_list:
-            self.assertEqual(args[1], reference_query_region)
-        
-        self.assertIn("sim/images/shape", example.features.feature)
-        self.assertEqual(images._example_sim_images_shape(example), (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
-
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_example_to_image(self, synth_ref, mock_ref):
-        example = next(
-            images.make_vcf_examples(
-                self.params,
-                self.vcf_path,
-                self.bam_path,
-                self.sample,
-                image_shape=(300, 300),
-                sample_or_label="HG002",
-                simulate=True,
-            )
-        )
-
-        png_path = os.path.join(self.params.tempdir, "test.png")
-        images.example_to_image(example, png_path, with_simulations=True, margin=10, max_replicates=1)
-
-        self.assertTrue(os.path.exists(png_path))
-        with Image.open(png_path) as image:
-            self.assertEqual(image.size, (920, 610))  # 3*300+2*10, 2*200+10
-
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_dataset_roundtrip(self, synth_ref, mock_ref):
-        example = next(
-            images.make_vcf_examples(
-                self.params,
-                self.vcf_path,
-                self.bam_path,
-                self.sample,
-                image_shape=(300, 300),
-                sample_or_label="HG002",
-                simulate=True,
-            )
-        )
-
-        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
-        with tf.io.TFRecordWriter(dataset_path) as dataset:
-            dataset.write(example.SerializeToString())
-        self.assertTrue(os.path.exists(dataset_path))
-
-        # Load dataset without simulated data
-        dataset = images.load_example_dataset(dataset_path, with_label=True)
-        for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
-            self.assertEqual(label, 2)
-
-        # Load dataset with simulated data
-        dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
-        for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
-            self.assertEqual(label, 2)
-
-            example_image = images._example_image(example)
-            self.assertTrue(np.array_equal(features["image"], example_image))
-
-            self.assertIn("sim/images", features)
-            sim_tensor = features["sim/images"]
-            self.assertEqual(sim_tensor.shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
-
-            for ac in (0, 1, 2):
-                for repl in range(self.params.replicates):
-                    self.assertTrue(np.array_equal(sim_tensor[ac,repl], example_image))
-
-
-    @patch("npsv2.simulation.RandomVariants._generate_deletions", side_effect=_mock_generate_deletions)
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_variant_with_sampled_ref(self, synth_ref, mock_ref, mock_rand_var):
-        params = argparse.Namespace(**vars(self.params))
-        setattr(params, "reference", os.path.join(FILE_DIR, "1_896922_902998.fasta"))
-        setattr(params, "exclude_bed", os.path.join(FILE_DIR, "test_exclude.bed.gz"))
-        setattr(params, "sim_ref", False)
-        
-        example = next(
-            images.make_vcf_examples(
-                params,
-                self.vcf_path,
-                self.bam_path,
-                self.sample,
-                image_shape=(300, 300),
-                sample_or_label="HG002",
-                simulate=True,
-            )
-        )
-        self.assertEqual(mock_ref.call_count, 4)
-        self.assertIn("sim/images/shape", example.features.feature)
-        self.assertEqual(images._example_sim_images_shape(example), (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
-
-
-class ChunkedVCFExampleGenerateTest(unittest.TestCase):
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(
-            tempdir=self.tempdir.name,
-            reference=None,
-            flank=1,
-            replicates=1,
-            threads=2,
-            sample_ref=False,
-            exclude_bed=None,
-            augment=False,
-            single_image=True,
-        )
-        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
-        self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
-        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-
-    def tearDown(self):
-        self.tempdir.cleanup()
-
-    def test_region_dataset(self):
-        regions = list(images._chunk_genome(os.path.join(FILE_DIR, "1_896922_902998.fasta"), self.vcf_path))
-        self.assertEqual(regions, ["1:1-6067"])
-
-    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_make_dataset(self, synth_ref, mock_ref, mock_reg):
-        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord")
+    def test_vcf_to_tfrecords(self, synth_ref, mock_ref):
+        cfg = OmegaConf.merge(self.cfg, { "pileup": { "realigner_flank": 1 }})
+        dataset_path = os.path.join(self.tempdir.name, "test.tfrecords.gz")
         images.vcf_to_tfrecords(
-            self.params,
+            cfg,
             self.vcf_path,
             self.bam_path,
             dataset_path,
             self.sample,
-            image_shape=(300, 300),
             sample_or_label="HG002",
             simulate=True,
         )
@@ -299,142 +276,16 @@ class ChunkedVCFExampleGenerateTest(unittest.TestCase):
             self.assertEqual(args[1], Range("1", 899921, 899993))
 
         self.assertTrue(os.path.exists(dataset_path))
-
+   
         # Load dataset with simulated data
         dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=True)
         for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
+            self.assertEqual(features["image"].shape, self.generator.image_shape)
             self.assertEqual(label, 2)
+            self.assertEqual(features["sim/images"].shape, (3, 1) + self.generator.image_shape)
 
-            # png_path = "test.png" #os.path.join(self.params.tempdir, "test.png")
-            # image = Image.fromarray(features["image"].numpy()[:,:,0], mode="L")
-            # image.save(png_path)
+            png_path = os.path.join(self.tempdir.name, "test.png")
+            images.features_to_image(self.cfg, features, png_path, with_simulations=True)
+            self.assertTrue(os.path.exists(png_path))
 
-            self.assertEqual(features["sim/images"].shape, (3, self.params.replicates, 300, 300, images.IMAGE_CHANNELS))
-
-    @patch("npsv2.images._chunk_genome", side_effect=_mock_chunk_genome)
-    @patch(
-        "npsv2.variant._reference_sequence",
-        return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
-    )
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_compressed_dataset_roundtrip(self, synth_ref, mock_ref, mock_reg):
-        dataset_path = os.path.join(self.params.tempdir, "test.tfrecord.gz")
-        images.vcf_to_tfrecords(
-            self.params, self.vcf_path, self.bam_path, dataset_path, self.sample, image_shape=(300, 300), sample_or_label="HG002",
-        )
-        self.assertTrue(os.path.exists(dataset_path))
-        # Load dataset with simulated data
-        dataset = images.load_example_dataset(dataset_path, with_label=True)
-        for features, label in dataset:
-            self.assertEqual(features["image"].shape, (300, 300, images.IMAGE_CHANNELS))
-            self.assertEqual(label, 2)
-
-class CreateWindowedImageTest(unittest.TestCase):
-    def setUp(self):
-        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
-        self.variant = Variant.from_pysam(record)
-
-        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(
-            reference=os.path.join(FILE_DIR, "1_896922_902998.fasta"),
-            tempdir=self.tempdir.name,
-            flank=1000,
-            augment=False,
-            exclude_bed=None,
-            sample_ref=False,
-            replicates=1,
-            single_image=False,
-        )
-        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
-
-    def tearDown(self):
-        self.tempdir.cleanup()
-
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    def test_image_sizing(self, mock_ref):
-        image_tensor = images.create_windowed_example(
-            self.params,
-            self.variant,
-            self.bam_path,
-            [Range.parse_literal("1:899898-899947"), Range.parse_literal("1:899968-900017")], 
-            self.sample,
-        )
-        # There should be 5 windows in the image
-        self.assertEqual(image_tensor.shape, (2, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
-
-
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    def test_variant_to_example(self, mock_ref):
-        example = images.make_variant_example(
-            self.params,
-            self.variant,
-            self.bam_path,
-            self.sample,
-            window_size=50,
-            flank_windows=1,
-        )
-        # There should be 5 windows in this example
-        self.assertEqual(images._example_image_shape(example), (5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
-    
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    def test_variant_to_image(self, mock_ref):
-        example = images.make_variant_example(
-            self.params,
-            self.variant,
-            self.bam_path,
-            self.sample,
-            window_size=50,
-            flank_windows=1,
-        )
-        
-        png_path = os.path.join(self.params.tempdir, "test.png")
-        images.example_to_image(example, png_path)
-
-        self.assertTrue(os.path.exists(png_path))
-        with Image.open(png_path) as image:
-            self.assertEqual(image.size, (250, images.IMAGE_HEIGHT))
-
-
-    # Since simulate_variant_sequencing is imported into images, we mock there...
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_variant_to_example(self, synth_ref, mock_ref):
-        example = images.make_variant_example(
-            self.params,
-            self.variant,
-            self.bam_path,
-            self.sample,
-            window_size=50,
-            flank_windows=1,
-            simulate=True,
-            replicates=self.params.replicates,
-        )
-        
-        # There should be 5 windows in this example
-        self.assertEqual(images._example_image_shape(example), (5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
-        self.assertEqual(images._example_sim_images_shape(example), (3, 1, 5, images.IMAGE_HEIGHT, 50, images.IMAGE_CHANNELS))
-    
-
-    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
-    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
-    def test_simulate_variant_to_image(self, synth_ref, mock_ref):
-        example = images.make_variant_example(
-            self.params,
-            self.variant,
-            self.bam_path,
-            self.sample,
-            window_size=50,
-            flank_windows=1,
-            simulate=True,
-            replicates=self.params.replicates,
-        )
-        
-        png_path = os.path.join(self.params.tempdir, "test.png")
-        images.example_to_image(example, png_path, with_simulations=True, margin=10, max_replicates=1)
-
-        self.assertTrue(os.path.exists(png_path))
-        with Image.open(png_path) as image:
-            # There should be 5 windows in this example 
-            self.assertEqual(image.size, (3*5*50 + 20, 2*images.IMAGE_HEIGHT + 10))
+            

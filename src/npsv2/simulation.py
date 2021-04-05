@@ -83,7 +83,7 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(params, fasta_path, allele_count, sample: Sample, dir=tempfile.gettempdir()):
+def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
     hap_coverage =  sample.mean_coverage / 2
     shared_ref_arg = f"-S {quote(params.shared_reference)}" if params.shared_reference else ""
         
