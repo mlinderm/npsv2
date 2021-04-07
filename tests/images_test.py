@@ -27,6 +27,7 @@ def setUpModule():
 
 def tearDownModule():
     ray.shutdown()
+    hydra.core.global_hydra.GlobalHydra.instance().clear()
 
 
 def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
@@ -96,7 +97,7 @@ class SingleImageGeneratorClassTest(unittest.TestCase):
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         
         
-        png_path = os.path.join(self.tempdir.name, "test.png")
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
@@ -168,6 +169,7 @@ class WindowedImageGeneratorClassTest(unittest.TestCase):
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_generate(self,  mock_ref):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        # For this size variant (with 1 flank window) there should be 5 windows
         self.assertEqual(image_tensor.shape, (5,) + self.generator.image_shape[1:])
         
         png_path = os.path.join(self.tempdir.name, "test.png")

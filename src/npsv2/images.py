@@ -1,4 +1,4 @@
-import functools, logging, os, random, subprocess, sys, tempfile, typing
+import datetime, functools, logging, os, random, subprocess, sys, tempfile, typing
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -106,7 +106,6 @@ class SingleImageGenerator(ImageGenerator):
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
 
         fragments = FragmentTracker()
-
         with pysam.AlignmentFile(read_path) as alignment_file:
             # Expand query region to capture straddling reads
             fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
@@ -129,15 +128,6 @@ class SingleImageGenerator(ImageGenerator):
         right_region = variant.right_flank_region(self._cfg.pileup.fetch_flank)
 
         for fragment in fragments:
-            # At present we render reads based on the original alignment so we only realign fragments that could overlap
-            # the image window
-            if fragment.reads_overlap(regions):
-                allele, ref_meta, alt_meta = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
-                realigned_reads.append((allele, fragment.read1, ref_meta, alt_meta))
-                realigned_reads.append((allele, fragment.read2, ref_meta, alt_meta))
-            else:
-                allele = AlleleAssignment.AMB
-
             # Only record the zscore for reads that straddle the event
             if fragment.fragment_straddles(left_region, right_region, min_aligned=self._cfg.pileup.anchor_min_aligned):
                 ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
@@ -147,14 +137,21 @@ class SingleImageGenerator(ImageGenerator):
                 ref_zscore = None
                 alt_zscore = None
 
-            pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+            # At present we render reads based on the original alignment so we only realign fragments that could overlap
+            # the image window
+            if fragment.reads_overlap(regions):
+                allele, ref_meta, alt_meta = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+                realigned_reads.append((allele, fragment.read1, ref_meta, alt_meta))
+                realigned_reads.append((allele, fragment.read2, ref_meta, alt_meta))
+                pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
             self._add_variant_strip(variant, sample, pileup, image_tensor)
 
-
         # Add pileup bases to the image
+        # This is the slowest portion of image generation as we iterate through every valid pixel in the image, 
+        # including sorting each column. Perhaps move to C++?
         read_pixels = image_height - self._cfg.pileup.variant_band_height
         for j, column in enumerate(pileup):
             for i, base in enumerate(column.ordered_bases(order="aligned", max_bases=read_pixels), start=self._cfg.pileup.variant_band_height):
