@@ -5,7 +5,7 @@ import numpy as np
 import hydra
 from hydra.experimental import compose, initialize
 
-from npsv2.models import SimulatedEmbeddingsModel
+from npsv2.models import SimulatedEmbeddingsModel, JointEmbeddingsModel
 #from npsv2.models import TripletModel, JointEmbeddingsModel, WindowedJointEmbeddingsModel
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
 from npsv2.sample import Sample
@@ -33,6 +33,7 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
+        self.assertIsInstance(model, SimulatedEmbeddingsModel)
         model.summary()
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
@@ -63,6 +64,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
     
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
+        self.assertIsInstance(model, JointEmbeddingsModel)
         model.summary()
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")

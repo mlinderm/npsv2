@@ -99,6 +99,52 @@ def main(cfg: DictConfig) -> None:
         logging.info("Saving model in: %s", model_path)
         model.save(model_path)
 
+    elif cfg.command == "evaluate":
+        import numpy as np
+        import pandas as pd
+        from .images import _extract_metadata_from_first_example, load_example_dataset
+        from . import npsv2_pb2
+
+        _configure_gpu()
+
+        tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
+        tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
+
+        image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
+        cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
+        model = hydra.utils.instantiate(cfg.model, image_shape, 1)
+
+        rows = []
+        for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
+            # Extract metadata for the variant
+            variant_proto = npsv2_pb2.StructuralVariant.FromString(features.pop("variant/encoded").numpy())
+            
+            # Predict genotype
+            dataset = tf.data.Dataset.from_tensors((features, original_label))
+            genotypes, distances, *_  = model.predict(cfg, dataset)
+
+            # Construct the DataFrame rows
+            rows.append(pd.DataFrame({
+                "SVLEN": variant_proto.svlen,
+                "LABEL": original_label,
+                "AC": tf.math.argmax(genotypes, axis=1),
+            }))
+
+        table = pd.concat(rows, ignore_index=True)
+        table["AC"] = pd.Categorical(table["AC"], categories=[0, 1, 2])
+        table["LABEL"] = pd.Categorical(table["LABEL"], categories=[0, 1, 2])
+        table["MATCH"] = table.LABEL == table.AC
+
+        # Print various metrics
+        gt_conc = np.mean(table.MATCH)
+        nr_conc = np.mean((table.LABEL != 0) == (table.AC != 0))
+        print(f"Accuracy - Genotype concordance: {gt_conc:.3}, Non-reference Concordance: {nr_conc:.3}")
+
+        confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True, dropna=False)
+        print(confusion_matrix)
+
+        svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
+        print(table.groupby(svlen_bins)["MATCH"].mean())
 
 if __name__ == "__main__":
     main()
