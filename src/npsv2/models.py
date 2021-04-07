@@ -107,63 +107,84 @@ class SimulatedEmbeddingsModel(GenotypingModel):
     def _model_from_encoder(cls, encoder, image_shape, replicates, **kwargs):
         embedding_shape = encoder.output_shape
 
-        query_replicates = 1
-        support_replicates = replicates - query_replicates
-
-        query = layers.Input((3, query_replicates) + image_shape, name="query")
-        query_embeddings = layers.Reshape((3 * query_replicates,) + image_shape)(query)
-        query_embeddings = layers.TimeDistributed(encoder, name="query_embeddings")(query_embeddings)
-
+        support_replicates = max(replicates - 1, 1)
         support = layers.Input((3, support_replicates) + image_shape, name="support")
         support_embeddings = layers.Reshape((3 * support_replicates,) + image_shape)(support)
         support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support_embeddings)
   
-        support_distances = layers.Lambda(lambda x: tf.map_fn(_cdist, x, dtype=tf.dtypes.float32), name="support_distances")([query_embeddings, support_embeddings]) 
+        query = layers.Input(image_shape, name="query")
+        query_embeddings = encoder(query)
 
+        def _query_distances(tensors):
+            query_embeddings, support_batch = tensors
+
+            # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
+            # distances between query example and all support examples
+            support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), dtype=tf.dtypes.float32)
+            support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+
+            return support_distances
+
+        support_distances = layers.Lambda(_query_distances, name="support_distances")([query_embeddings, support_embeddings])
+        
         # An alternate approach could use the genotype "cluster" means instead of cluster minimum
-        distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, 3, support_replicates)), axis=-1), name="distances")(support_distances)
-
+        distances = layers.Lambda(lambda x: tf.math.reduce_min(tf.reshape(x, (-1, 3, support_replicates)), axis=-1), name="distances")(support_distances)
+        
         # Convert distance to probability
         genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
 
-        return tf.keras.Model(inputs=[query, support], outputs=[support_distances, genotypes])
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances, support_distances])
 
-    def _train_input(self, cfg, dataset):
+    def _train_input(self, cfg, dataset): 
+        # Split the first replicate out as though it was three different queries...
         def _variant_to_training(features, original_label):
-            return ({ 
+            return tf.data.Dataset.from_tensor_slices(({ 
                 "query": tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
-                "support": tf.image.convert_image_dtype(features["sim/images"][:,1:], dtype=tf.float32),
+                "support": tf.repeat(tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,1:], dtype=tf.float32), axis=0), repeats=3, axis=0)
             }, {
                 "support_distances": tf.repeat(tf.one_hot([0, 1, 2], depth=3, dtype=tf.float32), repeats=self.replicates-1, axis=1),
                 "genotypes": tf.constant([0, 1, 2]),
-            })
+            }))
         
-        return dataset.shuffle(cfg.training.shuffle, reshuffle_each_iteration=True).map(_variant_to_training).batch(cfg.training.variants_per_batch)
+        return (dataset.shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
+            .flat_map(_variant_to_training)
+            .batch(cfg.training.variants_per_batch)
+        )
    
 
     def fit(self, cfg, training_dataset, validation_dataset=None):
         optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
         
         def _loss_wrapper(y_true, y_pred):
-            # "Flatten" batch and allele count size
+            # "Flatten" batch size
             y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
             y_pred = tf.reshape(y_pred, (-1,))
             weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
             return tfa.losses.contrastive_loss(y_true, y_pred) * weights
 
-        def _genotype_wrapper(y_true, y_pred):
-            # "Flatten" batch and allele count size
-            y_true = tf.reshape(y_true, (-1,))
-            y_pred = tf.reshape(y_pred, (-1, 3))
-            return tf.keras.metrics.sparse_categorical_accuracy(y_true, y_pred)
-
         self._model.compile(
             optimizer=optimizer,
             loss={ "support_distances": _loss_wrapper },
-            metrics={ "genotypes": [_genotype_wrapper] },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
         )
                 
         self._fit(cfg, self._train_input(cfg, training_dataset))
+
+
+    def _test_input(self, cfg, dataset):
+        def _variant_to_test(features, original_label):
+            return {
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+                "support": tf.expand_dims(tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32), axis=1),
+            }, original_label
+
+        return dataset.map(_variant_to_test).batch(1)
+
+
+    def predict(self, cfg, dataset):
+        assert self.replicates == 1, "Predict assumes a single replicate"
+        return self._model.predict(self._test_input(cfg, dataset))
+
 
 class JointEmbeddingsModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):

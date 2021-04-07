@@ -6,6 +6,8 @@ defaults:
   - simulation: augmented
   - model: joint_embeddings
   - training
+  - model_training: ${defaults.4.model}
+    optional: true
 
 command: genotype
 threads: 1

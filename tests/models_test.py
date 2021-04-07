@@ -27,20 +27,31 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
             "model=simulated_embeddings"
         ])
 
-    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecord.gz")), "No test inputs available")
+    def test_configuration_overrides(self):
+        self.assertEqual(self.cfg.training.variants_per_batch, 9)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
         model.summary()
 
-    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecord.gz")), "No test inputs available")
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_fit_model(self):
         dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
         image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
         
         model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
-        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)  
         model.fit(self.cfg, dataset)
 
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
+    def test_predict_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
+        
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        genotypes, *_ = model.predict(self.cfg, dataset)
 
 #@unittest.skip("Development only")
 class JointEmbeddingsModelTest(unittest.TestCase):
@@ -54,7 +65,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
         model.summary()
 
-    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecord.gz")), "No test inputs available")
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_fit_model(self):
         dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
         image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
@@ -63,7 +74,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         model.fit(self.cfg, dataset)
 
-    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecord.gz")), "No test inputs available")
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_predict_model(self):
         dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
         image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
@@ -71,6 +82,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         genotypes, *_ = model.predict(self.cfg, dataset)
+
 
 @unittest.skip("Development only")
 class TripletModelTest(unittest.TestCase):
