@@ -48,6 +48,7 @@ def _check_shared_reference(cfg: DictConfig):
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    print(OmegaConf.to_yaml(cfg))
     if cfg.command == "images":
         import ray
         from .images import vcf_to_tfrecords
@@ -145,6 +146,34 @@ def main(cfg: DictConfig) -> None:
 
         svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
         print(table.groupby(svlen_bins)["MATCH"].mean())
+
+    elif cfg.command == "genotype":
+        from .sample import Sample, sample_name_from_bam
+        from .genotyping import genotype_vcf
+
+        _check_shared_reference(cfg)
+
+        stats_paths = [cfg.stats_path] if isinstance(cfg.stats_path, str) else cfg.stats_path
+        reads_paths = [cfg.reads] if isinstance(cfg.reads, str) else cfg.reads
+
+        samples = {}
+        for stat_path in stats_paths:
+            sample = Sample.from_json(hydra.utils.to_absolute_path(stat_path))
+            samples[sample.name] = sample
+        for reads_path in reads_paths:
+            reads_path = hydra.utils.to_absolute_path(reads_path)
+            samples[sample_name_from_bam(reads_path)].bam = reads_path
+       
+        # Make sure model path is absolute
+        cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
+
+        genotype_vcf(
+            cfg,
+            hydra.utils.to_absolute_path(cfg.input),
+            samples,
+            hydra.utils.to_absolute_path(cfg.output),
+            progress_bar=True,
+        )
 
 if __name__ == "__main__":
     main()

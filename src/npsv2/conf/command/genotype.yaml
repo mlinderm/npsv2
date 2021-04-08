@@ -1,0 +1,5 @@
+# @package _global_
+command: genotype
+simulation:
+  replicates: 1
+  augment: false

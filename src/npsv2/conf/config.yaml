@@ -1,15 +1,15 @@
 defaults:
   - pileup: five_channel
   - generator: single
-  - pileup_generator: ${defaults.1.generator}
-    optional: true
   - simulation: augmented
   - model: joint_embeddings
   - training
-  - model_training: ${defaults.4.model}
+  - pileup_generator: ${defaults.1.generator}
     optional: true
+  - model_training: ${defaults.3.model}
+    optional: true
+  - command: genotype
 
-command: genotype
 threads: 1
 
 reference: ???
