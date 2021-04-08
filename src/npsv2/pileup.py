@@ -23,6 +23,14 @@ def _read_region(read, cigar):
     return (read_start, read_start + aligned_length)
 
 
+def read_start(read):
+    first_op, first_len = read.cigar[0]
+    if first_op == pysam.CSOFT_CLIP:
+        return read.reference_start - first_len
+    else:
+        return read.reference_start
+
+
 class AlleleAssignment(Enum):
     AMB = -1
     REF = 0

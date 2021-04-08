@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup
+from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup, read_start
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
@@ -63,7 +63,8 @@ class ImageGenerator:
             image_tensor = image_tensor.numpy()
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
+        #channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
+        channels = 3*[self._cfg.pileup.allele_channel]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -168,7 +169,7 @@ class SingleImageGenerator(ImageGenerator):
         realigned_reads = [read[:2] for read in realigned_reads if _filter_reads(read)]
         if len(realigned_reads) > read_pixels:
             realigned_reads = random.sample(realigned_reads, k=read_pixels)
-        realigned_reads.sort(key=lambda x: x[1].reference_start)
+        realigned_reads.sort(key=lambda x: read_start(x[1]))
 
         for i, (allele, read) in enumerate(realigned_reads, start=self._cfg.pileup.variant_band_height):
             _, col_slices = pileup.read_columns(read)
