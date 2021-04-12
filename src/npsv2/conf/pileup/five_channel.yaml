@@ -19,7 +19,7 @@ weight_allele: false
 amb_allele_pixel: 50
 ref_allele_pixel: 150
 alt_allele_pixel: 250
-min_normalized_allele_score: -inf
+min_normalized_allele_score: -.inf
 
 mapq_channel: 4
 max_mapq: 60
