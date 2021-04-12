@@ -4,7 +4,7 @@ from omegaconf import DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
 from tqdm import tqdm
-
+from .simulation import bwa_index_loaded
 
 def _configure_gpu():
     """
@@ -21,25 +21,8 @@ def _configure_gpu():
         pass
 
 
-def _bwa_index_loaded(reference: str) -> str:
-    """Check if bwa index is loaded in shared memory
-
-    Args:
-        reference (str): Path to reference file
-
-    Returns:
-        str: Shared reference name if index is loaded into shared memory, None otherwise
-    """
-    shared_name = os.path.basename(reference)
-    indices = subprocess.check_output("bwa shm -l", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
-    for index in indices.split("\n"):
-        if index.startswith(shared_name):
-            return shared_name
-    return None
-
-
 def _check_shared_reference(cfg: DictConfig):
-    cfg.shared_reference = _bwa_index_loaded(hydra.utils.to_absolute_path(cfg.reference))
+    cfg.shared_reference = bwa_index_loaded(hydra.utils.to_absolute_path(cfg.reference))
     if cfg.simulation.replicates > 0 and not cfg.shared_reference:
         logging.warning(
             "Consider loading BWA indices into shared memory before generating examples with 'bwa shm %s'",

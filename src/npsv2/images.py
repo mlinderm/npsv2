@@ -12,7 +12,7 @@ from .variant import Variant
 from .range import Range
 from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup, read_start
 from . import npsv2_pb2
-from .realigner import FragmentRealigner, realign_fragment
+from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
 from .sample import Sample
 
@@ -26,8 +26,13 @@ def _fragment_zscore(sample: Sample, fragment_length: int):
 
 def _realigner(variant, sample: Sample, reference, flank=1000):
     with tempfile.TemporaryDirectory() as dir:
-        fasta_path, _, _ = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank)
-        return FragmentRealigner(fasta_path, sample.mean_insert_size, sample.std_insert_size)
+        fasta_path, ref_contig, alt_contig = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank)
+        
+        # Convert breakpoints to list of strings to be passed into the C++ side
+        breakpoints = variant.ref_breakpoints(flank, contig=ref_contig) + variant.alt_breakpoints(flank, contig=alt_contig)
+        breakpoints = [tuple(map(lambda x: str(x) if x else "", breakpoints))]
+
+        return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size)
 
 
 class ImageGenerator:
@@ -57,6 +62,22 @@ class ImageGenerator:
             self._cfg.pileup.insert_size_mean_pixel + zscore * self._cfg.pileup.insert_size_sd_pixel, 1, MAX_PIXEL_VALUE
         )
 
+    def _allele_pixel(self, realignment: AlleleRealignment):
+        # if self._cfg.pileup.weight_allele:
+        #     # STOPPPED HERE
+        #     assert self._cfg.pileup.ref_allele_pixel < self._cfg.pileup.amb_allele_pixel < self._cfg.pileup.alt_allele_pixel
+        #     if realignment.allele == AlleleAssignment.REF:
+        #         return min(self._cfg.pileup.ref_allele_pixel + 2*abs(realignment.normalized_score), self._cfg.pileup.amb_allele_pixel)
+        #     elif realignment.allele == AlleleAssignment.ALT:
+        #         print(2*abs(realignment.normalized_score))
+        #         print(max(self._cfg.pileup.alt_allele_pixel - 2*abs(realignment.normalized_score), self._cfg.pileup.amb_allele_pixel))
+        #         abs(realignment.normalized_score) / self._cfg
+        #         return max(self._cfg.pileup.alt_allele_pixel - abs(realignment.normalized_score) / self._cfg., self._cfg.pileup.amb_allele_pixel)
+        #     else:
+        #         return self._cfg.pileup.amb_allele_pixel
+        # else:
+        #     return self._allele_to_pixel[realignment.allele]
+        return self._allele_to_pixel[realignment.allele]
 
     def _flatten_image(self, image_tensor):
         if tf.is_tensor(image_tensor):
@@ -141,10 +162,10 @@ class SingleImageGenerator(ImageGenerator):
             # At present we render reads based on the original alignment so we only realign fragments that could overlap
             # the image window
             if fragment.reads_overlap(regions):
-                allele, ref_meta, alt_meta = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
-                realigned_reads.append((allele, fragment.read1, ref_meta, alt_meta))
-                realigned_reads.append((allele, fragment.read2, ref_meta, alt_meta))
-                pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+                realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+                realigned_reads.append((fragment.read1, realignment))
+                realigned_reads.append((fragment.read2, realignment))
+                pileup.add_fragment(fragment, allele=realignment.allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
@@ -162,19 +183,20 @@ class SingleImageGenerator(ImageGenerator):
 
         # Render realigned reads as "full" reads, not as pileup "bases"
         def _filter_reads(realigned_read):
-            allele, read, (ref_qual, _), (alt_qual, _) = realigned_read
+            read, realignment = realigned_read
             # Keep reads in the image window that overlap one of the variant breakpoints
-            return read and allele != AlleleAssignment.AMB and regions.get_overlap(read) > 0
+            return read and realignment.allele != AlleleAssignment.AMB and realignment.breakpoint and regions.get_overlap(read) > 0 and realignment.normalized_score > self._cfg.pileup.min_normalized_allele_score
         
-        realigned_reads = [read[:2] for read in realigned_reads if _filter_reads(read)]
+        realigned_reads = [read for read in realigned_reads if _filter_reads(read)]
         if len(realigned_reads) > read_pixels:
             realigned_reads = random.sample(realigned_reads, k=read_pixels)
-        realigned_reads.sort(key=lambda x: read_start(x[1]))
+        realigned_reads.sort(key=lambda x: read_start(x[0]))
 
-        for i, (allele, read) in enumerate(realigned_reads, start=self._cfg.pileup.variant_band_height):
+        for i, (read, realignment) in enumerate(realigned_reads, start=self._cfg.pileup.variant_band_height):
+            allele_pixel = self._allele_pixel(realignment)
             _, col_slices = pileup.read_columns(read)
             for col_slice, _ in col_slices:
-                image_tensor[i, col_slice, self._cfg.pileup.allele_channel] = self._allele_to_pixel[allele]
+                image_tensor[i, col_slice, self._cfg.pileup.allele_channel] = allele_pixel
 
         # Render fragment insert size as "bars" since straddling reads may not be in the image
         if len(straddling_fragments) > read_pixels:
@@ -253,13 +275,13 @@ class WindowedImageGenerator(ImageGenerator):
                 continue
             
             # Realign reads
-            allele, ref_meta, alt_meta = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+            realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
 
             # Determine the Z-score for all reads 
             ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
             alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
         
-            pileup.add_fragment(fragment, allele=allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+            pileup.add_fragment(fragment, allele=realignment.allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
         read_pixels = tensor_shape[1]
         for w, window_region in enumerate(regions):
@@ -267,7 +289,6 @@ class WindowedImageGenerator(ImageGenerator):
             window_reads = pileup.overlapping_reads(window_region, max_reads=read_pixels)
             for i, read in enumerate(window_reads):
                 for col_slice, aligned in pileup.read_columns(window_region, read):
-                    
                     image_tensor[w, i, col_slice, self._cfg.pileup.aligned_channel] = self._aligned_to_pixel[aligned]
                     image_tensor[w, i, col_slice, self._cfg.pileup.ref_paired_channel] = np.clip(
                         self._cfg.pileup.insert_size_mean_pixel + read.ref_zscore * self._cfg.pileup.insert_size_sd_pixel, 1, MAX_PIXEL_VALUE

@@ -73,6 +73,23 @@ class RandomVariants(object):
             assert False, "Unsupported variant type"
 
 
+def bwa_index_loaded(reference: str) -> str:
+    """Check if bwa index is loaded in shared memory
+
+    Args:
+        reference (str): Path to reference file
+
+    Returns:
+        str: Shared reference name if index is loaded into shared memory, None otherwise
+    """
+    shared_name = os.path.basename(reference)
+    indices = subprocess.check_output("bwa shm -l", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
+    for index in indices.split("\n"):
+        if index.startswith(shared_name):
+            return shared_name
+    return None
+
+
 def _art_read_length(read_length, profile):
     """Make sure read length is compatible ART"""
     if profile in ("HS10", "HS20"):
@@ -106,6 +123,7 @@ def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, refere
 
     synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
     if synth_result.returncode != 0 or not os.path.exists(replicate_bam.name):
+        print(synth_result.stderr)
         raise RuntimeError(f"Synthesis script failed to generate BAM")
 
     return replicate_bam.name

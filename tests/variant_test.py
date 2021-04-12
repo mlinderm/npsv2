@@ -10,7 +10,6 @@ FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(tempdir=self.tempdir.name)
         
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
         self.variant = Variant.from_pysam(record)
@@ -21,6 +20,8 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
     def test_properties(self):
         self.assertTrue(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
+        self.assertEqual(self.variant.ref_length, 71)
+        self.assertEqual(self.variant.alt_length, 1)
 
         # Range is 0-indexed half-open...
         self.assertTrue(self.variant.is_biallelic())
@@ -32,7 +33,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
 
     @patch("npsv2.variant._reference_sequence", return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG")
     def test_consensus_fasta(self, mock_ref):
-            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.params.tempdir, line_width=sys.maxsize)
+            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
             self.assertEqual(alt_contig, "1_899922_899993_alt")
             mock_ref.assert_called_once_with(None, Range("1",899921,899993))
@@ -60,12 +61,15 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         expected = ['1:899848-899897', '1:899898-899947', '1:899933-899982', '1:899968-900017', '1:900018-900067']
         self.assertEqual(regions, [Range.parse_literal(r) for r in expected])
 
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:71-72")))
+        self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), None))
+
 class SymbolicDELVariantTestSuite(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.params = argparse.Namespace(tempdir=self.tempdir.name)
 
-        vcf_path = os.path.join(self.params.tempdir, "test.vcf")
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
         with open(vcf_path, "w") as vcf_file:
             vcf_file.write(
                 """##fileformat=VCFv4.1
@@ -90,10 +94,13 @@ class SymbolicDELVariantTestSuite(unittest.TestCase):
     def test_properties(self):
         self.assertFalse(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
+        self.assertEqual(self.variant.ref_length, 71)
+        self.assertEqual(self.variant.alt_length, 1)
+
 
     @patch("npsv2.variant._reference_sequence", return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG")
     def test_consensus_fasta(self, mock_ref):
-            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.params.tempdir, line_width=sys.maxsize)
+            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
             self.assertEqual(alt_contig, "1_899922_899993_alt")
             mock_ref.assert_called_once_with(None, Range("1",899921,899993))
@@ -108,3 +115,123 @@ class SymbolicDELVariantTestSuite(unittest.TestCase):
             )
             self.assertEqual(lines[2], ">1_899922_899993_alt")
             self.assertEqual(lines[3], "GG")
+
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:71-72")))
+        self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), None))
+
+
+class ComplexDELVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+                """##fileformat=VCFv4.1
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END for imprecise variants">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=4,length=191154276>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+4	20473846	HG3_PB_assemblyticsfalcon_19066	TATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATA	ATATATATAGATATATCTATATATATCTATATAGATATATCTATATCTATATAGATATATCTATATATATATAGATATATCTATATCTATATAGATATATATCTATATATATATCTATATAGATATATCTATATAGATATAGATATATATCTATATATAGATATAGATATATCTATATAGATATATATCTATAGATATCTATATATATAGATATATAGATATCTATATCTATAT	10	PASS	END=20474269;SVTYPE=DEL;SVLEN=-190
+"""
+            )
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_variant_properties(self):
+        self.assertEqual(
+            self.variant.ref_length, len("TATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATA")
+        )
+
+        self.assertEqual(
+            self.variant.alt_length,
+            len(
+                "ATATATATAGATATATCTATATATATCTATATAGATATATCTATATCTATATAGATATATCTATATATATATAGATATATCTATATCTATATAGATATATATCTATATATATATCTATATAGATATATCTATATAGATATAGATATATATCTATATATAGATATAGATATATCTATATAGATATATATCTATAGATATCTATATATATAGATATATAGATATCTATATCTATAT"
+            ),
+        )
+
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.left_flank_region(left_flank=1, right_flank=1), Range.parse_literal("4:20473845-20473846"))
+        self.assertEqual(self.variant.right_flank_region(left_flank=1, right_flank=1), Range.parse_literal("4:20474269-20474270"))
+        self.assertEqual(self.variant.ref_breakpoints(flank=1), (Range.parse_literal("4:1-2"), Range.parse_literal("4:425-426")))
+        self.assertEqual(self.variant.alt_breakpoints(flank=1), (Range.parse_literal("4:1-2"), Range.parse_literal("4:235-236")))
+
+    @patch("npsv2.variant._reference_sequence", return_value="GTATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATAT")
+    def test_consensus_fasta(self, mock_ref):
+        fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
+        mock_ref.assert_called_once_with(None, Range.parse_literal("4:20473845-20474270"))
+
+        with open(fasta_path, "r") as fasta:
+            lines = [line.strip() for line in fasta]
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0], ">4_20473845_20474270")
+        self.assertEqual(lines[0], f">{ref_contig}")
+        self.assertEqual(
+            lines[1],
+            "GTATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATAT",
+        )
+        self.assertEqual(lines[2], ">4_20473845_20474270_alt")
+        self.assertEqual(lines[2], f">{alt_contig}")
+        self.assertEqual(
+            lines[3],
+            "GATATATATAGATATATCTATATATATCTATATAGATATATCTATATCTATATAGATATATCTATATATATATAGATATATCTATATCTATATAGATATATATCTATATATATATCTATATAGATATATCTATATAGATATAGATATATATCTATATATAGATATAGATATATCTATATAGATATATATCTATAGATATCTATATATATAGATATATAGATATCTATATCTATATT",
+        )
+
+class SingleBaseComplexDELVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+                """##fileformat=VCFv4.1
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END for imprecise variants">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=8,length=146364022>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+8	79683398	.	AACCTCCCAACGCAATAGACATTGTGGTTTTCATTGCATATCATTCCTATTTCTCTCTCTCCATTATTTAGCAGTAATTTTTTTAATGAA	C	20	PASS	END=79683487;SVTYPE=DEL;SVLEN=-89
+"""
+            )
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.left_flank_region(left_flank=1, right_flank=1), Range.parse_literal("8:79683397-79683398"))
+        self.assertEqual(self.variant.right_flank_region(left_flank=1, right_flank=1), Range.parse_literal("8:79683487-79683488"))
+
+        self.assertEqual(self.variant.ref_breakpoints(1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:91-92")))
+        self.assertEqual(self.variant.alt_breakpoints(1, contig="alt"), (Range.parse_literal("alt:1-2"), Range.parse_literal("alt:2-3")))
+
+    @patch("npsv2.variant._reference_sequence", return_value="AAACCTCCCAACGCAATAGACATTGTGGTTTTCATTGCATATCATTCCTATTTCTCTCTCTCCATTATTTAGCAGTAATTTTTTTAATGAAA")
+    def test_consensus_fasta(self, mock_ref):
+        fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
+        mock_ref.assert_called_once_with(None, Range.parse_literal("8:79683397-79683488"))
+
+        with open(fasta_path, "r") as fasta:
+            lines = [line.strip() for line in fasta]
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0], ">8_79683397_79683488")
+        self.assertEqual(lines[0], f">{ref_contig}")
+        self.assertEqual(
+            lines[1],
+            "AAACCTCCCAACGCAATAGACATTGTGGTTTTCATTGCATATCATTCCTATTTCTCTCTCTCCATTATTTAGCAGTAATTTTTTTAATGAAA",
+        )
+        self.assertEqual(lines[2], ">8_79683397_79683488_alt")
+        self.assertEqual(lines[2], f">{alt_contig}")
+        self.assertEqual(
+            lines[3],
+            "ACA",
+        )

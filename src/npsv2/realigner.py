@@ -1,9 +1,18 @@
+from dataclasses import dataclass
 import pysam
 from ._native import FragmentRealigner, test_score_alignment, test_realign_read_pair
 from .pileup import Fragment, AlleleAssignment
 
 def _quality_string(read: pysam.AlignedSegment) -> str:
     return "".join([chr(c) for c in read.query_qualities])    
+
+
+@dataclass
+class AlleleRealignment:
+    allele: AlleleAssignment
+    breakpoint: bool
+    quality: float = 0
+    normalized_score: float = 0
 
 
 def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_delta=1):
@@ -16,13 +25,15 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
         kw["read2_seq"] = fragment.read2.query_sequence
         kw["read2_qual"] = _quality_string(fragment.read2)
     
-    ref_quality, ref_break, alt_quality, alt_break = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
+    ref_quality, ref_break, ref_score, ref_max_score, alt_quality, alt_break, alt_score, alt_max_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
     
-    if abs(alt_quality - ref_quality) < assign_delta:
-        allele = AlleleAssignment.AMB  
-    elif alt_quality > ref_quality: 
-        allele = AlleleAssignment.ALT
+    # The scores are log probabilities
+    normalized_ref_score = ref_score - ref_max_score
+    normalized_alt_score = alt_score - alt_max_score
+    
+    if alt_quality > (ref_quality + assign_delta): 
+        return AlleleRealignment(AlleleAssignment.ALT, alt_break, alt_quality, normalized_alt_score)
+    elif ref_quality > (alt_quality + assign_delta):
+        return AlleleRealignment(AlleleAssignment.REF, ref_break, ref_quality, normalized_ref_score)
     else:
-        allele = AlleleAssignment.REF
-
-    return allele, (ref_quality, None), (alt_quality, None)
+        return AlleleRealignment(AlleleAssignment.AMB, ref_break or alt_break)

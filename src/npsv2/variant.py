@@ -57,6 +57,16 @@ class Variant(object):
             return svlen[0]
 
     @property
+    def ref_length(self):
+        """Length of reference allele including any padding bases"""
+        raise NotImplementedError()
+
+    @property
+    def alt_length(self):
+        """Length of alternate allele including any padding bases"""
+        raise NotImplementedError()
+
+    @property
     def reference_region(self):
         return Range(self.contig, self.start + self._padding, self.end)
 
@@ -65,6 +75,18 @@ class Variant(object):
     
     def right_flank_region(self, right_flank, left_flank=0):
         return Range(self.contig, self.end - left_flank, self.end + right_flank)
+
+    def ref_breakpoints(self, flank, contig=None):
+        if contig is None:
+            contig = self.contig
+        event_end = flank + self.ref_length - self._padding
+        return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
+
+    def alt_breakpoints(self, flank, contig=None):
+        if contig is None:
+            contig = self.contig
+        event_end = flank + self.alt_length - self._padding
+        return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
 
     def genotype_indices(self, index_or_id):
         call = self._record.samples[index_or_id]
@@ -127,9 +149,21 @@ class DeletionVariant(Variant):
     def is_deletion(self):
         return True
 
-    def _alt_seq(self, ref_seq, flank):
-        alt_allele = self._record.alts[0]
+    @property
+    def ref_length(self):
+        return self.end - self.start
+
+    @property
+    def alt_length(self):
         if self._sequence_resolved:
+            alt_allele = self._record.alts[0]
+            return len(alt_allele)
+        else:
+            return 1
+
+    def _alt_seq(self, ref_seq, flank):
+        if self._sequence_resolved:
+            alt_allele = self._record.alts[0]
             return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
         else:
             return ref_seq[: flank] + ref_seq[-flank :]

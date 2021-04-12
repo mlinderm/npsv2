@@ -7,3 +7,4 @@ tensorflow-addons
 ray>=1.2.0
 hydra-core>=1.0.0
 intervaltree
+dataclasses

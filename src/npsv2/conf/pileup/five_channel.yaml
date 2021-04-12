@@ -15,9 +15,11 @@ insert_size_mean_pixel: 128
 insert_size_sd_pixel: 24
 
 allele_channel: 3
+weight_allele: false
 amb_allele_pixel: 50
 ref_allele_pixel: 150
 alt_allele_pixel: 250
+min_normalized_allele_score: -inf
 
 mapq_channel: 4
 max_mapq: 60
