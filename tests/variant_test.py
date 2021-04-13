@@ -235,3 +235,34 @@ class SingleBaseComplexDELVariantTestSuite(unittest.TestCase):
             lines[3],
             "ACA",
         )
+
+class IncompleteSequenceResolvedDELVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+                """##fileformat=VCFv4.1
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END for imprecise variants">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=1,length=249250621>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	67808460	HG2_10X_SVrefine210Xhap12_405	TGAGACAGGGTGTCATTCTGTCCCCCAGGCTGAAGTGTGGTGGCACAATCTCAGCTCACTGCAGCCTTCACCTCCTATGCTCAAGTGATCCTCCCACCTCAGCCTCCCAAGTAGCTGAGACTACAGGCATCCATCACCACGCCCAGCTAATTTTTGTTTGTCACA	T	20	LongReadHomRef	SVTYPE=DEL;SVLEN=-164
+"""
+            )
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_properties(self):
+        self.assertTrue(self.variant._sequence_resolved)
+        self.assertEqual(self.variant._padding, 1)
+        self.assertEqual(self.variant.ref_length, 165)
+        self.assertEqual(self.variant.alt_length, 1)
+        self.assertEqual(self.variant.end, 67808624) # 0-indexed, half-open

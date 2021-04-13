@@ -29,6 +29,11 @@ def _check_shared_reference(cfg: DictConfig):
             cfg.reference,
         )
 
+
+def _is_tfrecords_file(filename: str) -> bool:
+    return filename.endswith((".tfrecords", "tfrecords.gz"))
+
+
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
@@ -53,17 +58,28 @@ def main(cfg: DictConfig) -> None:
         )
 
     elif cfg.command == "visualize":
-        from .images import example_to_image, _filename_to_compression
+        from .images import example_to_image, _filename_to_compression, make_vcf_examples 
+        from .sample import Sample, sample_name_from_bam
+        # TODO: Generate variant ID and use that as file name
+        # TODO: Manage the Hydra generated working directory
 
-        dataset = tf.data.TFRecordDataset(filenames=hydra.utils.to_absolute_path(cfg.input), compression_type=_filename_to_compression(hydra.utils.to_absolute_path(cfg.input)))
-        for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
-            example = tf.train.Example()
-            example.ParseFromString(record.numpy())
+        input_path = hydra.utils.to_absolute_path(cfg.input)
+        if _is_tfrecords_file(input_path):
+            dataset = tf.data.TFRecordDataset(filenames=input_path, compression_type=_filename_to_compression(input_path))
+            for i, record in enumerate(tqdm(dataset, desc="Generating images for each variant")):
+                example = tf.train.Example()
+                example.ParseFromString(record.numpy())
 
-            # TODO: Generate variant ID and use that as file name
-            # TODO: Manage the Hydra generated working directory
-            image_path = os.path.join(os.getcwd(), f"variant{i}.png")
-            example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates)
+                image_path = os.path.join(os.getcwd(), f"variant{i}.png")
+                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates)
+        else:  # Assume it is a VCF file
+            _check_shared_reference(cfg)
+            sample = Sample.from_json(hydra.utils.to_absolute_path(cfg.stats_path))
+
+            examples = make_vcf_examples(cfg, input_path, hydra.utils.to_absolute_path(cfg.reads), sample, simulate=True)
+            for i, example in enumerate(tqdm(examples, desc="Generating images for each variant")):
+                image_path = os.path.join(os.getcwd(), f"variant{i}.png")
+                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates)
 
     elif cfg.command == "train":
         from .images import _extract_metadata_from_first_example, load_example_dataset

@@ -439,7 +439,8 @@ def make_vcf_examples(
             vcf_file.subset_samples([sample_or_label])
             label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(sample_index))
         else:
-            logging.info("Using fixed AC=%d as label", sample_or_label)
+            if sample_or_label is not None:
+                logging.info("Using fixed AC=%d as label", sample_or_label)
             vcf_file.subset_samples([])  # Drop all samples
             label_extractor = lambda variant: sample_or_label
 
@@ -463,7 +464,7 @@ def make_vcf_examples(
                     continue
 
                 label = label_extractor(variant)
-                yield make_variant_example(cfg, variant, read_path, sample,  label=label, generator=generator, **kwargs)
+                yield make_variant_example(cfg, variant, read_path, sample, label=label, generator=generator, **kwargs)
            
 
 
