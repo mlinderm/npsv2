@@ -84,8 +84,8 @@ class ImageGenerator:
             image_tensor = image_tensor.numpy()
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        #channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
-        channels = 3*[self._cfg.pileup.allele_channel]
+        channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
+        #channels = 3*[self._cfg.pileup.allele_channel]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 

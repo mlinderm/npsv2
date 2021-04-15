@@ -140,6 +140,30 @@ class SingleImageGeneratorClassTest(unittest.TestCase):
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
 
+@unittest.skip("Development only")
+@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
+class SingleImageGeneratorExampeTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "reference=/data/human_g1k_v37.fasta",
+            "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
+            "simulation.replicates=5",         
+            "simulation.sample_ref=false",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
+        self.vcf_path = os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz")
+        self.bam_path = os.path.join(FILE_DIR, "12_22127565_22132387.bam")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_normalized_allele_pixels(self):
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=5)
 
 class WindowedImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
@@ -196,7 +220,33 @@ class WindowedImageGeneratorClassTest(unittest.TestCase):
         png_path = os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True)
         self.assertTrue(os.path.exists(png_path))
-    
+
+@unittest.skip("Development only")
+@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
+class WindowedImageGeneratorExampeTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "reference=/data/human_g1k_v37.fasta",
+            "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
+            "generator=windowed",
+            "simulation.replicates=5",         
+            "simulation.sample_ref=false",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
+        self.vcf_path = os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz")
+        self.bam_path = os.path.join(FILE_DIR, "12_22127565_22132387.bam")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_normalized_allele_pixels(self):
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=5)
+
 
 class VCFExampleGenerateTest(unittest.TestCase):
     def setUp(self):
@@ -313,5 +363,5 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
 
     def test_normalized_allele_pixels(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
-        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        png_path = os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True)
