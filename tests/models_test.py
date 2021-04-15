@@ -51,10 +51,11 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
         image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
         
         model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
-        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)      
         genotypes, *_ = model.predict(self.cfg, dataset)
 
-#@unittest.skip("Development only")
+
+@unittest.skip("Development only")
 class JointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[

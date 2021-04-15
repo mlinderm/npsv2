@@ -613,7 +613,7 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False) ->
         "image/shape": tf.io.FixedLenFeature(shape=(len(shape),), dtype=tf.int64),
     }
     if with_label:
-        proto_features["label"] = tf.io.FixedLenFeature(shape=(1,), dtype=tf.int64)
+        proto_features["label"] = tf.io.FixedLenFeature(shape=(), dtype=tf.int64)
     if with_simulations and replicates > 0:
         proto_features.update(
             {
