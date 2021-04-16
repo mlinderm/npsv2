@@ -49,31 +49,43 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
             dst_header.add_sample(name)
             ordered_samples.append(sample)
 
-        def _vcf_shard(num_shards: int, index: int) -> typing.Iterator[tf.train.Example]:
+        def _vcf_shard(num_shards: int, index: int, yield_example: bool = True):
             """Generator of tf.train.Example for use as a Ray parallel iterator
 
             Args:
                 num_shards (int): Number of shards executing in parallel
                 index (int): Worker index
             """
-            # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
-            tf.config.threading.set_inter_op_parallelism_threads(1)
-            tf.config.threading.set_intra_op_parallelism_threads(1)
+            try:
+                # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
+                tf.config.threading.set_inter_op_parallelism_threads(1)
+                tf.config.threading.set_intra_op_parallelism_threads(1)
+            except RuntimeError:
+                pass
             
             with pysam.VariantFile(vcf_path, drop_samples=True) as vcf_file:
                 for i, record in enumerate(vcf_file):
                     if i % num_shards == index:
-                        variant = Variant.from_pysam(record)
-                        examples = [images.make_variant_example(cfg, variant, sample.bam, sample, label=None, simulate=True, generator=generator) for sample in ordered_samples]
-                        yield examples
+                        if yield_example:
+                            variant = Variant.from_pysam(record)
+                            examples = [images.make_variant_example(cfg, variant, sample.bam, sample, label=None, simulate=True, generator=generator) for sample in ordered_samples]
+                            yield (i, examples)
+                        else:
+                            yield (i, record)
 
 
         with pysam.VariantFile(output_path, mode="w", header=dst_header) as dst_vcf_file:
             # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
-            it = ray.util.iter.from_iterators([partial(_vcf_shard, cfg.threads, i) for i in range(cfg.threads)])
-            
-            # gather_sync ensures variants are generated in order at the cost of load imbalance
-            for record, examples in tqdm(zip(src_vcf_file, it.gather_sync()), desc="Genotyping variants", disable=not progress_bar):
+            # Ray gather_async ensures that examples generated in each shared are generated in order, so we
+            # use a corresponding set of iterators for obtaining the associated VCF records.
+            num_shards = cfg.threads
+            example_it = ray.util.iter.from_iterators([partial(_vcf_shard, num_shards, i) for i in range(num_shards)])
+            record_its = [_vcf_shard(num_shards, i, yield_example=False) for i in range(num_shards)]
+
+            for index, examples in tqdm(example_it.gather_async(), desc="Genotyping variants", disable=not progress_bar):
+                # Obtain the corresponding VCF record
+                record_index, record = next(record_its[index % num_shards])
+                assert record_index == index, "Mismatch VCF variant and result from threading"
                 variant = Variant.from_pysam(record)
 
                 dst_samples = []

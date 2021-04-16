@@ -126,7 +126,7 @@ def main(cfg: DictConfig) -> None:
             # Construct the DataFrame rows
             rows.append(pd.DataFrame({
                 "SVLEN": variant_proto.svlen,
-                "LABEL": original_label,
+                "LABEL": original_label.numpy(),
                 "AC": tf.math.argmax(genotypes, axis=1),
             }))
 

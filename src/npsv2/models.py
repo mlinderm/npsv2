@@ -186,11 +186,12 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
     def _test_input(self, cfg, dataset, batch_size):
         def _variant_to_test(features, original_label):
+            one_hot_label = original_label if original_label is not None else -1
             return ({
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
                 "support": tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
             }, {
-                "distances": tf.one_hot(original_label, depth=3, dtype=tf.float32),
+                "distances": tf.one_hot(one_hot_label, depth=3, dtype=tf.float32),
                 "genotypes": original_label,
             })
 
