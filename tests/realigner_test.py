@@ -87,7 +87,7 @@ class RealignerTest(unittest.TestCase):
             fragment_sd=self.params.fragment_sd,
             offset=0,  # Conversion already performed by pySAM
         )
-        print(results)
+        #print(results)
 
     def test_realign_reads(self):
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")
@@ -112,8 +112,8 @@ class RealignerTest(unittest.TestCase):
 
         allele_counts = Counter()
         for fragment in fragments:
-            allele, *_ = realign_fragment(realigner, fragment, assign_delta=1.0)
-            allele_counts[allele] += 1
+            realignment = realign_fragment(realigner, fragment, assign_delta=1.0)
+            allele_counts[realignment.allele] += 1
 
         self.assertEqual(allele_counts[AlleleAssignment.REF], 12)
         self.assertEqual(allele_counts[AlleleAssignment.ALT], 8)

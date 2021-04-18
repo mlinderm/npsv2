@@ -221,6 +221,84 @@ class SingleImageGenerator(ImageGenerator):
         assert len(shape) == 3
         return self._flatten_image(image_tensor)
 
+class SingleImageDepthGenerator(SingleImageGenerator):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        
+
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
+        if regions is None:
+            regions = self.image_regions(variant)
+        elif isinstance(regions, str):
+            regions = Range.parse_literal(region)
+
+        image_height, _, num_channels = self.image_shape
+        image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
+
+        if realigner is None:
+            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
+
+        fragments = FragmentTracker()
+        with pysam.AlignmentFile(read_path) as alignment_file:
+            # Expand query region to capture straddling reads
+            fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
+            for read in alignment_file.fetch(
+                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
+            ):
+                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
+                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
+                    continue
+
+                fragments.add_read(read)
+
+        # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
+        pileup = Pileup(regions)
+        
+        realigned_reads = []
+
+        left_region = variant.left_flank_region(self._cfg.pileup.fetch_flank)  # TODO: Incorporate CIPOS and CIEND?
+        right_region = variant.right_flank_region(self._cfg.pileup.fetch_flank)
+
+        for fragment in fragments:
+            # At present we render reads based on the original alignment so we only realign (and trakc) fragments that could overlap
+            # the image window
+            if fragment.reads_overlap(regions):
+                realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+                realigned_reads.append((fragment.read1, realignment))
+                realigned_reads.append((fragment.read2, realignment))
+                
+                # A potential limitation is that if the anchoring read is not in the window, we might not capture that
+                # information in the window
+                ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+
+                pileup.add_fragment(fragment, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+
+        # Add variant strip at the top of the image, clipping out the variant region
+        if self._cfg.pileup.variant_band_height > 0:
+            self._add_variant_strip(variant, sample, pileup, image_tensor)
+
+        # Add pileup bases to the image
+        # This is the slowest portion of image generation as we iterate through every valid pixel in the image, 
+        # including sorting each column. Perhaps move to C++?
+        read_pixels = image_height - self._cfg.pileup.variant_band_height
+        for j, column in enumerate(pileup):
+            for i, base in enumerate(column.ordered_bases(order="read_start", max_bases=read_pixels), start=self._cfg.pileup.variant_band_height):
+                image_tensor[i, j, self._cfg.pileup.aligned_channel] = self._aligned_to_pixel[base.aligned]
+                image_tensor[i, j, self._cfg.pileup.mapq_channel] = min(base.mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
+                image_tensor[i, j, self._cfg.pileup.ref_paired_channel] = self._zscore_pixel(base.ref_zscore)
+                image_tensor[i, j, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(base.alt_zscore)
+                image_tensor[i, j, self._cfg.pileup.allele_channel] = self._allele_pixel(base.allele)
+
+        # Create consistent image size
+        if image_tensor.shape != self.image_shape:
+            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
+            # we use cast instead
+            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
+
+        return image_tensor
+
+
 
 class WindowedImageGenerator(ImageGenerator):
     def __init__(self, cfg):

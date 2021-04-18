@@ -19,7 +19,7 @@ def setUpModule():
 def tearDownModule():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
 
-#@unittest.skip("Development only")
+@unittest.skip("Development only")
 class SimulatedEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[
@@ -28,7 +28,7 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
         ])
 
     def test_configuration_overrides(self):
-        self.assertEqual(self.cfg.training.variants_per_batch, 9)
+        self.assertEqual(self.cfg.training.variants_per_batch, 8)
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_construct_model(self):

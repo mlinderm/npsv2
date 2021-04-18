@@ -1,4 +1,5 @@
 import random
+from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
 import pysam
@@ -45,6 +46,14 @@ class BaseAlignment(Enum):
         if self.__class__ is other.__class__:
             return self.value < other.value
         return NotImplemented
+
+
+@dataclass
+class AlleleRealignment:
+    allele: AlleleAssignment
+    breakpoint: bool
+    quality: float = 0
+    normalized_score: float = 0
 
 
 class Fragment(object):
@@ -139,7 +148,7 @@ class PileupBase(NamedTuple):
     read_start: int
     aligned: BaseAlignment
     mapq: int = None
-    allele: AlleleAssignment = AlleleAssignment.AMB
+    allele: AlleleRealignment = AlleleRealignment(AlleleAssignment.AMB, False, 0, 0)
     ref_zscore: float = None
     alt_zscore: float = None
 
