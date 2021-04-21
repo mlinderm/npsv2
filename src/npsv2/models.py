@@ -273,6 +273,15 @@ class EncoderWrapperLayer(layers.Layer):
       def compute_output_shape(self, input_shape):
         return self.encoder.compute_output_shape(input_shape)
 
+def _time_distributed_encoder(encoder, name=None):
+    # This is a hack to use TimeDistributed with multiple outputs
+    # https://github.com/keras-team/keras/issues/6449#issuecomment-298255231
+    inputs = layers.Input(encoder.input_shape)
+    outputs = []
+    for output in encoder.output:
+        outputs.append(layers.TimeDistributed(tf.keras.Model(encoder.input, output))(inputs))
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name=name)
+
 
 class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
@@ -291,12 +300,10 @@ class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
         if model_path:
             encoder.load_weights(model_path)
         
+        # We seem to need a wrapper to use TimeDistributed with multi-output models
         support = layers.Input((3,) + image_shape, name="support")
-        
-        # We seem to need a wrapper to use TimeDistributed with multi-output models. We also need to use TensorFlow 2.5+.
-        encoder_wrapper = EncoderWrapperLayer(encoder)
-        _, support_embeddings, support_projections = layers.TimeDistributed(encoder_wrapper, name="support_embeddings")([support])
-        
+        _, support_embeddings, support_projections = _time_distributed_encoder(encoder, name="support_embeddings")(support)
+       
         query = layers.Input(image_shape, name="query")
         _, query_embeddings, query_projections = encoder(query)
 
