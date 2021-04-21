@@ -38,6 +38,16 @@ def _cdist(tensors, squared: bool = False):
     )
     return distances
 
+def _query_distances(tensors):
+    query_embeddings, support_batch = tensors
+
+    # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
+    # distances between query example and all support examples
+    support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), fn_output_signature=tf.dtypes.float32)
+    support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+
+    return support_distances
+
 
 def _inceptionv3_encoder(input_shape, normalize=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
@@ -47,7 +57,7 @@ def _inceptionv3_encoder(input_shape, normalize=False):
     base_model.trainable = True
     
     encoder = tf.keras.models.Sequential([
-        layers.Input(input_shape),
+        layers.InputLayer(input_shape),
         layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
         base_model,
         layers.Dense(512),
@@ -57,16 +67,32 @@ def _inceptionv3_encoder(input_shape, normalize=False):
         encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
     return encoder
 
-def _query_distances(tensors):
-    query_embeddings, support_batch = tensors
+# Adapted from:
+# https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
+def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=128, normalize_projection=True, batch_normalize_projection=False):
+    assert tf.keras.backend.image_data_format() == "channels_last"
 
-    # Make query embeddings have shape (batch, 1, ...) so we can map across batch to compute
-    # distances between query example and all support examples
-    support_distances = tf.map_fn(_cdist, (tf.expand_dims(query_embeddings, axis=1), support_batch), dtype=tf.dtypes.float32)
-    support_distances = tf.squeeze(support_distances, axis=1)  # Remove unit dimension for query
+    # Imagenet weights require 3-channel input
+    base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+    base_model.trainable = True
 
-    return support_distances
+    images = layers.Input(input_shape)
+    
+    base_model_inputs = layers.Conv2D(3, (1,1), activation='tanh')(images)  # Make multi-channel input compatible with Inception (input [-1, 1])
+    embedding = base_model(base_model_inputs)
+    normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
+    projection_inputs = normalized_embedding if normalize_embedding else embedding
+    if stop_gradient_before_projection:
+        projection_inputs = tf.stop_gradient(projection_inputs)
+    # Change activation? supcon does not use activation or BatchNormalization on last layer in projection head
+    projection = layers.Dense(projection_size)(projection_inputs)
+    if batch_normalize_projection:
+        projection = layers.BatchNormalization()(projection)
+    if normalize_projection:
+        projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
+
+    return tf.keras.Model(inputs=images, outputs=[embedding, normalized_embedding, projection], name="encoder")
 
 class GenotypingModel:    
     def summary(self):
@@ -234,7 +260,102 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch)
             .batch(cfg.training.variants_per_batch)
         )
+
+
+class EncoderWrapperLayer(layers.Layer):
+      def __init__(self, encoder):
+        super(EncoderWrapperLayer, self).__init__()
+        self.encoder = encoder
+
+      def call(self, inputs):
+        return self.encoder(inputs)
+
+      def compute_output_shape(self, input_shape):
+        return self.encoder.compute_output_shape(input_shape)
+
+
+class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
+        self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
+
+    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+        encoder = _contrastive_encoder(
+            image_shape,
+            normalize_embedding=True,
+            stop_gradient_before_projection=False,
+            projection_size=128,
+            normalize_projection=True,
+            batch_normalize_projection=False
+        )
+        if model_path:
+            encoder.load_weights(model_path)
         
+        support = layers.Input((3,) + image_shape, name="support")
+        
+        # We seem to need a wrapper to use TimeDistributed with multi-output models. We also need to use TensorFlow 2.5+.
+        encoder_wrapper = EncoderWrapperLayer(encoder)
+        _, support_embeddings, support_projections = layers.TimeDistributed(encoder_wrapper, name="support_embeddings")([support])
+        
+        query = layers.Input(image_shape, name="query")
+        _, query_embeddings, query_projections = encoder(query)
+
+        embedding_distances = layers.Lambda(_query_distances, name="embedding_distances")([query_embeddings, support_embeddings])
+        projection_distances = layers.Lambda(_query_distances, name="projection_distances")([query_projections, support_projections])
+
+        # Convert distance to probability
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(embedding_distances) 
+
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, embedding_distances, projection_distances])        
+
+    def _train_input(self, cfg, dataset):
+        assert len(self.image_shape) == 3
+        
+        def _variant_to_training(features, original_label):
+            support_shape = tf.shape(features["sim/images"])
+            support_replicates = support_shape[1]
+            tf.debugging.assert_greater(support_replicates, 0)
+
+            queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+            queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
+
+            support = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+            support = tf.transpose(support, perm=[1, 0, 2, 3, 4])
+
+            return tf.data.Dataset.from_tensor_slices(({ 
+                "query": queries,
+                "support": support,
+            }, {
+                "projection_distances": tf.tile(tf.one_hot([original_label], depth=3, dtype=tf.float32), (support_replicates, 1)),
+                "genotypes": tf.repeat(original_label, support_replicates),
+            }))
+        
+        # Interleave SVs into the batch
+        return (
+            dataset.shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
+            .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch)
+            .batch(cfg.training.variants_per_batch)
+        )
+
+    def fit(self, cfg, training_dataset, validation_dataset=None):
+        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
+        
+        def _loss_wrapper(y_true, y_pred):
+            # "Flatten" the three possible genotypes
+            y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
+            y_pred = tf.reshape(y_pred, (-1,))
+            return tfa.losses.contrastive_loss(y_true, y_pred)
+
+            #weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
+            #return tfa.losses.contrastive_loss(y_true, y_pred) * weights
+
+        self._model.compile(
+            optimizer=optimizer,
+            loss={ "projection_distances": _loss_wrapper },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        )
+                
+        self._fit(cfg, self._train_input(cfg, training_dataset))
 
 # class JointEmbeddingsModel(GenotypingModel):
 #     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):

@@ -5,6 +5,7 @@ import numpy as np
 import hydra
 from hydra.experimental import compose, initialize
 
+from npsv2 import models
 from npsv2.models import SimulatedEmbeddingsModel, JointEmbeddingsModel
 #from npsv2.models import TripletModel, JointEmbeddingsModel, WindowedJointEmbeddingsModel
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
@@ -18,6 +19,37 @@ def setUpModule():
 
 def tearDownModule():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
+
+
+class EncoderTest(unittest.TestCase):
+    def test_original_encoder(self): 
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            normalize_embedding=False,
+            stop_gradient_before_projection=False,
+            projection_size=512,
+            normalize_projection=True,
+            batch_normalize_projection=True
+        )
+        embeddings, normalized_embeddings, projections = encoder.output_shape
+        self.assertEqual(embeddings, (None, 2048))
+        self.assertEqual(projections, (None, 512))
+    
+    def test_supcon_network_with_linear_projection(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            normalize_embedding=True,
+            stop_gradient_before_projection=False,
+            projection_size=128,
+            normalize_projection=True,
+            batch_normalize_projection=False
+        )
+        self.assertEqual(encoder.name, "encoder")
+
+        embeddings, normalized_embeddings, projections = encoder.output_shape
+        self.assertEqual(embeddings, (None, 2048))
+        self.assertEqual(projections, (None, 128))
+
 
 @unittest.skip("Development only")
 class SimulatedEmbeddingsModelTest(unittest.TestCase):
@@ -86,6 +118,28 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         genotypes, *_ = model.predict(self.cfg, dataset)
 
+
+class ProjectionJointEmbeddings(unittest.TestCase):
+    def setUp(self):
+        self.cfg = compose(config_name="config", overrides=[
+            "training.epochs=1",
+            "model=projection_joint_embeddings"
+        ])
+
+    def test_construct_model(self):
+        model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
+        self.assertIsInstance(model, models.ProjectionJointEmbeddingsModel)
+        model.summary()
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
+    def test_fit_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
+
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        model.fit(self.cfg, dataset)
+        
 
 @unittest.skip("Development only")
 class TripletModelTest(unittest.TestCase):

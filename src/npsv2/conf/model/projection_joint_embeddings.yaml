@@ -1,0 +1,3 @@
+# @package _group_
+_target_: npsv2.models.ProjectionJointEmbeddingsModel
+model_path: null
