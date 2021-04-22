@@ -71,39 +71,42 @@ def _inceptionv3_encoder(input_shape, normalize=False):
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
 def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], normalize_projection=True, batch_normalize_projection=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
-    assert len(projection_size) >= 1
 
     # Imagenet weights require 3-channel input
     base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
     base_model.trainable = True
 
+    # Do we need to lock the encoder weights while training the projection before unlocking it later for fine tuning?
+
     images = layers.Input(input_shape)
     
     base_model_inputs = layers.Conv2D(3, (1,1), activation='tanh')(images)  # Make multi-channel input compatible with Inception (input [-1, 1])
-    embedding = base_model(base_model_inputs)
+    # Set training=False to avoid updates to non-trainable BatchNorm parameters? (https://www.tensorflow.org/guide/keras/transfer_learning#build_a_model)
+    embedding = base_model(base_model_inputs) 
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
     projection = normalized_embedding if normalize_embedding else embedding
-    if stop_gradient_before_projection:
-        projection = tf.stop_gradient(projection)
-    
-    # Enable MLP (like supcon or SimCLR) where intermediate layers use bias and ReLU
-    for dim in projection_size[:-1]:
-        projection = layers.Dense(
-            dim,
-            kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
-            use_bias=False,
-            activation="relu",
-        )(projection)
-        projection = layers.BatchNormalization()(projection)
-    
-    # Last layer in projection
-    projection = layers.Dense(projection_size[-1], use_bias=False, activation=None)(projection)
-    if batch_normalize_projection:
-        # SimCLR looks to batch normalize the last layer, while supcon does not
-        projection = layers.BatchNormalization()(projection)
-    if normalize_projection:
-        projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
+    if len(projection_size) > 0:
+        if stop_gradient_before_projection:
+            projection = tf.stop_gradient(projection)
+        
+        # Enable MLP (like supcon or SimCLR) where intermediate layers use bias and ReLU
+        for dim in projection_size[:-1]:
+            projection = layers.Dense(
+                dim,
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+                use_bias=False,
+                activation="relu",
+            )(projection)
+            projection = layers.BatchNormalization()(projection)
+        
+        # Last layer in projection
+        projection = layers.Dense(projection_size[-1], use_bias=False, activation=None)(projection)
+        if batch_normalize_projection:
+            # SimCLR looks to batch normalize the last layer, while supcon does not
+            projection = layers.BatchNormalization()(projection)
+        if normalize_projection:
+            projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
 
     return tf.keras.Model(inputs=images, outputs=[embedding, normalized_embedding, projection], name="encoder")
 
@@ -140,6 +143,66 @@ class GenotypingModel:
     
         # Reload best checkpoint
         self._model.load_weights(checkpoint_filepath)
+
+class SupervisedBaselineModel(GenotypingModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        self.image_shape = image_shape
+        self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
+        if model_path:
+            self._model.load_weights(model_path)
+
+    def save(self, model_path: str):
+        self._model.save_weights(model_path)
+
+    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+        encoder = _contrastive_encoder(
+            image_shape,
+            projection_size=[],
+        )
+         
+        query = layers.Input(image_shape, name="query")
+        query_embeddings, *_ = encoder(query)
+
+        genotypes_logits = layers.Dropout(0.2)(query_embeddings)  # Regularize with dropout
+        genotypes_logits = layers.Dense(3, name="genotypes_logits")(genotypes_logits)
+        
+        # Convert distance to probability
+        genotypes = layers.Softmax(name="genotypes")(query_embeddings) 
+
+        return tf.keras.Model(inputs=query, outputs=[genotypes, genotypes_logits])            
+
+    def _train_input(self, cfg, dataset):
+        assert len(self.image_shape) == 3
+        
+        def _variant_to_training(features, original_label):
+            queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+    
+            return ({ 
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+            }, {
+                "genotypes_logits": original_label,
+                "genotypes": original_label,
+            })
+        
+        # Interleave SVs into the batch
+        return (
+            dataset
+            .shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
+            .map(_variant_to_training)
+            .batch(cfg.training.variants_per_batch)
+        )
+
+    def fit(self, cfg, training_dataset, validation_dataset=None):
+        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
+        # TODO: Two stage learning for transfer learning?
+        self._model.compile(
+            optimizer=optimizer,
+            loss={ "genotypes_logits": tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True) },
+            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        )
+                
+        self._fit(cfg, self._train_input(cfg, training_dataset))
+
 
 class SimulatedEmbeddingsModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):

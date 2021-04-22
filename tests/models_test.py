@@ -61,12 +61,46 @@ class EncoderTest(unittest.TestCase):
             normalize_projection=True,
             batch_normalize_projection=False
         )
-        encoder.summary()
         self.assertEqual(encoder.name, "encoder")
 
         embeddings, normalized_embeddings, projections = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
         self.assertEqual(projections, (None, 128))
+
+    def test_base_model_only(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            projection_size=[],
+        )
+        encoder.summary()
+        self.assertEqual(encoder.name, "encoder")
+
+        embeddings, *_ = encoder.output_shape
+        self.assertEqual(embeddings, (None, 2048))
+
+
+@unittest.skip("Development only")
+class SupervisedBaselineModelTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = compose(config_name="config", overrides=[
+            "training.epochs=1",
+            "model=supervised_baseline"
+        ])
+    
+    def test_construct_model(self):
+        model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
+        self.assertIsInstance(model, models.SupervisedBaselineModel)
+        model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
+        model.summary()
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
+    def test_fit_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
+        
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
+        dataset = load_example_dataset(dataset_path, with_simulations=False, with_label=True)  
+        model.fit(self.cfg, dataset)
 
 
 @unittest.skip("Development only")
