@@ -69,8 +69,9 @@ def _inceptionv3_encoder(input_shape, normalize=False):
 
 # Adapted from:
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
-def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=128, normalize_projection=True, batch_normalize_projection=False):
+def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], normalize_projection=True, batch_normalize_projection=False):
     assert tf.keras.backend.image_data_format() == "channels_last"
+    assert len(projection_size) >= 1
 
     # Imagenet weights require 3-channel input
     base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
@@ -82,12 +83,24 @@ def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_be
     embedding = base_model(base_model_inputs)
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
-    projection_inputs = normalized_embedding if normalize_embedding else embedding
+    projection = normalized_embedding if normalize_embedding else embedding
     if stop_gradient_before_projection:
-        projection_inputs = tf.stop_gradient(projection_inputs)
-    # Change activation? supcon does not use activation or BatchNormalization on last layer in projection head
-    projection = layers.Dense(projection_size)(projection_inputs)
+        projection = tf.stop_gradient(projection)
+    
+    # Enable MLP (like supcon or SimCLR) where intermediate layers use bias and ReLU
+    for dim in projection_size[:-1]:
+        projection = layers.Dense(
+            dim,
+            kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+            use_bias=False,
+            activation="relu",
+        )(projection)
+        projection = layers.BatchNormalization()(projection)
+    
+    # Last layer in projection
+    projection = layers.Dense(projection_size[-1], use_bias=False, activation=None)(projection)
     if batch_normalize_projection:
+        # SimCLR looks to batch normalize the last layer, while supcon does not
         projection = layers.BatchNormalization()(projection)
     if normalize_projection:
         projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
@@ -285,7 +298,9 @@ def _time_distributed_encoder(encoder, name=None):
 
 class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
-        super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
+        # TODO: Move model construction out of parent constructors into overridable method since model path
+        # loading gets confused
+        super().__init__(image_shape, replicates, **kwargs)
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
     def _create_model(self, image_shape, model_path: str=None, **kwargs):
@@ -293,7 +308,7 @@ class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
             image_shape,
             normalize_embedding=True,
             stop_gradient_before_projection=False,
-            projection_size=128,
+            projection_size=[128],
             normalize_projection=True,
             batch_normalize_projection=False
         )
@@ -315,6 +330,7 @@ class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
 
         return tf.keras.Model(inputs=[query, support], outputs=[genotypes, embedding_distances, projection_distances])        
 
+    # TODO: Move input functions to mixins?
     def _train_input(self, cfg, dataset):
         assert len(self.image_shape) == 3
         
@@ -363,6 +379,7 @@ class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
         )
                 
         self._fit(cfg, self._train_input(cfg, training_dataset))
+
 
 # class JointEmbeddingsModel(GenotypingModel):
 #     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):

@@ -27,10 +27,12 @@ class EncoderTest(unittest.TestCase):
             (100, 300, 5),
             normalize_embedding=False,
             stop_gradient_before_projection=False,
-            projection_size=512,
+            projection_size=[512],
             normalize_projection=True,
             batch_normalize_projection=True
         )
+        self.assertEqual(encoder.name, "encoder")
+
         embeddings, normalized_embeddings, projections = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
         self.assertEqual(projections, (None, 512))
@@ -40,10 +42,26 @@ class EncoderTest(unittest.TestCase):
             (100, 300, 5),
             normalize_embedding=True,
             stop_gradient_before_projection=False,
-            projection_size=128,
+            projection_size=[128],
             normalize_projection=True,
             batch_normalize_projection=False
         )
+        self.assertEqual(encoder.name, "encoder")
+
+        embeddings, normalized_embeddings, projections = encoder.output_shape
+        self.assertEqual(embeddings, (None, 2048))
+        self.assertEqual(projections, (None, 128))
+
+    def test_supcon_network_with_MLP(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            normalize_embedding=True,
+            stop_gradient_before_projection=False,
+            projection_size=[2048, 128],
+            normalize_projection=True,
+            batch_normalize_projection=False
+        )
+        encoder.summary()
         self.assertEqual(encoder.name, "encoder")
 
         embeddings, normalized_embeddings, projections = encoder.output_shape
@@ -98,6 +116,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
         self.assertIsInstance(model, JointEmbeddingsModel)
+        model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
         model.summary()
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
@@ -129,6 +148,7 @@ class ProjectionJointEmbeddings(unittest.TestCase):
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
         self.assertIsInstance(model, models.ProjectionJointEmbeddingsModel)
+        model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
         model.summary()
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
@@ -139,7 +159,15 @@ class ProjectionJointEmbeddings(unittest.TestCase):
         model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         model.fit(self.cfg, dataset)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
+    def test_predict_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
         
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        genotypes, *_ = model.predict(self.cfg, dataset)
 
 @unittest.skip("Development only")
 class TripletModelTest(unittest.TestCase):
