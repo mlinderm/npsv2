@@ -121,7 +121,7 @@ def main(cfg: DictConfig) -> None:
             
             # Predict genotype
             dataset = tf.data.Dataset.from_tensors((features, original_label))
-            genotypes, distances, *_  = model.predict(cfg, dataset)
+            genotypes, *_  = model.predict(cfg, dataset)
 
             # Construct the DataFrame rows
             rows.append(pd.DataFrame({

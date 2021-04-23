@@ -167,7 +167,7 @@ class SupervisedBaselineModel(GenotypingModel):
         genotypes_logits = layers.Dense(3, name="genotypes_logits")(genotypes_logits)
         
         # Convert distance to probability
-        genotypes = layers.Softmax(name="genotypes")(query_embeddings) 
+        genotypes = layers.Softmax(name="genotypes")(genotypes_logits)
 
         return tf.keras.Model(inputs=query, outputs=[genotypes, genotypes_logits])            
 
@@ -202,6 +202,20 @@ class SupervisedBaselineModel(GenotypingModel):
         )
                 
         self._fit(cfg, self._train_input(cfg, training_dataset))
+
+    def _test_input(self, cfg, dataset, batch_size):
+        def _variant_to_test(features, original_label):
+            return ({
+                "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
+            }, {
+                "genotypes_logits": original_label,
+                "genotypes": original_label,
+            })
+
+        return dataset.map(_variant_to_test).batch(batch_size)
+
+    def predict(self, cfg, dataset, batch_size=1):
+        return self._model.predict(self._test_input(cfg, dataset, batch_size=batch_size))
 
 
 class SimulatedEmbeddingsModel(GenotypingModel):
