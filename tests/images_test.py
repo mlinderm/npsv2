@@ -60,9 +60,9 @@ class ImageGeneratorConfigTest(unittest.TestCase):
         self.assertIsInstance(generator, images.SingleImageGenerator)
 
     def test_override_generator(self):
-        cfg = compose(config_name="config", overrides=["generator=windowed"])
+        cfg = compose(config_name="config", overrides=["generator=windowed_read"])
         generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
-        self.assertIsInstance(generator, images.WindowedImageGenerator)
+        self.assertIsInstance(generator, images.WindowedReadImageGenerator)
         self.assertIn("flank_windows", cfg.pileup)
 
 class SingleImageGeneratorClassTest(unittest.TestCase):
@@ -197,12 +197,73 @@ class SingleImageDepthGeneratorClassTest(unittest.TestCase):
         self.assertTrue(os.path.exists(png_path))
 
 
-class WindowedImageGeneratorClassTest(unittest.TestCase):
+class SingleFragmentImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
-            "generator=windowed",
+            "generator=single_fragment",
+            "simulation.replicates=1",
+            "pileup.image_width=1000",
+            "pileup.image_height=100",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
+        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_image_shape(self):
+        self.assertEqual(self.generator.image_shape, (100, 1000, self.cfg.pileup.num_channels))
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_generate(self,  mock_ref):
+        image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, self.generator.image_shape)
+        
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
+
+
+@unittest.skip("Development only")
+@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
+class SingleFragmentImageGeneratorExampeTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "generator=single_fragment",
+            "reference=/data/human_g1k_v37.fasta",
+            "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
+            "simulation.replicates=2",         
+            "simulation.sample_ref=false",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
+        self.vcf_path = os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz")
+        self.bam_path = os.path.join(FILE_DIR, "12_22127565_22132387.bam")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_normalized_allele_pixels(self):
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
+        png_path = os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=2)
+
+
+class WindowedReadImageGeneratorClassTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+            "generator=windowed_read",
             "simulation.replicates=1",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
@@ -256,13 +317,13 @@ class WindowedImageGeneratorClassTest(unittest.TestCase):
 
 @unittest.skip("Development only")
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
-class WindowedImageGeneratorExampeTest(unittest.TestCase):
+class WindowedReadImageGeneratorExampeTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
-            "generator=windowed",
+            "generator=windowed_read",
             "simulation.replicates=5",         
             "simulation.sample_ref=false",
         ])
@@ -383,7 +444,7 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "simulation.replicates=1",         
             "simulation.sample_ref=false",
-            "pileup.min_normalized_allele_score=-10",
+            #"pileup.min_normalized_allele_score=-10",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
@@ -395,6 +456,6 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_normalized_allele_pixels(self):
-        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False)) #True))
         png_path = os.path.join(self.tempdir.name, "test.png")
-        images.example_to_image(self.cfg, example, png_path, with_simulations=True)
+        images.example_to_image(self.cfg, example, png_path, with_simulations=False) #True)

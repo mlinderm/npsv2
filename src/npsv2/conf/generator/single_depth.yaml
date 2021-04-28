@@ -1,2 +1,2 @@
 # @package _group_
-_target_: npsv2.images.SingleImageDepthGenerator
+_target_: npsv2.images.SingleDepthImageGenerator

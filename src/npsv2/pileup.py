@@ -72,6 +72,10 @@ class Fragment(object):
         return self.read1.query_name
 
     @property
+    def reads(self):
+        return (self.read1, self.read2) if self.read1 and self.read2 else (self.read1,)
+
+    @property
     def is_properly_paired(self):
         return (
             self.read1 is not None
@@ -251,6 +255,53 @@ class Pileup:
         if fragment.read2:
             self.add_read(fragment.read2, **attributes)
 
+
+def _read_columns(region: Range, read):
+    if read.reference_name != region.contig:
+        return []
+    
+    cigar = read.cigartuples
+    if not cigar:
+        return []
+    
+    first_op, first_len = cigar[0]
+    if first_op == pysam.CSOFT_CLIP:
+        read_start = read.reference_start - first_len
+    else:
+        read_start = read.reference_start
+    
+    if read_start >= region.end:
+        return []
+    
+    slices = []
+    pileup_start = read_start - region.start
+    pileup_end = region.length
+    for cigar_op, cigar_len in cigar:
+        if cigar_op in CIGAR_ADVANCE_PILEUP:
+            next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, pileup_end))
+            if next_slice.stop > next_slice.start:
+                if cigar_op == pysam.CSOFT_CLIP:
+                    slices.append((next_slice, BaseAlignment.SOFT_CLIP))
+                elif cigar_op in CIGAR_ALIGNED_BASE:
+                    slices.append((next_slice, BaseAlignment.ALIGNED))
+            pileup_start += cigar_len
+
+    return slices
+
+
+def _region_columns(region: Range, render_region: Range):
+    if region.contig != render_region.contig:
+        return []
+    
+    region_start = render_region.start
+    if region_start >= region.end:
+        return []
+    
+    pileup_start = region_start - region.start
+    next_slice = slice(max(pileup_start, 0), min(pileup_start + render_region.length, region.length))
+    return [next_slice]
+
+
 # TODO: Consolidate these Pileup classes with a common base class
 class PileupRead:
     def __init__(self, read, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float):
@@ -274,37 +325,7 @@ class ReadPileup:
         self._reads = { Interval(r.start, r.end):[] for r in reference_regions }
 
     def read_columns(self, region: Range, pileup_read: PileupRead):
-        read = pileup_read._read
-        if read.reference_name != region.contig:
-            return None, []
-        
-        cigar = read.cigartuples
-        if not cigar:
-            return None, []
-        
-        first_op, first_len = cigar[0]
-        if first_op == pysam.CSOFT_CLIP:
-            read_start = read.reference_start - first_len
-        else:
-            read_start = read.reference_start
-        
-        if read_start >= region.end:
-            return read_start, []
-        
-        slices = []
-        pileup_start = read_start - region.start
-        pileup_end = region.length
-        for cigar_op, cigar_len in cigar:
-            if cigar_op in CIGAR_ADVANCE_PILEUP:
-                next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, pileup_end))
-                if next_slice.stop > next_slice.start:
-                    if cigar_op == pysam.CSOFT_CLIP:
-                        slices.append((next_slice, BaseAlignment.SOFT_CLIP))
-                    elif cigar_op in CIGAR_ALIGNED_BASE:
-                        slices.append((next_slice, BaseAlignment.ALIGNED))
-                pileup_start += cigar_len
-
-        return slices
+        return _read_columns(region, pileup_read._read)
 
     def overlapping_reads(self, region: Range, max_reads: int=None):
         reads = self._reads[Interval(region.start, region.end)]
@@ -323,3 +344,56 @@ class ReadPileup:
             self.add_read(fragment.read1, **attributes)
         if fragment.read2:
             self.add_read(fragment.read2, **attributes)
+
+
+class PileupFragment:
+    def __init__(self, fragment, allele: AlleleRealignment, ref_zscore: float, alt_zscore: float):
+        self._fragment = fragment
+        
+        # TODO: Handle soft-clip starts. Get a more robust start
+        region = fragment.fragment_region
+        self.interval = (region.start, region.end)
+        
+        self.allele = allele
+        self.ref_zscore = ref_zscore
+        self.alt_zscore = alt_zscore
+
+    @property
+    def reads(self):
+        return self._fragment.reads
+
+    @property
+    def start(self):
+        return self.interval[0]
+
+    @property
+    def fragment_region(self):
+        return self._fragment.fragment_region
+
+
+class FragmentPileup:
+    def __init__(self, reference_regions): 
+        self._fragments = { r:[] for r in reference_regions }
+
+
+    def overlapping_fragments(self, region: Range, max_length: int=None):
+        fragments = self._fragments[region]
+        if len(fragments) > max_length:
+            fragments = random.sample(fragments, k=max_length)
+        return sorted(fragments, key=lambda fragment: fragment.start)
+
+
+    def read_columns(self, region: Range, read):
+        return _read_columns(region, read)    
+
+
+    def fragment_columns(self, region: Range, fragment: PileupFragment):
+        return _region_columns(region, fragment.fragment_region)
+
+
+    def add_fragment(self, fragment: Fragment, **attributes):
+        pileup_fragment = PileupFragment(fragment, **attributes)
+        for region, fragments in self._fragments.items():
+            # Fragment is relevant if any of the reads overlap the region
+            if fragment.reads_overlap(region, min_overlap=1):
+                fragments.append(pileup_fragment)

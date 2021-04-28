@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup, read_start
+from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup, FragmentPileup, read_start
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
@@ -221,7 +221,8 @@ class SingleImageGenerator(ImageGenerator):
         assert len(shape) == 3
         return self._flatten_image(image_tensor)
 
-class SingleImageDepthGenerator(SingleImageGenerator):
+
+class SingleDepthImageGenerator(SingleImageGenerator):
     def __init__(self, cfg):
         super().__init__(cfg)
         
@@ -299,12 +300,86 @@ class SingleImageDepthGenerator(SingleImageGenerator):
         return image_tensor
 
 
+class SingleFragmentImageGenerator(SingleImageGenerator):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        assert self._cfg.pileup.variant_band_height == 0, "Generator doesn't support a variant band"
+    
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):        
+        if regions is None:
+            regions = self.image_regions(variant)
+        elif isinstance(regions, str):
+            regions = Range.parse_literal(region)
 
-class WindowedImageGenerator(ImageGenerator):
+        image_height, _, num_channels = self.image_shape
+        image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
+
+        if realigner is None:
+            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
+
+        fragments = FragmentTracker()
+    
+        with pysam.AlignmentFile(read_path) as alignment_file:
+            # Expand query region to capture straddling reads
+            fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
+            for read in alignment_file.fetch(
+                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
+            ):
+                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
+                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
+                    continue
+
+                fragments.add_read(read)
+
+        pileup = FragmentPileup([regions])
+
+        for fragment in fragments:
+            # At present we render reads based on the original alignment so skip any fragment with no reads in the region
+            # TODO: Eliminate the proper pairing requirement
+            if not fragment.is_properly_paired or not fragment.reads_overlap(regions, min_overlap=1):
+                continue
+            
+            # Realign reads
+            realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+
+            # Determine the Z-score for all reads 
+            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+        
+            pileup.add_fragment(fragment, allele=realignment.allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+
+        read_pixels = image_height
+        
+        # Get and potentially downsample fragments overlapping the image
+        window_fragments = pileup.overlapping_fragments(regions, max_length=read_pixels)
+        for i, fragment in enumerate(window_fragments):
+            # Render insert size spanning the entire fragment        
+            for col_slice in pileup.fragment_columns(regions, fragment):
+                image_tensor[i, col_slice, self._cfg.pileup.ref_paired_channel] = self._zscore_pixel(fragment.ref_zscore)
+                image_tensor[i, col_slice, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(fragment.alt_zscore)
+            
+            for read in fragment.reads:
+                # Render pixels for component reads
+                for col_slice, aligned in pileup.read_columns(regions, read):
+                    image_tensor[i, col_slice, self._cfg.pileup.aligned_channel] = self._aligned_to_pixel[aligned]
+                    image_tensor[i, col_slice, self._cfg.pileup.allele_channel] = self._allele_to_pixel[fragment.allele]
+                    image_tensor[i, col_slice, self._cfg.pileup.mapq_channel] = min(read.mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
+
+        # Create consistent image size
+        if image_tensor.shape != self.image_shape:
+            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
+            # we use cast instead
+            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
+
+        return image_tensor
+
+
+
+class WindowedReadImageGenerator(ImageGenerator):
     def __init__(self, cfg):
         super().__init__(cfg)
 
-
+    
     @property
     def image_shape(self):
         return (None,) + self._image_shape
@@ -313,7 +388,24 @@ class WindowedImageGenerator(ImageGenerator):
     def image_regions(self, variant) -> typing.List[Range]:
         return variant.window_regions(self._cfg.pileup.image_width, self._cfg.pileup.flank_windows)
 
-    
+        # TODO: Handle odd-sized variants
+        # Construct a single "padded" region to render as the pileup image
+        variant_region = variant.reference_region
+        padding = max((self._cfg.pileup.image_width - variant_region.length + 1) // 2, self._cfg.pileup.variant_padding)
+        return variant_region.expand(padding)
+
+
+    def render(self, image_tensor) -> Image:
+        shape = image_tensor.shape
+        assert len(shape) == 4
+        windows, height, width, _ = shape
+        composite_image = Image.new("RGB", (windows*width, height))
+        for i in range(windows):
+            sub_image = self._flatten_image(image_tensor[i])
+            composite_image.paste(sub_image, (i*width, 0))
+        return composite_image
+
+
     def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):        
         cfg = self._cfg # TODO: Enable local override of configuration
         if regions is None:
@@ -380,16 +472,7 @@ class WindowedImageGenerator(ImageGenerator):
         return image_tensor
    
 
-    def render(self, image_tensor) -> Image:
-        shape = image_tensor.shape
-        assert len(shape) == 4
-        windows, height, width, _ = shape
-        composite_image = Image.new("RGB", (windows*width, height))
-        for i in range(windows):
-            sub_image = self._flatten_image(image_tensor[i])
-            composite_image.paste(sub_image, (i*width, 0))
-        return composite_image
-       
+
 
 def _genotype_to_label(genotype, alleles={1}):
     # TODO: Handle no-calls

@@ -179,8 +179,8 @@ class DeletionVariant(Variant):
         
         left_region = self.left_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
         right_region = self.right_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
-        if left_region.end == right_region.start:
-            # Regions abut!
+        if left_region.end >= right_region.start:
+            # Regions abut or overlap!
             return left_region.window(window_size) + right_region.window(window_size)
         else:
             center_region = interior.center.expand(breakpoint_flank)

@@ -21,6 +21,9 @@ class Range(object):
     def __str__(self):
         return f"{self.contig}:{self.start+1}-{self.end}"
 
+    def __hash__(self):
+        return hash((self.contig, self.start, self.end))
+
     @property
     def length(self):
         return self.end - self.start
@@ -51,10 +54,10 @@ class Range(object):
             if has_region.reference_name != self.contig:
                 return 0
             return has_region.get_overlap(self.start, self.end)
-        elif isinstance(has_region, "Range"):
-            if self.contig != other.contig:
+        elif isinstance(has_region, Range):
+            if self.contig != has_region.contig:
                 return 0
-            return max(0, min(self.end, other.end) - max(self.start, other.start))
+            return max(0, min(self.end, has_region.end) - max(self.start, has_region.start))
         else:
             raise NotImplementedError()
 
