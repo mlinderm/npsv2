@@ -65,11 +65,11 @@ class ImageGeneratorConfigTest(unittest.TestCase):
         self.assertIsInstance(generator, images.WindowedReadImageGenerator)
         self.assertIn("flank_windows", cfg.pileup)
 
-class SingleImageGeneratorClassTest(unittest.TestCase):
+class SingleHybridImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
-            "generator=single",
+            "generator=single_hybrid",
             "pileup.image_width=200",
             "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
             "simulation.replicates=1",
@@ -143,11 +143,11 @@ class SingleImageGeneratorClassTest(unittest.TestCase):
 
 @unittest.skip("Development only")
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
-class SingleImageGeneratorExampeTest(unittest.TestCase):
+class SingleHybridImageGeneratorExampeTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
-            "generator=single",
+            "generator=single_hybrid",
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "simulation.replicates=5",         
@@ -167,7 +167,7 @@ class SingleImageGeneratorExampeTest(unittest.TestCase):
         png_path = os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=5)
 
-class SingleImageDepthGeneratorClassTest(unittest.TestCase):
+class SingleDepthImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
@@ -190,8 +190,7 @@ class SingleImageDepthGeneratorClassTest(unittest.TestCase):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         
-        
-        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        png_path = os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))

@@ -35,6 +35,19 @@ def _realigner(variant, sample: Sample, reference, flank=1000):
         return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size)
 
 
+def _fetch_reads(read_path: str, fetch_region: Range) -> FragmentTracker:
+    fragments = FragmentTracker()
+    with pysam.AlignmentFile(read_path) as alignment_file:
+        for read in alignment_file.fetch(
+            contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
+        ):
+            if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
+                # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
+                continue
+
+            fragments.add_read(read)
+    return fragments
+
 class ImageGenerator:
     def __init__(self, cfg):
         self._cfg = cfg
@@ -114,12 +127,17 @@ class SingleImageGenerator(ImageGenerator):
         for col_slice in pileup.region_columns(variant.reference_region):
             image_tensor[:self._cfg.pileup.variant_band_height, col_slice, :] = 0
 
+    def render(self, image_tensor) -> Image:
+        shape = image_tensor.shape
+        assert len(shape) == 3
+        return self._flatten_image(image_tensor)
+
 
     def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
         if regions is None:
             regions = self.image_regions(variant)
         elif isinstance(regions, str):
-            regions = Range.parse_literal(region)
+            regions = Range.parse_literal(regions)
 
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
@@ -127,18 +145,27 @@ class SingleImageGenerator(ImageGenerator):
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
 
-        fragments = FragmentTracker()
-        with pysam.AlignmentFile(read_path) as alignment_file:
-            # Expand query region to capture straddling reads
-            fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
-            for read in alignment_file.fetch(
-                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
-            ):
-                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
-                    continue
+        image_tensor = self._generate(variant, read_path, sample, regions=regions, realigner=realigner)
 
-                fragments.add_read(read)
+        # Create consistent image size
+        if image_tensor.shape != self.image_shape:
+            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
+            # we use cast instead
+            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
+
+        return image_tensor
+
+
+class SingleHybridImageGenerator(SingleImageGenerator):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        
+
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner):
+        image_height, _, num_channels = self.image_shape
+        image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
+
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
 
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = Pileup(regions)
@@ -207,19 +234,7 @@ class SingleImageGenerator(ImageGenerator):
                 image_tensor[i, col_slice, self._cfg.pileup.ref_paired_channel] = self._zscore_pixel(ref_zscore)
                 image_tensor[i, col_slice, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(alt_zscore)
 
-        # Create consistent image size
-        if image_tensor.shape != self.image_shape:
-            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
-            # we use cast instead
-            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
-
         return image_tensor
-
-
-    def render(self, image_tensor) -> Image:
-        shape = image_tensor.shape
-        assert len(shape) == 3
-        return self._flatten_image(image_tensor)
 
 
 class SingleDepthImageGenerator(SingleImageGenerator):
@@ -227,30 +242,11 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         super().__init__(cfg)
         
 
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
-        if regions is None:
-            regions = self.image_regions(variant)
-        elif isinstance(regions, str):
-            regions = Range.parse_literal(region)
-
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
-        if realigner is None:
-            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
-
-        fragments = FragmentTracker()
-        with pysam.AlignmentFile(read_path) as alignment_file:
-            # Expand query region to capture straddling reads
-            fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
-            for read in alignment_file.fetch(
-                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
-            ):
-                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
-                    continue
-
-                fragments.add_read(read)
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
 
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = Pileup(regions)
@@ -291,12 +287,6 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[i, j, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(base.alt_zscore)
                 image_tensor[i, j, self._cfg.pileup.allele_channel] = self._allele_pixel(base.allele)
 
-        # Create consistent image size
-        if image_tensor.shape != self.image_shape:
-            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
-            # we use cast instead
-            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
-
         return image_tensor
 
 
@@ -305,34 +295,13 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
         super().__init__(cfg)
         assert self._cfg.pileup.variant_band_height == 0, "Generator doesn't support a variant band"
     
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):        
-        if regions is None:
-            regions = self.image_regions(variant)
-        elif isinstance(regions, str):
-            regions = Range.parse_literal(region)
-
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner):        
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
-        if realigner is None:
-            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
-
-        fragments = FragmentTracker()
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
     
-        with pysam.AlignmentFile(read_path) as alignment_file:
-            # Expand query region to capture straddling reads
-            fetch_region = regions.expand(self._cfg.pileup.fetch_flank)
-            for read in alignment_file.fetch(
-                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
-            ):
-                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
-                    continue
-
-                fragments.add_read(read)
-
         pileup = FragmentPileup([regions])
-
         for fragment in fragments:
             # At present we render reads based on the original alignment so skip any fragment with no reads in the region
             # TODO: Eliminate the proper pairing requirement
@@ -365,14 +334,7 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
                     image_tensor[i, col_slice, self._cfg.pileup.allele_channel] = self._allele_to_pixel[fragment.allele]
                     image_tensor[i, col_slice, self._cfg.pileup.mapq_channel] = min(read.mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
 
-        # Create consistent image size
-        if image_tensor.shape != self.image_shape:
-            # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
-            # we use cast instead
-            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
-
         return image_tensor
-
 
 
 class WindowedReadImageGenerator(ImageGenerator):
@@ -422,19 +384,7 @@ class WindowedReadImageGenerator(ImageGenerator):
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
 
-        fragments = FragmentTracker()
-    
-        with pysam.AlignmentFile(read_path) as alignment_file:
-            # Expand query region to capture straddling reads
-            fetch_region = region.expand(self._cfg.pileup.fetch_flank)
-            for read in alignment_file.fetch(
-                contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
-            ):
-                if read.is_duplicate or read.is_qcfail or read.is_unmapped or read.is_secondary or read.is_supplementary:
-                    # TODO: Potentially recover secondary/supplementary alignments if primary is outside pileup region
-                    continue
-
-                fragments.add_read(read)
+        fragments = _fetch_reads(read_path, region.expand(self._cfg.pileup.fetch_flank))
 
         pileup = ReadPileup(regions)
 
