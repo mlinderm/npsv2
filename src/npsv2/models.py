@@ -69,7 +69,7 @@ def _inceptionv3_encoder(input_shape, normalize=False):
 
 # Adapted from:
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
-def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], normalize_projection=True, batch_normalize_projection=False):
+def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], batch_normalize_projection=False, normalize_projection=True):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
     # Imagenet weights require 3-channel input
@@ -220,19 +220,17 @@ class SupervisedBaselineModel(GenotypingModel):
 
 class SimulatedEmbeddingsModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
-        assert len(image_shape) == 3, "Model only supports single images"
         self.image_shape = image_shape
         self.replicates = replicates
+        self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
+
+    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+        assert len(image_shape) == 3, "Model only supports single images"
         encoder = _inceptionv3_encoder(image_shape, normalize=True)       
         if model_path:
             encoder.load_weights(model_path)
 
-        self._model = SimulatedEmbeddingsModel._model_from_encoder(encoder, image_shape, **kwargs)
-
-
-    @classmethod
-    def _model_from_encoder(cls, encoder, image_shape, **kwargs):
         embedding_shape = encoder.output_shape
 
         support = layers.Input((3,) + image_shape, name="support")
@@ -321,10 +319,8 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 class JointEmbeddingsModel(SimulatedEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
         super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
-
+       
     def _train_input(self, cfg, dataset):
-        assert len(self.image_shape) == 3
-        
         def _variant_to_training(features, original_label):
             support_shape = tf.shape(features["sim/images"])
             support_replicates = support_shape[1]
@@ -333,8 +329,9 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
             queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
 
+            # Swap AC and replicates dimensions, so we can pass triples of all genotypes to the model
             support = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
-            support = tf.transpose(support, perm=[1, 0, 2, 3, 4])
+            support = tf.transpose(support, perm=(1, 0) + tuple(range(2, 2+len(self.image_shape))))
 
             return tf.data.Dataset.from_tensor_slices(({ 
                 "query": queries,
@@ -375,10 +372,7 @@ def _time_distributed_encoder(encoder, name=None):
 
 class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
-        # TODO: Move model construction out of parent constructors into overridable method since model path
-        # loading gets confused
-        super().__init__(image_shape, replicates, **kwargs)
-        self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
+        super().__init__(image_shape, replicates, **kwargs)        
 
     def _create_model(self, image_shape, model_path: str=None, **kwargs):
         encoder = _contrastive_encoder(
@@ -456,6 +450,51 @@ class ProjectionJointEmbeddingsModel(JointEmbeddingsModel):
         )
                 
         self._fit(cfg, self._train_input(cfg, training_dataset))
+
+
+class BreakpointJointEmbeddingsModel(JointEmbeddingsModel):
+    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+        assert len(image_shape) == 4 and image_shape[0] == 2, "Model assumes two images per variant"
+        super().__init__(image_shape, replicates, **kwargs)
+
+    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+        encoder = _contrastive_encoder(
+            image_shape[1:],
+            normalize_embedding=False,
+            stop_gradient_before_projection=False,
+            projection_size=[512],
+            batch_normalize_projection=True,
+            normalize_projection=False,
+        )
+        if model_path:
+            encoder.load_weights(model_path)
+        
+        _, _, projection_shape = encoder.output_shape
+
+        
+        support = layers.Input((3,) + image_shape, name="support")
+        
+        # We seem to need a wrapper to use TimeDistributed with multi-output models
+        support_images = layers.Reshape((6,) + image_shape[1:])(support) 
+        _, _, support_projections = _time_distributed_encoder(encoder, name="support_embeddings")(support_images)
+        support_projections = layers.Reshape((3, 2 * projection_shape[-1]))(support_projections)
+        
+        # Normalize concatenated projection (both images concatenated)
+        support_projections = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(support_projections)
+
+        query = layers.Input(image_shape, name="query")
+        _, _, query_projections = _time_distributed_encoder(encoder, name="query_embeddings")(query)
+        query_projections = layers.Reshape((2 * projection_shape[-1],))(query_projections)
+        query_projections = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(query_projections)
+
+        # Compute distances between query and support
+        projection_distances = layers.Lambda(_query_distances, name="distances")([query_projections, support_projections])
+
+        # Convert distance to probability
+        genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(projection_distances) 
+
+        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, projection_distances])        
+
 
 
 # class JointEmbeddingsModel(GenotypingModel):

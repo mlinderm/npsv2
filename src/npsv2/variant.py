@@ -168,21 +168,24 @@ class DeletionVariant(Variant):
         else:
             return ref_seq[: flank] + ref_seq[-flank :]
 
-    def window_regions(self, window_size: int, flank_windows: int):
+    def window_regions(self, window_size: int, flank_windows: int, window_interior=True):
         # We anchor windows on the breakpoints
         assert window_size % 2 == 0, "Window size must be evenly split in half"
         breakpoint_flank = window_size // 2
         
-        # Create overlapping window in the center of the event if needed
+        # How many interior windows are needed on each side?
         interior = self.reference_region
-        interior_windows = ((interior.length - window_size) // 2) // window_size 
-        
+        if window_interior:
+            interior_windows = (max(interior.length - window_size, 0) // window_size) // 2
+        else:
+            interior_windows = flank_windows
+
         left_region = self.left_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
         right_region = self.right_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
-        if left_region.end >= right_region.start:
-            # Regions abut or overlap!
+        if left_region.end >= right_region.start or not window_interior:
+            # Regions abut or overlap, or we are not specifically tiling the interior
             return left_region.window(window_size) + right_region.window(window_size)
         else:
+            assert (right_region.start - left_region.end) <= window_size, "Should only be one potentially overlapping 'center' region"
             center_region = interior.center.expand(breakpoint_flank)
-            assert center_region.length <= window_size, "Should only be one potentially overlapping 'center' region"
             return left_region.window(window_size) + [center_region] + right_region.window(window_size)

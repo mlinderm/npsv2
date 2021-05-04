@@ -61,6 +61,18 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         expected = ['1:899848-899897', '1:899898-899947', '1:899933-899982', '1:899968-900017', '1:900018-900067']
         self.assertEqual(regions, [Range.parse_literal(r) for r in expected])
 
+    def test_window_regions_without_center(self):
+        regions = self.variant.window_regions(100, 1)
+        self.assertEqual(len(regions), 4)
+        expected = ['1:899773-899872', '1:899873-899972', '1:899943-900042', '1:900043-900142']
+        self.assertEqual(regions, [Range.parse_literal(r) for r in expected])
+
+    def test_window_regions_breakpoints_only(self):
+        regions = self.variant.window_regions(10, 0, window_interior=False)
+        self.assertEqual(len(regions), 2)
+        expected = ['1:899918-899927', '1:899988-899997']
+        self.assertEqual(regions, [Range.parse_literal(r) for r in expected])
+
     def test_breakpoints(self):
         self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:71-72")))
         self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), None))
@@ -249,6 +261,7 @@ class IncompleteSequenceResolvedDELVariantTestSuite(unittest.TestCase):
 ##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
 ##ALT=<ID=DEL,Description="Deletion">
+##FILTER=<ID=LongReadHomRef,Description="Long reads supported homozygous reference for all individuals">
 ##contig=<ID=1,length=249250621>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
 1	67808460	HG2_10X_SVrefine210Xhap12_405	TGAGACAGGGTGTCATTCTGTCCCCCAGGCTGAAGTGTGGTGGCACAATCTCAGCTCACTGCAGCCTTCACCTCCTATGCTCAAGTGATCCTCCCACCTCAGCCTCCCAAGTAGCTGAGACTACAGGCATCCATCACCACGCCCAGCTAATTTTTGTTTGTCACA	T	20	LongReadHomRef	SVTYPE=DEL;SVLEN=-164

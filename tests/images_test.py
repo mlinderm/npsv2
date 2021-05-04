@@ -335,10 +335,45 @@ class WindowedReadImageGeneratorExampeTest(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def test_normalized_allele_pixels(self):
+    def test_example_image(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
         png_path = os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=5)
+
+class BreakpointReadImageGeneratorTest(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = compose(config_name="config", overrides=[
+            "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+            "generator=breakpoint_read",
+            "simulation.replicates=1",
+        ])
+        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
+
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
+        self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_image_shape(self):
+        self.assertEqual(self.generator.image_shape, (2, self.cfg.pileup.image_height, self.cfg.pileup.image_width, self.cfg.pileup.num_channels))
+
+    def test_region(self):
+        image_regions = self.generator.image_regions(self.variant)
+        self.assertEqual(len(image_regions), 2)
+
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_generate(self,  mock_ref):
+        image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, self.generator.image_shape)
+        
+        png_path ="test.png" #os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
 
 
 class VCFExampleGenerateTest(unittest.TestCase):

@@ -6,8 +6,6 @@ import hydra
 from hydra.experimental import compose, initialize
 
 from npsv2 import models
-from npsv2.models import SimulatedEmbeddingsModel, JointEmbeddingsModel
-#from npsv2.models import TripletModel, JointEmbeddingsModel, WindowedJointEmbeddingsModel
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
 from npsv2.sample import Sample
 from .images_test import _mock_chunk_genome, _mock_reference_sequence, _mock_simulate_variant_sequencing
@@ -79,7 +77,7 @@ class EncoderTest(unittest.TestCase):
         self.assertEqual(embeddings, (None, 2048))
 
 
-#@unittest.skip("Development only")
+@unittest.skip("Development only")
 class SupervisedBaselineModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[
@@ -126,7 +124,7 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
-        self.assertIsInstance(model, SimulatedEmbeddingsModel)
+        self.assertIsInstance(model, models.SimulatedEmbeddingsModel)
         model.summary()
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
@@ -158,7 +156,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
     
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
-        self.assertIsInstance(model, JointEmbeddingsModel)
+        self.assertIsInstance(model, models.JointEmbeddingsModel)
         model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
         model.summary()
 
@@ -180,8 +178,8 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         genotypes, *_ = model.predict(self.cfg, dataset)
 
-
-class ProjectionJointEmbeddings(unittest.TestCase):
+@unittest.skip("Development only")
+class ProjectionJointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[
             "training.epochs=1",
@@ -211,6 +209,41 @@ class ProjectionJointEmbeddings(unittest.TestCase):
         model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         genotypes, *_ = model.predict(self.cfg, dataset)
+
+
+@unittest.skip("Development only")
+class BreakpointJointEmbeddingsModelTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = compose(config_name="config", overrides=[
+            "training.epochs=1",
+            "model=breakpoint_joint_embeddings"
+        ])
+
+    def test_construct_model(self):
+        model = hydra.utils.instantiate(self.cfg.model, (2, 100, 200, 5), 5)
+        self.assertIsInstance(model, models.BreakpointJointEmbeddingsModel)
+        model.summary()
+
+    
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.breakpoints.tfrecords.gz")), "No test inputs available")
+    def test_fit_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.breakpoints.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
+
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        model.fit(self.cfg, dataset)
+
+
+    @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.breakpoints.tfrecords.gz")), "No test inputs available")
+    def test_predict_model(self):
+        dataset_path = os.path.join(FILE_DIR, "test.breakpoints.tfrecords.gz")
+        image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
+        
+        model = hydra.utils.instantiate(self.cfg.model, image_shape, 1)
+        dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
+        genotypes, *_ = model.predict(self.cfg, dataset)
+
 
 @unittest.skip("Development only")
 class TripletModelTest(unittest.TestCase):

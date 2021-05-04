@@ -337,25 +337,20 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
         return image_tensor
 
 
-class WindowedReadImageGenerator(ImageGenerator):
+class WindowedImageGenerator(ImageGenerator):
     def __init__(self, cfg):
         super().__init__(cfg)
 
-    
     @property
     def image_shape(self):
-        return (None,) + self._image_shape
-
+        windows = 2 if self._cfg.pileup.get("breakpoints_only", False) else None
+        return (windows,) + self._image_shape
 
     def image_regions(self, variant) -> typing.List[Range]:
-        return variant.window_regions(self._cfg.pileup.image_width, self._cfg.pileup.flank_windows)
-
-        # TODO: Handle odd-sized variants
-        # Construct a single "padded" region to render as the pileup image
-        variant_region = variant.reference_region
-        padding = max((self._cfg.pileup.image_width - variant_region.length + 1) // 2, self._cfg.pileup.variant_padding)
-        return variant_region.expand(padding)
-
+        if self._cfg.pileup.get("breakpoints_only", False):
+            return variant.window_regions(self._cfg.pileup.image_width, flank_windows=0, window_interior=False)
+        else:
+            return variant.window_regions(self._cfg.pileup.image_width, self._cfg.pileup.flank_windows)
 
     def render(self, image_tensor) -> Image:
         shape = image_tensor.shape
@@ -367,22 +362,29 @@ class WindowedReadImageGenerator(ImageGenerator):
             composite_image.paste(sub_image, (i*width, 0))
         return composite_image
 
-
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):        
-        cfg = self._cfg # TODO: Enable local override of configuration
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
         if regions is None:
             regions = self.image_regions(variant)
         for region in regions[1:]:
             assert region.length == regions[0].length, "All regions must have identical lengths"
-        
-        # Determine the outer extent of all windows
-        region = functools.reduce(lambda a, b: a.union(b), regions)
-
-        tensor_shape = (len(regions),) + self.image_shape[1:]
-        image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
 
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
+
+        return self._generate(variant, read_path, sample, regions=regions, realigner=realigner)
+
+
+class WindowedReadImageGenerator(WindowedImageGenerator):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+
+
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner):         
+        tensor_shape = (len(regions),) + self.image_shape[1:]
+        image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
+
+        # Determine the outer extent of all windows
+        region = functools.reduce(lambda a, b: a.union(b), regions)
 
         fragments = _fetch_reads(read_path, region.expand(self._cfg.pileup.fetch_flank))
 
