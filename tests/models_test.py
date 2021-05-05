@@ -211,7 +211,7 @@ class ProjectionJointEmbeddingsModelTest(unittest.TestCase):
         genotypes, *_ = model.predict(self.cfg, dataset)
 
 
-@unittest.skip("Development only")
+#@unittest.skip("Development only")
 class BreakpointJointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[
@@ -222,6 +222,7 @@ class BreakpointJointEmbeddingsModelTest(unittest.TestCase):
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (2, 100, 200, 5), 5)
         self.assertIsInstance(model, models.BreakpointJointEmbeddingsModel)
+        self.assertIsNotNone(model._encoder)
         model.summary()
 
     

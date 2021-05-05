@@ -458,7 +458,7 @@ class BreakpointJointEmbeddingsModel(JointEmbeddingsModel):
         super().__init__(image_shape, replicates, **kwargs)
 
     def _create_model(self, image_shape, model_path: str=None, **kwargs):
-        encoder = _contrastive_encoder(
+        self._encoder = _contrastive_encoder(
             image_shape[1:],
             normalize_embedding=False,
             stop_gradient_before_projection=False,
@@ -467,23 +467,25 @@ class BreakpointJointEmbeddingsModel(JointEmbeddingsModel):
             normalize_projection=False,
         )
         if model_path:
-            encoder.load_weights(model_path)
+            self._encoder.load_weights(model_path)
         
-        _, _, projection_shape = encoder.output_shape
+        _, _, projection_shape = self._encoder.output_shape
 
         
         support = layers.Input((3,) + image_shape, name="support")
         
-        # We seem to need a wrapper to use TimeDistributed with multi-output models
+        # We seem to need a wrapper to use TimeDistributed with multi-output models. TimeDistributed is limited to
+        # 5-D so reshape AC (size 3) and breakpoint dimensions (size 2) into a single dimension of size 6
         support_images = layers.Reshape((6,) + image_shape[1:])(support) 
-        _, _, support_projections = _time_distributed_encoder(encoder, name="support_embeddings")(support_images)
+        _, _, support_projections = _time_distributed_encoder(self._encoder, name="support_embeddings")(support_images)
         support_projections = layers.Reshape((3, 2 * projection_shape[-1]))(support_projections)
         
         # Normalize concatenated projection (both images concatenated)
         support_projections = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(support_projections)
 
+        # Create other branch of Siamese network for query images
         query = layers.Input(image_shape, name="query")
-        _, _, query_projections = _time_distributed_encoder(encoder, name="query_embeddings")(query)
+        _, _, query_projections = _time_distributed_encoder(self._encoder, name="query_embeddings")(query)
         query_projections = layers.Reshape((2 * projection_shape[-1],))(query_projections)
         query_projections = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(query_projections)
 
@@ -495,7 +497,9 @@ class BreakpointJointEmbeddingsModel(JointEmbeddingsModel):
 
         return tf.keras.Model(inputs=[query, support], outputs=[genotypes, projection_distances])        
 
-
+    def save(self, model_path: str):
+        # We only save the encoder weights
+        self._encoder.save_weights(model_path)
 
 # class JointEmbeddingsModel(GenotypingModel):
 #     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
