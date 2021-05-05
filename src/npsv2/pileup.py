@@ -48,6 +48,11 @@ class BaseAlignment(Enum):
         return NotImplemented
 
 
+class Strand(Enum):
+    POSITIVE = 1
+    NEGATIVE = -1
+
+
 @dataclass
 class AlleleRealignment:
     allele: AlleleAssignment
@@ -318,6 +323,10 @@ class PileupRead:
     @property
     def mapq(self):
         return self._read.mapping_quality
+
+    @property
+    def strand(self):
+        return Strand.NEGATIVE if self._read.is_reverse else Strand.POSITIVE
 
 
 class ReadPileup:

@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 
 from .variant import Variant
 from .range import Range
-from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, ReadPileup, FragmentPileup, read_start
+from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, Strand, ReadPileup, FragmentPileup, read_start
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
@@ -20,8 +20,8 @@ from .sample import Sample
 MAX_PIXEL_VALUE = 254.0  # Adapted from DeepVariant
 
 
-def _fragment_zscore(sample: Sample, fragment_length: int):
-    return (fragment_length - sample.mean_insert_size) / sample.std_insert_size
+def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
+    return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
 
 
 def _realigner(variant, sample: Sample, reference, flank=1000):
@@ -53,7 +53,7 @@ class ImageGenerator:
         self._cfg = cfg
         self._image_shape = (self._cfg.pileup.image_height, self._cfg.pileup.image_width, self._cfg.pileup.num_channels)
 
-        # Helper dictionaries
+        # Helper dictionaries to map to pixel values
         self._aligned_to_pixel = {
             BaseAlignment.ALIGNED: self._cfg.pileup.aligned_base_pixel,
             BaseAlignment.SOFT_CLIP: self._cfg.pileup.soft_clip_base_pixel,
@@ -63,6 +63,11 @@ class ImageGenerator:
             AlleleAssignment.AMB: self._cfg.pileup.amb_allele_pixel,
             AlleleAssignment.REF: self._cfg.pileup.ref_allele_pixel,
             AlleleAssignment.ALT: self._cfg.pileup.alt_allele_pixel,
+        }
+
+        self._strand_to_pixel = {
+            Strand.POSITIVE: self._cfg.pileup.get("positive_strand_pixel", 70),
+            Strand.NEGATIVE: self._cfg.pileup.get("negative_strand_pixel", 240),
         }
 
     @property
@@ -180,7 +185,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
             # Only record the zscore for reads that straddle the event
             if fragment.fragment_straddles(left_region, right_region, min_aligned=self._cfg.pileup.anchor_min_aligned):
                 ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+                alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
                 straddling_fragments.append((fragment, ref_zscore, alt_zscore))
             else:
                 ref_zscore = None
@@ -267,7 +272,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 # A potential limitation is that if the anchoring read is not in the window, we might not capture that
                 # information in the window
                 ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+                alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
 
                 pileup.add_fragment(fragment, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
@@ -313,7 +318,7 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
 
             # Determine the Z-score for all reads 
             ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+            alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
         
             pileup.add_fragment(fragment, allele=realignment.allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
@@ -401,7 +406,7 @@ class WindowedReadImageGenerator(WindowedImageGenerator):
 
             # Determine the Z-score for all reads 
             ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-            alt_zscore = _fragment_zscore(sample, fragment.fragment_length + variant.length_change())
+            alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
         
             pileup.add_fragment(fragment, allele=realignment.allele, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
@@ -420,6 +425,8 @@ class WindowedReadImageGenerator(WindowedImageGenerator):
                     )
                     image_tensor[w, i, col_slice, self._cfg.pileup.allele_channel] = self._allele_to_pixel[read.allele]
                     image_tensor[w, i, col_slice, self._cfg.pileup.mapq_channel] = min(read.mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
+                    if "strand_channel" in self._cfg.pileup:
+                        image_tensor[w, i, col_slice, self._cfg.pileup.strand_channel] = self._strand_to_pixel[read.strand]
 
         return image_tensor
    

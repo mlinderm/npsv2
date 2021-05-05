@@ -345,6 +345,7 @@ class BreakpointReadImageGeneratorTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+            "pileup=six_channel",
             "generator=breakpoint_read",
             "simulation.replicates=1",
         ])
