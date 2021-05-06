@@ -1,5 +1,5 @@
 defaults:
-  - pileup: five_channel
+  - pileup: six_channel
   - generator: single_hybrid
   - simulation: augmented
   - model: joint_embeddings

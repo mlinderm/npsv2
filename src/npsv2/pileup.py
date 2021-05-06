@@ -14,24 +14,6 @@ CIGAR_ADVANCE_PILEUP = frozenset(
 CIGAR_ALIGNED_BASE = frozenset([pysam.CMATCH, pysam.CEQUAL, pysam.CDIFF,])
 
 
-def _read_region(read, cigar):
-    first_op, first_len = cigar[0]
-    if first_op == pysam.CSOFT_CLIP:
-        read_start = read.reference_start - first_len
-    else:
-        read_start = read.reference_start
-    aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
-    return (read_start, read_start + aligned_length)
-
-
-def read_start(read):
-    first_op, first_len = read.cigar[0]
-    if first_op == pysam.CSOFT_CLIP:
-        return read.reference_start - first_len
-    else:
-        return read.reference_start
-
-
 class AlleleAssignment(Enum):
     AMB = -1
     REF = 0
@@ -51,6 +33,31 @@ class BaseAlignment(Enum):
 class Strand(Enum):
     POSITIVE = 1
     NEGATIVE = -1
+
+
+def _read_region(read, cigar):
+    first_op, first_len = cigar[0]
+    if first_op == pysam.CSOFT_CLIP:
+        read_start = read.reference_start - first_len
+    else:
+        read_start = read.reference_start
+    aligned_length = sum(length for op, length in cigar if op in CIGAR_ADVANCE_PILEUP)
+    return (read_start, read_start + aligned_length)
+
+
+def _read_strand(read: pysam.AlignedSegment):
+    return Strand.NEGATIVE if read.is_reverse else Strand.POSITIVE
+
+
+def read_start(read):
+    first_op, first_len = read.cigar[0]
+    if first_op == pysam.CSOFT_CLIP:
+        return read.reference_start - first_len
+    else:
+        return read.reference_start
+
+
+
 
 
 @dataclass
@@ -160,6 +167,7 @@ class PileupBase(NamedTuple):
     allele: AlleleRealignment = AlleleRealignment(AlleleAssignment.AMB, False, 0, 0)
     ref_zscore: float = None
     alt_zscore: float = None
+    strand: Strand = None
 
 
 class PileupColumn:
@@ -252,7 +260,7 @@ class Pileup:
         read_start, slices = self.read_columns(read)
         for col_slice, cigar_op in slices:
             for column in self._columns[col_slice]:
-                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, **attributes)
+                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), **attributes)
 
     def add_fragment(self, fragment: Fragment, **attributes):
         if fragment.read1:

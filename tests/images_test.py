@@ -52,7 +52,7 @@ def _mock_generate_deletions(size, n=1, flank=0):
 class ImageGeneratorConfigTest(unittest.TestCase):
     def test_composed_config(self):
         cfg = compose(config_name="config", overrides=[])
-        self.assertEqual(cfg.pileup.num_channels, 5)
+        self.assertEqual(cfg.pileup.num_channels, 6)
 
     def test_instantiate_generator(self):
         cfg = compose(config_name="config", overrides=[])
@@ -345,7 +345,6 @@ class BreakpointReadImageGeneratorTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
-            "pileup=six_channel",
             "generator=breakpoint_read",
             "simulation.replicates=1",
         ])
@@ -371,7 +370,7 @@ class BreakpointReadImageGeneratorTest(unittest.TestCase):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         
-        png_path ="test.png" #os.path.join(self.tempdir.name, "test.png")
+        png_path =os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))

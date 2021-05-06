@@ -5,7 +5,6 @@ from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
 
-#from .util.config import Config, merge_config
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 
 
