@@ -163,7 +163,7 @@ def augment_samples(original_sample: Sample, n, keep_original=True):
     for _ in range(n - len(new_samples)):
         new_sample = copy.copy(original_sample)
 
-        new_sample.mean_coverage = random.uniform(max(original_sample.mean_coverage - 10, 0), original_sample.mean_coverage + 10)
+        new_sample.mean_coverage = random.uniform(max(original_sample.mean_coverage * 0.5, 0), original_sample.mean_coverage + 0)
         #new_sample.mean_insert_size = random.uniform(original_sample.mean_insert_size - 75, original_sample.mean_insert_size + 75)
         #new_sample.std_insert_size = random.uniform(original_sample.std_insert_size - 30, original_sample.std_insert_size + 30)
         

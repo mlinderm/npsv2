@@ -389,8 +389,9 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
   }
   // if (ref_quality > (max_alt_quality + 1))
   //   std::cerr << "Ref: " << total_log_prob << std::endl;
-  // else if (max_alt_quality > (ref_quality + 1))
-  //   std::cerr << "Alt: " << total_log_prob << std::endl;
+  // else 
+  // if (max_alt_quality > (ref_quality + 1))
+  //   std::cerr << "Alt: " << read1.Qname() << std::endl;
   return std::make_tuple(ref_quality, ref_breakpoint_overlap, ref_score, ref_max_score,
                          max_alt_quality, max_alt_breakpoint_overlap, max_alt_score, max_alt_max_score);
 }

@@ -1,4 +1,5 @@
 import datetime, logging, os, tempfile
+from omegaconf import OmegaConf
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tensorflow.keras import layers
@@ -75,6 +76,49 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
     
     return base_model
 
+
+    # base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+   
+    # # imagenet weights require a 3-channel input image. To enable us to use more channels, we need to construct a ../
+    # src_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+     
+    # # Only the first convolution layer needs to have different weights
+    # for i, (src_layer, dst_layer) in enumerate(zip(src_model.layers, base_model.layers)):
+    #     if i == 1:
+    #         kernels, *other_weights = src_layer.get_weights()
+            
+    #         # Replicate mean of exAssumes "channels_last"
+    #         new_kernels = tf.repeat(tf.reduce_mean(kernels, axis=-2, keepdims=True) * (3/input_shape[-1]), input_shape[-1], axis=-2)
+    #         dst_layer.set_weights([new_kernels] + other_weights)
+    #     else:
+    #         dst_layer.set_weights(src_layer.get_weights())
+
+
+    # #base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+    # base_model.trainable = True
+    
+    # encoder = tf.keras.models.Sequential([
+    #     layers.InputLayer(input_shape),
+    #     #layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
+    #     base_model,
+    #     layers.Dense(512),
+    #     layers.BatchNormalization(),
+    # ], name="encoder")
+    # if normalize:
+    #     encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
+    # return encoder
+
+    # image = layers.Input(input_shape)
+    # x = layers.Conv2D(3, (1,1), activation='tanh')(image)
+    # x = base_model(x, training=False)
+    # x = layers.Dense(512)(x)
+    # x = layers.BatchNormalization()(x)
+    # if normalize:
+    #     x = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(x)
+    # return tf.keras.Model(inputs=image, outputs=x, name="encoder")
+    
+
+   
 
 # Adapted from:
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
@@ -307,8 +351,6 @@ class SimulatedEmbeddingsModel(GenotypingModel):
    
 
     def fit(self, cfg, training_dataset, validation_dataset=None):
-        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
-        
         def _loss_wrapper(y_true, y_pred):
             # "Flatten" the three possible genotypes
             y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
@@ -316,12 +358,31 @@ class SimulatedEmbeddingsModel(GenotypingModel):
             weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
             return tfa.losses.contrastive_loss(y_true, y_pred) * weights
 
+        #  # Train the additional layers
+        # layer_phase_cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(["training.epochs=20"]))       
+        # self._model.compile(
+        #     optimizer=tf.keras.optimizers.Adam(learning_rate=layer_phase_cfg.training.learning_rate),
+        #     loss={ "distances": _loss_wrapper },
+        #     metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        # )
+        # self._fit(layer_phase_cfg, self._train_input(layer_phase_cfg, training_dataset))
+       
+
+        # # Fine tune the model by unlock all the layers
+        # finetune_phase_cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(["training.epochs=20"]))
+        # self._model.trainable = True
+        # self._model.compile(
+        #     optimizer=tf.keras.optimizers.Adam(learning_rate=0.0004),
+        #     loss={ "distances": _loss_wrapper },
+        #     metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+        # )
+        # self._fit(finetune_phase_cfg, self._train_input(finetune_phase_cfg, training_dataset))
+
         self._model.compile(
-            optimizer=optimizer,
+            optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate),
             loss={ "distances": _loss_wrapper },
             metrics={ "genotypes": ["sparse_categorical_accuracy"] },
         )
-                
         self._fit(cfg, self._train_input(cfg, training_dataset))
 
 

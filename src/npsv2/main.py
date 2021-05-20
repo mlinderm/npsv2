@@ -114,6 +114,7 @@ def main(cfg: DictConfig) -> None:
         cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
         model = hydra.utils.instantiate(cfg.model, image_shape, 1)
 
+        errors = 0
         rows = []
         for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
             # Extract metadata for the variant
@@ -121,7 +122,13 @@ def main(cfg: DictConfig) -> None:
             
             # Predict genotype
             dataset = tf.data.Dataset.from_tensors((features, original_label))
-            genotypes, *_  = model.predict(cfg, dataset)
+            genotypes, distances, *_  = model.predict(cfg, dataset)
+
+            if tf.math.argmax(genotypes, axis=1) != original_label.numpy() and original_label.numpy() == 0:
+                print(variant_proto, genotypes, distances)
+                errors += 1
+            # if errors == 10:
+            #     break
 
             # Construct the DataFrame rows
             rows.append(pd.DataFrame({
@@ -173,6 +180,11 @@ def main(cfg: DictConfig) -> None:
             hydra.utils.to_absolute_path(cfg.output),
             progress_bar=True,
         )
+
+    elif cfg.command == "refine":
+        from .propose.refine import refine_vcf
+
+        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), progress_bar=True)
 
 if __name__ == "__main__":
     main()
