@@ -230,7 +230,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
         for i, (read, realignment) in enumerate(realigned_reads, start=self._cfg.pileup.variant_band_height):
             allele_pixel = self._allele_pixel(realignment)
             _, col_slices = pileup.read_columns(read)
-            for col_slice, _ in col_slices:
+            for col_slice, *_ in col_slices:
                 image_tensor[i, col_slice, self._cfg.pileup.allele_channel] = allele_pixel
 
         # Render fragment insert size as "bars" since straddling reads may not be in the image
@@ -260,9 +260,6 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         pileup = Pileup(regions)
         
         realigned_reads = []
-
-        left_region = variant.left_flank_region(self._cfg.pileup.fetch_flank)  # TODO: Incorporate CIPOS and CIEND?
-        right_region = variant.right_flank_region(self._cfg.pileup.fetch_flank)
 
         for fragment in fragments:
             # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
@@ -295,6 +292,8 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[i, j, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(base.alt_zscore)
                 image_tensor[i, j, self._cfg.pileup.allele_channel] = self._allele_pixel(base.allele)
                 image_tensor[i, j, self._cfg.pileup.strand_channel] = self._strand_to_pixel[base.strand]
+                image_tensor[i, j, self._cfg.pileup.baseq_channel] = min(base.baseq / self._cfg.pileup.max_baseq, 1.0) * MAX_PIXEL_VALUE
+
 
         return image_tensor
 

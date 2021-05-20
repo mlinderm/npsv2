@@ -168,6 +168,7 @@ class PileupBase(NamedTuple):
     ref_zscore: float = None
     alt_zscore: float = None
     strand: Strand = None
+    baseq: int = None
 
 
 class PileupColumn:
@@ -247,20 +248,22 @@ class Pileup:
         
         slices = []
         pileup_start = read_start - self._region.start
+        read_index = 0
         for cigar_op, cigar_len in cigar:
             if cigar_op in CIGAR_ADVANCE_PILEUP:
                 next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, len(self._columns)))
                 if next_slice.stop > next_slice.start:
-                    slices.append((next_slice, cigar_op))
+                    slices.append((next_slice, cigar_op, slice(read_index, read_index + min(cigar_len, next_slice.stop - next_slice.start))))
                 pileup_start += cigar_len
+                read_index += cigar_len
 
         return read_start, slices
 
     def add_read(self, read: pysam.AlignedSegment, **attributes):
         read_start, slices = self.read_columns(read)
-        for col_slice, cigar_op in slices:
-            for column in self._columns[col_slice]:
-                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), **attributes)
+        for col_slice, cigar_op, read_slice in slices:
+            for column, baseq in zip(self._columns[col_slice], read.query_qualities[read_slice]):
+                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), baseq=baseq, **attributes)
 
     def add_fragment(self, fragment: Fragment, **attributes):
         if fragment.read1:

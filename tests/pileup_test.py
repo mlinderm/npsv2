@@ -23,7 +23,7 @@ class PileupTest(unittest.TestCase):
         read_start, slices = pileup.read_columns(read)
         
         self.assertEqual(read_start, 899869)
-        self.assertEqual(slices, [(slice(148, 287),pysam.CMATCH), (slice(287, 296),pysam.CSOFT_CLIP)])
+        self.assertEqual(slices, [(slice(148, 287), pysam.CMATCH, slice(0,139)), (slice(287, 296), pysam.CSOFT_CLIP, slice(139,148))])
 
 
     def test_add_single_read(self):
