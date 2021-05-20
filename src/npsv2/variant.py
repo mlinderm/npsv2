@@ -30,6 +30,10 @@ class Variant(object):
         return DeletionVariant(record)
 
     @property
+    def name(self):
+        return f"{self.contig}_{self.start + 1}_{self.end}_{self._record.info['SVTYPE']}"
+
+    @property
     def is_deletion(self):
         return False
 
@@ -189,3 +193,43 @@ class DeletionVariant(Variant):
             assert (right_region.start - left_region.end) <= window_size, "Should only be one potentially overlapping 'center' region"
             center_region = interior.center.expand(breakpoint_flank)
             return left_region.window(window_size) + [center_region] + right_region.window(window_size)
+    
+    def gnomad_coverage_profile(
+        self,
+        gnomad_coverage: str,
+        flank=1,
+        ref_contig=None,
+        alt_contig=None,
+        line_width=60,
+        dir=None,
+    ):
+        region = self.reference_region.expand(flank)
+        with pysam.TabixFile(gnomad_coverage) as gnomad_coverage_tabix:
+            # Use a FASTQ-like +33 scheme for encoding depth
+            ref_covg = "".join(
+                map(
+                    lambda x: chr(min(round(float(x[2])) + 33, 126)),
+                    gnomad_coverage_tabix.fetch(reference=region.contig, start=region.start, end=region.end, parser=pysam.asTuple()),
+                )
+            )
+
+        if self._sequence_resolved:
+            alt_allele = self._record.alts[0]
+            # Extend coverage for the last flanking base over the whole region
+            alt_covg = ref_covg[: flank] + (ref_covg[flank-1] * (len(alt_allele) - self._padding)) + ref_covg[-flank :]
+        else:
+            alt_covg = ref_covg[: flank] + ref_covg[-flank :]
+
+        # Write out
+        if ref_contig is None:
+            ref_contig = str(region).replace(":", "_").replace("-", "_")
+        if alt_contig is None:
+            alt_contig = ref_contig + "_alt"
+
+        covg_file = tempfile.NamedTemporaryFile(
+            mode="w", delete=False, suffix=".fasta", dir=dir
+        )
+        print(ref_contig, ref_covg, sep="\t", file=covg_file)
+        print(alt_contig, alt_covg, sep="\t", file=covg_file)
+       
+        return covg_file.name, ref_contig, alt_contig

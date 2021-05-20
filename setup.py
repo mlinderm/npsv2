@@ -161,6 +161,7 @@ setup(
     entry_points="""
         [console_scripts]
         npsv2=npsv2.main:main
+        npsv2u=npsv2.utilities.main:main
     """,
     packages=find_packages("src"),
     package_dir={"": "src"},

@@ -77,6 +77,22 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:71-72")))
         self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), None))
 
+    def test_gnomad_coverage_profile(self):
+        covg_path, ref_contig, alt_contig = self.variant.gnomad_coverage_profile(
+            os.path.join(FILE_DIR, "1_896922_903086.gnomad.genomes.coverage.summary.tsv.gz"),
+            flank=1,
+            line_width=sys.maxsize,
+            dir=self.tempdir.name,
+        )
+        self.assertEqual(ref_contig, "1_899922_899993")
+        self.assertEqual(alt_contig, "1_899922_899993_alt")
+        with open(covg_path, "r") as fasta:
+            lines = [line.strip() for line in fasta]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("1_899922_899993\t=") and lines[0].endswith("1"))
+        self.assertEqual(lines[1], "1_899922_899993_alt\t=1")
+
+
 class SymbolicDELVariantTestSuite(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

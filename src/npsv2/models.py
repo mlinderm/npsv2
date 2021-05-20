@@ -48,40 +48,47 @@ def _query_distances(tensors):
     return support_distances
 
 
-def _inceptionv3_encoder(input_shape, normalize=False):
+def _base_model(input_shape, weights="imagenet", trainable=True):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
-    base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
-    #base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
-    base_model.trainable = True
+    if weights is not None and input_shape[-1] != 3:
+        # imagenet weights require a 3-channel input image. To enable us to use more channels, we construct a dummy model
+        # with 3-channel image and copy those weights where possible into a network with the desired size
+        base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+
+        # Only the first convolution layer needs to have different weights
+        src_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+        for i, (src_layer, dst_layer) in enumerate(zip(src_model.layers, base_model.layers)):
+            if i == 1:
+                # Replicate mean of existing first convolutional layer (assumes "channels_last"). Motivated by
+                # https://arxiv.org/pdf/1608.00859.pdf and https://stackoverflow.com/a/62631570
+                kernels, *other_weights = src_layer.get_weights()
+                new_kernels = tf.repeat(tf.reduce_mean(kernels, axis=-2, keepdims=True) * (3/input_shape[-1]), input_shape[-1], axis=-2)
+                dst_layer.set_weights([new_kernels] + other_weights)
+                dst_layer.trainable = True # New layer should default to trainable
+            else:
+                dst_layer.set_weights(src_layer.get_weights())
+                dst_layer.trainable = trainable
+    else:
+        base_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape, pooling="avg")
+        base_model.trainable = trainable
     
-    encoder = tf.keras.models.Sequential([
-        layers.InputLayer(input_shape),
-        layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
-        base_model,
-        layers.Dense(512),
-        layers.BatchNormalization(),
-    ], name="encoder")
-    if normalize:
-        encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
-    return encoder
+    return base_model
+
 
 # Adapted from:
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
-def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], batch_normalize_projection=False, normalize_projection=True):
+def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], batch_normalize_projection=False, normalize_projection=True, base_trainable=True):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
-    # Imagenet weights require 3-channel input
-    base_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
-    base_model.trainable = True
-
-    # Do we need to lock the encoder weights while training the projection before unlocking it later for fine tuning?
-
-    images = layers.Input(input_shape)
+    image = layers.Input(input_shape) 
+    #base_model_input = layers.Conv2D(3, (1,1), activation='tanh')(image)  # Make multi-channel input compatible with Inception (input [-1, 1])
     
-    base_model_inputs = layers.Conv2D(3, (1,1), activation='tanh')(images)  # Make multi-channel input compatible with Inception (input [-1, 1])
-    # Set training=False to avoid updates to non-trainable BatchNorm parameters? (https://www.tensorflow.org/guide/keras/transfer_learning#build_a_model)
-    embedding = base_model(base_model_inputs) 
+    # Set trainable to False to lock the weights when transfer learning
+    base_model = _base_model(input_shape, weights="imagenet", trainable=base_trainable)
+    # Set training=False to avoid updates to non-trainable BatchNorm parameters
+    # https://www.tensorflow.org/guide/keras/transfer_learning#build_a_model)
+    embedding = base_model(image, training=False) #base_model_inputs, training=False) 
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
     projection = normalized_embedding if normalize_embedding else embedding
@@ -107,7 +114,22 @@ def _contrastive_encoder(input_shape, normalize_embedding=True, stop_gradient_be
         if normalize_projection:
             projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
 
-    return tf.keras.Model(inputs=images, outputs=[embedding, normalized_embedding, projection], name="encoder")
+    return tf.keras.Model(inputs=image, outputs=[embedding, normalized_embedding, projection], name="encoder")
+
+def _inceptionv3_encoder(input_shape, normalize=False, base_trainable=True): 
+    image = layers.Input(input_shape) 
+
+    # Set trainable to False to lock the weights when transfer learning
+    base_model = _base_model(input_shape, weights="imagenet", trainable=base_trainable)
+    #base_model_input = layers.Conv2D(3, (1,1), activation='tanh')(image)  # Make multi-channel input compatible with Inception (input [-1, 1])
+    
+    encoder = base_model(image, training=False)
+    encoder = layers.Dense(512)(encoder)
+    encoder = layers.BatchNormalization()(encoder)
+    if normalize:
+        encoder = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(encoder)
+    return tf.keras.Model(inputs=image, outputs=encoder, name="encoder")
+
 
 class GenotypingModel:    
     def summary(self):
@@ -156,6 +178,7 @@ class SupervisedBaselineModel(GenotypingModel):
     def _create_model(self, image_shape, model_path: str=None, **kwargs):
         encoder = _contrastive_encoder(
             image_shape,
+            normalize_embedding=False,
             projection_size=[],
         )
          
@@ -226,12 +249,17 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
     def _create_model(self, image_shape, model_path: str=None, **kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
-        encoder = _inceptionv3_encoder(image_shape, normalize=True)       
+        
+        #encoder = _inceptionv3_encoder(image_shape, normalize=True)   
+        
+        # Obtain just the output from the contrastive encoder we care about
+        encoder =_contrastive_encoder(image_shape, normalize_embedding=False, projection_size=[512], batch_normalize_projection=True, normalize_projection=True)
+        _, _, projection = encoder.output
+        encoder = tf.keras.Model(encoder.input, projection, name="encoder")
+        
         if model_path:
             encoder.load_weights(model_path)
-
-        embedding_shape = encoder.output_shape
-
+        
         support = layers.Input((3,) + image_shape, name="support")
         support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support)
         

@@ -70,11 +70,22 @@ class EncoderTest(unittest.TestCase):
             (100, 300, 5),
             projection_size=[],
         )
-        encoder.summary()
         self.assertEqual(encoder.name, "encoder")
 
         embeddings, *_ = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
+
+    def test_mimic_original_encoder(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            normalize_embedding=False,
+            projection_size=[512],
+            batch_normalize_projection=True,
+            normalize_projection=True,
+        )
+        self.assertEqual(encoder.name, "encoder")
+        _, _, projections = encoder.output_shape
+        self.assertEqual(projections, (None, 512))
 
 
 @unittest.skip("Development only")
@@ -146,7 +157,7 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
         genotypes, *_ = model.predict(self.cfg, dataset)
 
 
-@unittest.skip("Development only")
+#@unittest.skip("Development only")
 class JointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[
@@ -211,7 +222,7 @@ class ProjectionJointEmbeddingsModelTest(unittest.TestCase):
         genotypes, *_ = model.predict(self.cfg, dataset)
 
 
-#@unittest.skip("Development only")
+@unittest.skip("Development only")
 class BreakpointJointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = compose(config_name="config", overrides=[

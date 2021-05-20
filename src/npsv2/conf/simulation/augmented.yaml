@@ -2,3 +2,7 @@
 replicates: 5
 augment: true
 sample_ref: false
+gc_norm_covg: false
+gnomad_norm_covg: false
+gnomad_covg: ???
+save_sim_bam_dir: ???

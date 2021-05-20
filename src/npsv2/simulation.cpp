@@ -100,7 +100,68 @@ void FilterReadsGC(const std::string& fasta_path, const std::string& sam_path, c
 
     // Downsample reads based on GC normalized coverage
     float gc_norm_covg = gc_covg[gc_fraction];
-    if (dist(engine) < gc_norm_covg) WriteFastQ(writer, read1, read2);
+    if (dist(engine) < gc_norm_covg)
+      WriteFastQ(writer, read1, read2);
+  }
+}
+
+void FilterReadsGnomAD(const std::string& covg_path,
+                       const std::string& sam_path,
+                       const std::string& fastq_path, float max_covg) {
+  // Open the input SAM file and any output files
+  sl::BamReader reader;
+  reader.Open(sam_path);
+
+  std::ofstream writer(fastq_path);
+
+  // Load coverage profile
+  std::vector<std::vector<int> > contigs;
+  {
+    const auto& header = reader.Header();
+    contigs.resize(header.NumSequences());
+
+    std::ifstream coverage_reader(covg_path);
+    while (coverage_reader) {
+      std::string line;
+      std::getline(coverage_reader, line);
+      if (line.empty())
+        break;
+      auto sep = line.find_first_of('\t');  // Find seperator between name and coverage
+      pyassert(sep != std::string::npos, "Couldn't find coverage profile separator");
+
+      auto& cuml_coverage = contigs[header.Name2ID(line.substr(0, sep))];
+      sep += 1; // Point to start of the coverage data
+      cuml_coverage.resize(line.size() - sep + 1);
+      cuml_coverage[0] = 0;
+      for (int i = 0; i < (line.size() - sep); i++) {
+        cuml_coverage[i+1] = cuml_coverage[i] + static_cast<int>(line[i+sep]) - 33;
+      }
+    }
+  }
+  
+  // Setup random number generator
+  std::default_random_engine engine;
+  std::uniform_real_distribution<> dist(0.0, 1.0);
+
+  sl::BamRecord read1, read2;
+  while (true) {
+    if (!reader.GetNextRecord(read1)) break;
+    pyassert(reader.GetNextRecord(read2), "Missing second read in pair");
+
+    // Compute mean coverage for reads in a fragment. Should the filtering probability be based on the fragment 
+    // or the lesser of the two reads?
+    auto& cuml_coverage = contigs[read1.ChrID()];
+    // int total_coverage = (cuml_coverage[read1.PositionEnd()] - cuml_coverage[read1.Position()]) + (cuml_coverage[read2.PositionEnd()] - cuml_coverage[read2.Position()]);
+    // int total_length = (read1.PositionEnd() - read1.Position()) + (read2.PositionEnd() - read2.Position());
+
+    // float gnomad_norm_covg = static_cast<float>(total_coverage) / total_length / max_covg;
+    
+    float read1_covg = static_cast<float>(cuml_coverage[read1.PositionEnd()] - cuml_coverage[read1.Position()]) / (read1.PositionEnd() - read1.Position());
+    float read2_covg = static_cast<float>(cuml_coverage[read2.PositionEnd()] - cuml_coverage[read2.Position()]) / (read2.PositionEnd() - read2.Position());
+    float gnomad_norm_covg = std::min(read1_covg, read2_covg) / max_covg;
+
+    if (dist(engine) < gnomad_norm_covg)
+      WriteFastQ(writer, read1, read2);
   }
 }
 

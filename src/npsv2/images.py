@@ -1,4 +1,4 @@
-import datetime, functools, logging, os, random, subprocess, sys, tempfile, typing
+import datetime, functools, logging, os, random, shutil, subprocess, sys, tempfile, typing
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -106,7 +106,7 @@ class ImageGenerator:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
         channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
-        #channels = 3*[self._cfg.pileup.allele_channel]
+        channels = 3*[self._cfg.pileup.allele_channel]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -506,6 +506,11 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                     reference_fasta=cfg.reference, ac=allele_count, flank=cfg.pileup.realigner_flank, dir=tempdir
                 )
 
+                if cfg.simulation.gnomad_norm_covg:
+                    gnomad_covg_path = variant.gnomad_coverage_profile(cfg.simulation.gnomad_covg, ref_contig=ref_contig, alt_contig=alt_contig, flank=cfg.pileup.realigner_flank, dir=tempdir)
+                else:
+                    gnomad_covg_path = None
+
                 # Generate and image synthetic bam files
                 repl_encoded_images = []
                 
@@ -513,7 +518,14 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                 for i in range(sim_replicates):
                     try:
                         replicate_bam_path = simulate_variant_sequencing(
-                            fasta_path, allele_count, repl_samples[i], reference=cfg.reference, shared_reference=cfg.shared_reference, dir=tempdir
+                            fasta_path,
+                            allele_count,
+                            repl_samples[i],
+                            reference=cfg.reference,
+                            shared_reference=cfg.shared_reference,
+                            dir=tempdir,
+                            stats_path=cfg.stats_path if cfg.simulation.gc_norm_covg else None,
+                            gnomad_covg_path=gnomad_covg_path,
                         )
                     except ValueError:
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
@@ -521,6 +533,11 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
 
                     synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_samples[i], realigner=realigner, regions=example_regions)
                     repl_encoded_images.append(synth_image_tensor)
+
+                    if not OmegaConf.is_missing(cfg.simulation, "save_sim_bam_dir"):
+                        sim_bam_path=os.path.join(cfg.simulation.save_sim_bam_dir, f"{variant.name}_{allele_count}_{i}.bam")
+                        shutil.copy(replicate_bam_path, sim_bam_path)
+                        shutil.copy(f"{replicate_bam_path}.bai", f"{sim_bam_path}.bai")
 
                 # Fill remaining images with sampled reference variants
                 if allele_count == 0 and cfg.simulation.sample_ref:

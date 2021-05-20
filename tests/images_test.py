@@ -30,7 +30,7 @@ def tearDownModule():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
 
 
-def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
+def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path=None, gnomad_covg_path=None):
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
 
@@ -476,8 +476,8 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
         self.cfg = compose(config_name="config", overrides=[
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
+            "generator=single_depth",
             "simulation.replicates=1",         
-            "simulation.sample_ref=false",
             #"pileup.min_normalized_allele_score=-10",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
@@ -492,4 +492,4 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
     def test_normalized_allele_pixels(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False)) #True))
         png_path = os.path.join(self.tempdir.name, "test.png")
-        images.example_to_image(self.cfg, example, png_path, with_simulations=False) #True)
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True) #True)

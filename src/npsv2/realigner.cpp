@@ -6,13 +6,8 @@
 namespace {
 
 double LogSumPow(double acc, double prob) {
-  double diff = prob - acc;
-  if (diff > 100)
-    return prob;
-  else if (diff < -100)
-    return acc;
-  else
-    return acc + log10(1 + pow(10., diff));
+  double m = std::max(acc, prob);
+  return m + log10(pow(10.,acc - m) + pow(10.,prob - m));
 }
 
 double PhredToProb(double phred) { return pow(10.0, phred / -10.0); }
@@ -20,7 +15,10 @@ double PhredToProb(double phred) { return pow(10.0, phred / -10.0); }
 double PhredToLogProb(double quality, double penalty = 0.) { return (-quality / 10.) + penalty; }
 
 double LogProbToPhredQual(double prob, double max_qual) {
-  return std::min(log10(1. - pow(10.0, prob)) * -10.0, max_qual);
+  if (prob == 0.)
+    return max_qual;
+  else
+    return std::min(log10(1. - pow(10.0, prob)) * -10.0, max_qual);
 }
 
 double GetDoubleTag(const sl::BamRecord& read, const std::string& tag) {
@@ -190,8 +188,8 @@ bool RealignedReadPair::Concordant() const {
 }
 
 std::ostream& operator<<(std::ostream& os, const RealignedReadPair& pair) {
-  if (pair.left_) os << *pair.left_ << std::endl;
-  if (pair.right_) os << *pair.right_ << std::endl;
+  if (pair.left_) os << *pair.left_ << " as:" << GetDoubleTag(*pair.left_, "as") << std::endl;
+  if (pair.right_) os << *pair.right_ << " as:" << GetDoubleTag(*pair.right_, "as") << std::endl;
   return os << pair.score_ << std::endl;
 }
 
@@ -340,7 +338,7 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
   RealignedFragment ref_realignment(read1, read2, ref_index_, insert_size_dist_);
   auto total_log_prob = ref_realignment.TotalLogProb();
 
-  // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:1:2114:14421:62187") {
+  // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:2:1111:14992:77166") {
   //   std::cerr << ref_realignment.BestPair() << std::endl;
   // }
 
@@ -384,7 +382,7 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
           (fragment_region.GetOverlap(breakpoints_[i][2]) == GenomicRegionOverlap::ContainsArg) ||
           (fragment_region.GetOverlap(breakpoints_[i][3]) == GenomicRegionOverlap::ContainsArg);
       }
-      // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:1:2114:14421:62187") {
+      // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:2:1111:14992:77166") {
       //   std::cerr << alt_realignment.BestPair() << std::endl;
       // }
     }

@@ -14,6 +14,7 @@ PYBIND11_MODULE(_native, m) {
       .def("realign_read_pair", &npsv2::FragmentRealigner::RealignReadPair);
 
   m.def("filter_reads_gc", &npsv2::FilterReadsGC, "Filter reads based on GC normalized coverage");
+  m.def("filter_reads_gnomad", &npsv2::FilterReadsGnomAD, "Filter reads based on GnomAD normalized coverage");
 
   m.def("test_score_alignment", &npsv2::test::TestScoreAlignment, "Test interface for scoring alignment");
   m.def("test_realign_read_pair", &npsv2::test::TestRealignReadPair, "Test interface for realigning reads");

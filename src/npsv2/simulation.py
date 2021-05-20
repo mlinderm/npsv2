@@ -100,10 +100,15 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir()):
+def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, gnomad_covg_path: str = None):
+    assert not (stats_path and gnomad_covg_path), "Only one of stats path or GnomAD coverage path can be provided"
+    
+    # TODO: Adjust haplotype coverage based on normalization strategy
     hap_coverage =  sample.mean_coverage / 2
     shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
-        
+    stats_path_arg = f"-j {quote(stats_path)}" if stats_path else ""
+    gnomad_covg_arg = f"-g {quote(gnomad_covg_path)}" if gnomad_covg_path else ""
+
     replicate_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
     replicate_bam.close()
 
@@ -111,6 +116,8 @@ def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, refere
         -t {quote(dir)} \
         -R {quote(reference)} \
         {shared_ref_arg} \
+        {stats_path_arg} \
+        {gnomad_covg_arg} \
         -c {hap_coverage:0.1f} \
         -m {sample.mean_insert_size} \
         -s {sample.std_insert_size} \
@@ -118,8 +125,8 @@ def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, refere
         -p {sample.sequencer} \
         -i 1 \
         -z {allele_count} \
-        {fasta_path} \
-        {replicate_bam.name}"
+        {quote(fasta_path)} \
+        {quote(replicate_bam.name)}"
 
     synth_result = subprocess.run(synth_commandline, shell=True, stderr=subprocess.PIPE)
     if synth_result.returncode != 0 or not os.path.exists(replicate_bam.name):
@@ -137,6 +144,15 @@ def filter_reads_gc(stats_path: str, fasta_path: str, in_sam: str, out_fastq: st
     gc_covg /= max_normalized_gc
 
     _native.filter_reads_gc(fasta_path, in_sam, out_fastq, gc_covg)
+
+
+# Actual max is 100, but for performance reasons we oversimulate a lower fraction
+GNOMAD_MAX_COVG = 40. 
+GNOMAD_MEAN_COVG = 30.6
+GNOMAD_MULT_COVG = GNOMAD_MAX_COVG / GNOMAD_MEAN_COVG
+
+def filter_reads_gnomad(covg_path: str, in_sam: str, out_fastq: str, max_covg = GNOMAD_MEAN_COVG):
+    _native.filter_reads_gnomad(covg_path, in_sam, out_fastq, max_covg)
 
 
 def augment_samples(original_sample: Sample, n, keep_original=True):
