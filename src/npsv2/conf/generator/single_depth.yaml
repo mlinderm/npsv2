@@ -3,5 +3,7 @@ generator:
   _target_: npsv2.images.SingleDepthImageGenerator
 pileup:
   num_channels: 7
+  insert_base_pixel: 64
+  insert_bases: false
   baseq_channel: 5
   max_baseq: 40

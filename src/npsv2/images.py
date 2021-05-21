@@ -57,17 +57,20 @@ class ImageGenerator:
         self._aligned_to_pixel = {
             BaseAlignment.ALIGNED: self._cfg.pileup.aligned_base_pixel,
             BaseAlignment.SOFT_CLIP: self._cfg.pileup.soft_clip_base_pixel,
+            BaseAlignment.INSERT: self._cfg.pileup.get("insert_base_pixel", 64)
         }
 
         self._allele_to_pixel = {
             AlleleAssignment.AMB: self._cfg.pileup.amb_allele_pixel,
             AlleleAssignment.REF: self._cfg.pileup.ref_allele_pixel,
             AlleleAssignment.ALT: self._cfg.pileup.alt_allele_pixel,
+            None: 0,
         }
 
         self._strand_to_pixel = {
             Strand.POSITIVE: self._cfg.pileup.get("positive_strand_pixel", 70),
             Strand.NEGATIVE: self._cfg.pileup.get("negative_strand_pixel", 240),
+            None: 0.
         }
 
     @property
@@ -100,13 +103,19 @@ class ImageGenerator:
     def _strand_pixel(self, read: pysam.AlignedSegment):
         return self._strand_to_pixel[Strand.NEGATIVE if read.is_reverse else Strand.POSITIVE]
 
+    def _qual_pixel(self, qual: int, max_qual: int):
+        if qual is None:
+            return 0
+        else:
+            return min(qual / max_qual, 1.0) * MAX_PIXEL_VALUE
+
     def _flatten_image(self, image_tensor):
         if tf.is_tensor(image_tensor):
             image_tensor = image_tensor.numpy()
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
         channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
-        channels = 3*[self._cfg.pileup.allele_channel]
+        channels = 3*[self._cfg.pileup.aligned_channel]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -263,8 +272,8 @@ class SingleDepthImageGenerator(SingleImageGenerator):
 
         for fragment in fragments:
             # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
-            # the image window
-            if fragment.reads_overlap(regions):
+            # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
+            if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
                 realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
                 realigned_reads.append((fragment.read1, realignment))
                 realigned_reads.append((fragment.read2, realignment))
@@ -274,7 +283,10 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
                 alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
 
-                pileup.add_fragment(fragment, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+                # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
+                # otherwise be represented)
+                add_insert = self._cfg.pileup.insert_bases and not fragment.reads_overlap(regions)
+                pileup.add_fragment(fragment, add_insert=add_insert, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
@@ -287,12 +299,12 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         for j, column in enumerate(pileup):
             for i, base in enumerate(column.ordered_bases(order="read_start", max_bases=read_pixels), start=self._cfg.pileup.variant_band_height):
                 image_tensor[i, j, self._cfg.pileup.aligned_channel] = self._aligned_to_pixel[base.aligned]
-                image_tensor[i, j, self._cfg.pileup.mapq_channel] = min(base.mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
+                image_tensor[i, j, self._cfg.pileup.mapq_channel] = self._qual_pixel(base.mapq, self._cfg.pileup.max_mapq)
                 image_tensor[i, j, self._cfg.pileup.ref_paired_channel] = self._zscore_pixel(base.ref_zscore)
                 image_tensor[i, j, self._cfg.pileup.alt_paired_channel] = self._zscore_pixel(base.alt_zscore)
                 image_tensor[i, j, self._cfg.pileup.allele_channel] = self._allele_pixel(base.allele)
                 image_tensor[i, j, self._cfg.pileup.strand_channel] = self._strand_to_pixel[base.strand]
-                image_tensor[i, j, self._cfg.pileup.baseq_channel] = min(base.baseq / self._cfg.pileup.max_baseq, 1.0) * MAX_PIXEL_VALUE
+                image_tensor[i, j, self._cfg.pileup.baseq_channel] = self._qual_pixel(base.baseq, self._cfg.pileup.max_baseq)
 
 
         return image_tensor

@@ -174,6 +174,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
             "generator=single_depth",
             "reference={}".format(os.path.join(FILE_DIR, "1_896922_902998.fasta")),
             "simulation.replicates=1",
+            "pileup.insert_bases=true",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
@@ -190,7 +191,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         
-        png_path = os.path.join(self.tempdir.name, "test.png")
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))

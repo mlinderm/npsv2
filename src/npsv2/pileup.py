@@ -23,6 +23,7 @@ class AlleleAssignment(Enum):
 class BaseAlignment(Enum):
     ALIGNED = 1
     SOFT_CLIP = 2
+    INSERT = 3  # No bases, but within insert
 
     def __lt__(self, other):
         if self.__class__ is other.__class__:
@@ -114,6 +115,11 @@ class Fragment(object):
         # assert self.read1.template_length == (self.read2.reference_end - self.read1.reference_start)
         return self.read1.template_length
 
+    @property
+    def insert_region(self):
+        assert self.is_properly_paired
+        return Range(self.read1.reference_name, self.read1.reference_end, self.read2.reference_start)
+
     def add_read(self, read):
         assert Fragment.is_primary(read)
         assert read.is_paired and read.query_name == self.read1.query_name
@@ -132,11 +138,11 @@ class Fragment(object):
             left_region.get_overlap(self.read1) >= min_aligned and right_region.get_overlap(self.read2) >= min_aligned
         )
 
-    def fragment_overlaps(self, region: Range, min_overlap=3):
-        # TODO: Allow fragments with just one read
-        if not self.is_properly_paired:
-            return False
-        return self.fragment_region.get_overlap(region) >= min_overlap
+    def fragment_overlaps(self, region: Range, min_overlap=3, read_overlap_only=False):
+        if self.is_properly_paired:
+            return self.fragment_region.get_overlap(region) >= min_overlap
+        else:
+            return self.reads_overlap(region, min_overlap)
 
     def reads_overlap(self, region: Range, min_overlap=3):
         return (self.read1 and (region.get_overlap(self.read1) >= min_overlap)) or (self.read2 and (region.get_overlap(self.read2) >= min_overlap))
@@ -189,10 +195,12 @@ class PileupColumn:
     def soft_clipped_bases(self):
         return self._aligned_count(BaseAlignment.SOFT_CLIP)
 
-    def add_base(self, read_start, cigar_op, **attributes):
-        if cigar_op == pysam.CSOFT_CLIP:
+    def add_base(self, read_start, cigar_op_or_alignment, **attributes):
+        if isinstance(cigar_op_or_alignment, BaseAlignment):
+            self._bases.append(PileupBase(read_start, cigar_op_or_alignment, **attributes))
+        elif cigar_op_or_alignment == pysam.CSOFT_CLIP:
             self._bases.append(PileupBase(read_start, BaseAlignment.SOFT_CLIP, **attributes))
-        elif cigar_op in CIGAR_ALIGNED_BASE:
+        elif cigar_op_or_alignment in CIGAR_ALIGNED_BASE:
             self._bases.append(PileupBase(read_start, BaseAlignment.ALIGNED, **attributes))
 
     def ordered_bases(self, max_bases=None, order="read_start"):
@@ -265,11 +273,18 @@ class Pileup:
             for column, baseq in zip(self._columns[col_slice], read.query_qualities[read_slice]):
                 column.add_base(read_start, cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), baseq=baseq, **attributes)
 
-    def add_fragment(self, fragment: Fragment, **attributes):
+    def add_insert(self, insert_region: Range, **attributes):
+        overlap = self._region.intersection(insert_region)
+        for column in self._columns[(overlap.start - self._region.start):(overlap.end - self._region.start)]:
+            column.add_base(overlap.start, BaseAlignment.INSERT, **attributes)
+
+    def add_fragment(self, fragment: Fragment, add_insert=False, **attributes):
         if fragment.read1:
             self.add_read(fragment.read1, **attributes)
         if fragment.read2:
             self.add_read(fragment.read2, **attributes)
+        if add_insert and fragment.is_properly_paired:
+            self.add_insert(fragment.insert_region, **attributes)
 
 
 def _read_columns(region: Range, read):
