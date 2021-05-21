@@ -48,14 +48,23 @@ def _fetch_reads(read_path: str, fetch_region: Range) -> FragmentTracker:
             fragments.add_read(read)
     return fragments
 
+
+def _reference_sequence(reference_fasta: str, region: Range) -> str:
+    with pysam.FastaFile(reference_fasta) as ref_fasta:
+        return ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end)    
+
+
 class ImageGenerator:
     def __init__(self, cfg):
         self._cfg = cfg
         self._image_shape = (self._cfg.pileup.image_height, self._cfg.pileup.image_width, self._cfg.pileup.num_channels)
 
         # Helper dictionaries to map to pixel values
+        aligned_pixel = self._cfg.pileup.aligned_base_pixel
         self._aligned_to_pixel = {
-            BaseAlignment.ALIGNED: self._cfg.pileup.aligned_base_pixel,
+            BaseAlignment.ALIGNED: aligned_pixel,
+            BaseAlignment.MATCH: self._cfg.pileup.match_base_pixel if self._cfg.pileup.get("render_snv", False) else aligned_pixel,
+            BaseAlignment.MISMATCH: self._cfg.pileup.mismatch_base_pixel if self._cfg.pileup.get("render_snv", False) else aligned_pixel,
             BaseAlignment.SOFT_CLIP: self._cfg.pileup.soft_clip_base_pixel,
             BaseAlignment.INSERT: self._cfg.pileup.get("insert_base_pixel", 64)
         }
@@ -150,7 +159,7 @@ class SingleImageGenerator(ImageGenerator):
         return self._flatten_image(image_tensor)
 
 
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, **kwargs):
         if regions is None:
             regions = self.image_regions(variant)
         elif isinstance(regions, str):
@@ -162,7 +171,7 @@ class SingleImageGenerator(ImageGenerator):
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
 
-        image_tensor = self._generate(variant, read_path, sample, regions=regions, realigner=realigner)
+        image_tensor = self._generate(variant, read_path, sample, regions=regions, realigner=realigner, **kwargs)
 
         # Create consistent image size
         if image_tensor.shape != self.image_shape:
@@ -178,7 +187,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
         super().__init__(cfg)
         
 
-    def _generate(self, variant, read_path, sample: Sample, regions, realigner):
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, **kwargs):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
@@ -259,7 +268,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         super().__init__(cfg)
         
 
-    def _generate(self, variant, read_path, sample: Sample, regions, realigner):
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, **kwargs):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
@@ -278,15 +287,13 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 realigned_reads.append((fragment.read1, realignment))
                 realigned_reads.append((fragment.read2, realignment))
                 
-                # A potential limitation is that if the anchoring read is not in the window, we might not capture that
-                # information in the window
                 ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
                 alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
 
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
                 # otherwise be represented)
                 add_insert = self._cfg.pileup.insert_bases and not fragment.reads_overlap(regions)
-                pileup.add_fragment(fragment, add_insert=add_insert, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
@@ -315,7 +322,7 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
         super().__init__(cfg)
         assert self._cfg.pileup.variant_band_height == 0, "Generator doesn't support a variant band"
     
-    def _generate(self, variant, read_path, sample: Sample, regions, realigner):        
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, **kwargs):        
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
@@ -383,7 +390,7 @@ class WindowedImageGenerator(ImageGenerator):
             composite_image.paste(sub_image, (i*width, 0))
         return composite_image
 
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None):
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, **kwargs):
         if regions is None:
             regions = self.image_regions(variant)
         for region in regions[1:]:
@@ -392,7 +399,7 @@ class WindowedImageGenerator(ImageGenerator):
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
 
-        return self._generate(variant, read_path, sample, regions=regions, realigner=realigner)
+        return self._generate(variant, read_path, sample, regions=regions, realigner=realigner, **kwargs)
 
 
 class WindowedReadImageGenerator(WindowedImageGenerator):
@@ -400,7 +407,7 @@ class WindowedReadImageGenerator(WindowedImageGenerator):
         super().__init__(cfg)
 
 
-    def _generate(self, variant, read_path, sample: Sample, regions, realigner):         
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, **kwargs):         
         assert self.image_shape[-1] == 6
         tensor_shape = (len(regions),) + self.image_shape[1:]
         image_tensor = np.zeros(tensor_shape, dtype=np.uint8)
@@ -473,17 +480,26 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None):
+def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None):
     if generator is None:
         generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+    if cfg.simulation.sample_ref and random_variants is None:
+        random_variants = RandomVariants(cfg.reference, cfg.simulation.sample_exclude_bed)
 
     # Construct realigner once for all images for this variant
     realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank)
 
-    # Construct image for "real" data
     example_regions = generator.image_regions(variant)
+
+    # If rendering match/mismatch bases, obtain relevant reference sequence for this variant
+    if cfg.pileup.get("render_snv", False):
+        ref_seq = _reference_sequence(cfg.reference, example_regions)
+    else:
+        ref_seq = None
+
+    # Construct image for "real" data
     image_tensor = generator.generate(
-        variant, read_path, sample, realigner=realigner, regions=example_regions
+        variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
     )
 
     feature = {
@@ -504,7 +520,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         ac_encoded_images = [None] * 3
     
         # If we are augmenting the simulated data, use the provided statistics for the first example, so it
-        # will hopefully be similar to the real data and the augment the remaining replicates
+        # will hopefully be similar to the real data and then augment the remaining replicates
         if cfg.simulation.augment:
             repl_samples = augment_samples(sample, replicates, keep_original=True)
         else:
@@ -542,7 +558,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
                         raise
 
-                    synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_samples[i], realigner=realigner, regions=example_regions)
+                    synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_samples[i], realigner=realigner, regions=example_regions, ref_seq=ref_seq)
                     repl_encoded_images.append(synth_image_tensor)
 
                     if not OmegaConf.is_missing(cfg.simulation, "save_sim_bam_dir"):
@@ -553,8 +569,9 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                 # Fill remaining images with sampled reference variants
                 if allele_count == 0 and cfg.simulation.sample_ref:
                     for random_variant in random_variants.generate(variant, replicates - sim_replicates):          
+                        # TODO: Should we also render match/mismatch when sampling?
                         random_variant_regions = generator.image_regions(random_variant)
-                        synth_image_tensor = generator.generate(random_variant, read_path, sample, realigner=realigner, regions=random_variant_regions)
+                        synth_image_tensor = generator.generate(random_variant, read_path, sample, regions=random_variant_regions)
                         repl_encoded_images.append(synth_image_tensor)
 
                 # Stack all of the image replicates into a tensor
@@ -581,6 +598,12 @@ def make_vcf_examples(
     # Create image generator based on current configuration
     generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
     
+    # Prepare random variant generator once (if specified)
+    if cfg.simulation.sample_ref:
+        random_variants = RandomVariants(cfg.reference, cfg.simulation.sample_exclude_bed)
+    else:
+        random_variants = None
+
     with pysam.VariantFile(vcf_path) as vcf_file:
         # Prepare function to extract genotype label
         if sample_or_label is not None and isinstance(sample_or_label, str):
@@ -595,11 +618,7 @@ def make_vcf_examples(
             if sample_or_label is not None:
                 logging.info("Using fixed AC=%d as label", sample_or_label)
             vcf_file.subset_samples([])  # Drop all samples
-            label_extractor = lambda variant: sample_or_label
-
-        # Prepare random variant generator (if specified)
-        if cfg.simulation.sample_ref:
-            random_variants = RandomVariants(params.reference, params.exclude_bed)
+            label_extractor = lambda variant: sample_or_label        
 
         if region:
             query_range = Range.parse_literal(region)
@@ -617,7 +636,7 @@ def make_vcf_examples(
                     continue
 
                 label = label_extractor(variant)
-                yield make_variant_example(cfg, variant, read_path, sample, label=label, generator=generator, **kwargs)
+                yield make_variant_example(cfg, variant, read_path, sample, label=label, generator=generator, random_variants=random_variants, **kwargs)
            
 
 

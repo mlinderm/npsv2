@@ -1,4 +1,4 @@
-import random
+import itertools, random
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -11,6 +11,10 @@ CIGAR_ADVANCE_PILEUP = frozenset(
     [pysam.CMATCH, pysam.CDEL, pysam.CREF_SKIP, pysam.CSOFT_CLIP, pysam.CEQUAL, pysam.CDIFF,]
 )
 
+CIGAR_ADVANCE_READ = frozenset(
+    [pysam.CMATCH, pysam.CINS, pysam.CSOFT_CLIP, pysam.CEQUAL, pysam.CDIFF,]
+)
+
 CIGAR_ALIGNED_BASE = frozenset([pysam.CMATCH, pysam.CEQUAL, pysam.CDIFF,])
 
 
@@ -21,14 +25,24 @@ class AlleleAssignment(Enum):
 
 
 class BaseAlignment(Enum):
-    ALIGNED = 1
-    SOFT_CLIP = 2
-    INSERT = 3  # No bases, but within insert
+    ALIGNED = 3
+    MATCH=1
+    MISMATCH=2
+    SOFT_CLIP = 4
+    INSERT = 8  # No bases, but within insert
 
     def __lt__(self, other):
         if self.__class__ is other.__class__:
             return self.value < other.value
         return NotImplemented
+
+
+_CIGAR_TO_BASE_ALIGNMENT = {
+    pysam.CMATCH: BaseAlignment.ALIGNED,
+    pysam.CEQUAL: BaseAlignment.MATCH,
+    pysam.CDIFF: BaseAlignment.MISMATCH,
+    pysam.CSOFT_CLIP: BaseAlignment.SOFT_CLIP,
+}
 
 
 class Strand(Enum):
@@ -58,6 +72,8 @@ def read_start(read):
         return read.reference_start
 
 
+def _refine_cigar_op(a: str, b: str):
+    return pysam.CEQUAL if a == b else pysam.CDIFF
 
 
 
@@ -184,6 +200,9 @@ class PileupColumn:
     def __len__(self):
         return len(self._bases)
 
+    def __getitem__(self, sliced):
+        return self._bases[sliced]
+
     def _aligned_count(self, kind):
         return sum((base.aligned == kind for base in self._bases))
 
@@ -198,10 +217,10 @@ class PileupColumn:
     def add_base(self, read_start, cigar_op_or_alignment, **attributes):
         if isinstance(cigar_op_or_alignment, BaseAlignment):
             self._bases.append(PileupBase(read_start, cigar_op_or_alignment, **attributes))
-        elif cigar_op_or_alignment == pysam.CSOFT_CLIP:
-            self._bases.append(PileupBase(read_start, BaseAlignment.SOFT_CLIP, **attributes))
-        elif cigar_op_or_alignment in CIGAR_ALIGNED_BASE:
-            self._bases.append(PileupBase(read_start, BaseAlignment.ALIGNED, **attributes))
+        else:
+            align = _CIGAR_TO_BASE_ALIGNMENT.get(cigar_op_or_alignment, None)
+            if align:
+                self._bases.append(PileupBase(read_start, align, **attributes))
 
     def ordered_bases(self, max_bases=None, order="read_start"):
         # Return bases sorted by specified field, randomly downsampling if needed
@@ -255,34 +274,48 @@ class Pileup:
             return read_start, []
         
         slices = []
-        pileup_start = read_start - self._region.start
+        pileup_index = read_start - self._region.start
         read_index = 0
         for cigar_op, cigar_len in cigar:
             if cigar_op in CIGAR_ADVANCE_PILEUP:
-                next_slice = slice(max(pileup_start, 0), min(pileup_start + cigar_len, len(self._columns)))
-                if next_slice.stop > next_slice.start:
-                    slices.append((next_slice, cigar_op, slice(read_index, read_index + min(cigar_len, next_slice.stop - next_slice.start))))
-                pileup_start += cigar_len
+                next_slice = slice(max(pileup_index, 0), min(pileup_index + cigar_len, len(self._columns)))
+                next_slice_len = next_slice.stop - next_slice.start
+                if next_slice_len > 0 and cigar_op in CIGAR_ADVANCE_READ:
+                    read_slice_start = read_index + next_slice.start - pileup_index
+                    slices.append((next_slice, cigar_op, slice(read_slice_start, read_slice_start + next_slice_len)))
+                elif next_slice_len > 0:
+                    slices.append((next_slice, cigar_op, slice(read_index, read_index)))
+                pileup_index += cigar_len
+            if cigar_op in CIGAR_ADVANCE_READ:
                 read_index += cigar_len
 
         return read_start, slices
 
-    def add_read(self, read: pysam.AlignedSegment, **attributes):
+    def add_read(self, read: pysam.AlignedSegment, ref_seq: str = None, **attributes):
+        assert ref_seq is None or len(ref_seq) == len(self._columns)
+
         read_start, slices = self.read_columns(read)
         for col_slice, cigar_op, read_slice in slices:
-            for column, baseq in zip(self._columns[col_slice], read.query_qualities[read_slice]):
-                column.add_base(read_start, cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), baseq=baseq, **attributes)
+            if ref_seq and cigar_op == pysam.CMATCH:
+                # Refine CMATCH to CEQUAL or CDIFF so that we can render match/mismatch
+                revised_cigar_op = map(_refine_cigar_op, read.query_sequence[read_slice], ref_seq[col_slice])
+            else:
+                revised_cigar_op = itertools.repeat(cigar_op, len(range(*col_slice.indices(len(self)))))
+            for column, baseq, base_cigar_op in zip(self._columns[col_slice], read.query_qualities[read_slice], revised_cigar_op):
+                column.add_base(read_start, base_cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), baseq=baseq, **attributes)
+
+        
 
     def add_insert(self, insert_region: Range, **attributes):
         overlap = self._region.intersection(insert_region)
         for column in self._columns[(overlap.start - self._region.start):(overlap.end - self._region.start)]:
             column.add_base(overlap.start, BaseAlignment.INSERT, **attributes)
 
-    def add_fragment(self, fragment: Fragment, add_insert=False, **attributes):
+    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str = None, **attributes):  
         if fragment.read1:
-            self.add_read(fragment.read1, **attributes)
+            self.add_read(fragment.read1, ref_seq=ref_seq, **attributes)
         if fragment.read2:
-            self.add_read(fragment.read2, **attributes)
+            self.add_read(fragment.read2, ref_seq=ref_seq, **attributes)
         if add_insert and fragment.is_properly_paired:
             self.add_insert(fragment.insert_region, **attributes)
 

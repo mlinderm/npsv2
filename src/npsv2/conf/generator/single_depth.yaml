@@ -7,3 +7,6 @@ pileup:
   insert_bases: false
   baseq_channel: 5
   max_baseq: 40
+  render_snv: false
+  match_base_pixel: ${pileup.aligned_base_pixel}
+  mismatch_base_pixel: ${pileup.aligned_base_pixel}

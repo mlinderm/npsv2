@@ -191,7 +191,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         
-        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        png_path = os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
@@ -471,17 +471,18 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
-class NormalizedAlignmentScoreTest(unittest.TestCase):
+class SNVRenderTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "generator=single_depth",
-            "simulation.replicates=1",         
-            #"pileup.min_normalized_allele_score=-10",
+            "simulation.replicates=1",
+            "pileup.render_snv=true",
+            "pileup.match_base_pixel=255",
+            "pileup.mismatch_base_pixel=192",
         ])
-        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
         self.vcf_path = os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz")
@@ -491,6 +492,6 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_normalized_allele_pixels(self):
-        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False)) #True))
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True)) #True))
         png_path = os.path.join(self.tempdir.name, "test.png")
-        images.example_to_image(self.cfg, example, png_path, with_simulations=True) #True)
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True)

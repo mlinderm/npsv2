@@ -2,6 +2,7 @@
 replicates: 5
 augment: true
 sample_ref: false
+sample_exclude_bed: ???
 gc_norm_covg: false
 gnomad_norm_covg: false
 gnomad_covg: ???
