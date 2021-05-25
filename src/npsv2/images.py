@@ -8,7 +8,7 @@ import ray
 import hydra
 from omegaconf import OmegaConf
 
-from .variant import Variant
+from .variant import Variant, _reference_sequence
 from .range import Range
 from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, Strand, ReadPileup, FragmentPileup, read_start
 from . import npsv2_pb2
@@ -24,15 +24,20 @@ def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
 
 
-def _realigner(variant, sample: Sample, reference, flank=1000):
+def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str=None):
     with tempfile.TemporaryDirectory() as dir:
         fasta_path, ref_contig, alt_contig = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank)
         
+        addl_args = {}
+        if snv_vcf_path:
+            iupac_fasta_path, *_ = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank, ref_contig=ref_contig, alt_contig=alt_contig, snv_vcf_path=snv_vcf_path)
+            addl_args["iupac_fasta_path"] = iupac_fasta_path
+
         # Convert breakpoints to list of strings to be passed into the C++ side
         breakpoints = variant.ref_breakpoints(flank, contig=ref_contig) + variant.alt_breakpoints(flank, contig=alt_contig)
         breakpoints = [tuple(map(lambda x: str(x) if x else "", breakpoints))]
 
-        return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size)
+        return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size, **addl_args)
 
 
 def _fetch_reads(read_path: str, fetch_region: Range) -> FragmentTracker:
@@ -47,11 +52,6 @@ def _fetch_reads(read_path: str, fetch_region: Range) -> FragmentTracker:
 
             fragments.add_read(read)
     return fragments
-
-
-def _reference_sequence(reference_fasta: str, region: Range) -> str:
-    with pysam.FastaFile(reference_fasta) as ref_fasta:
-        return ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end)    
 
 
 class ImageGenerator:
@@ -124,7 +124,7 @@ class ImageGenerator:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
         channels = [self._cfg.pileup.aligned_channel, self._cfg.pileup.ref_paired_channel, self._cfg.pileup.allele_channel]
-        channels = 3*[self._cfg.pileup.aligned_channel]
+        channels = 3*[self._cfg.pileup.allele_channel]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -486,17 +486,17 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
     if cfg.simulation.sample_ref and random_variants is None:
         random_variants = RandomVariants(cfg.reference, cfg.simulation.sample_exclude_bed)
 
-    # Construct realigner once for all images for this variant
-    realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank)
-
     example_regions = generator.image_regions(variant)
 
-    # If rendering match/mismatch bases, obtain relevant reference sequence for this variant
+    # Construct realigner once for all images for this variant, and if rendering match/mismatch bases, 
+    # obtain relevant reference sequence for this variant, including IUPAC bases if SNV data is provided
     if cfg.pileup.get("render_snv", False):
-        ref_seq = _reference_sequence(cfg.reference, example_regions)
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, snv_vcf_path=cfg.pileup.snv_vcf_input)
+        ref_seq = _reference_sequence(cfg.reference, example_regions, snv_vcf_path=cfg.pileup.snv_vcf_input)
     else:
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank)
         ref_seq = None
-
+    
     # Construct image for "real" data
     image_tensor = generator.generate(
         variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,

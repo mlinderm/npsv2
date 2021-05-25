@@ -1,7 +1,7 @@
 import argparse, io, os, sys, tempfile, unittest
 from unittest.mock import patch
 import pysam
-from npsv2.variant import Variant
+from npsv2.variant import Variant, _reference_sequence
 from npsv2.range import Range
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -36,7 +36,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
             fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
             self.assertEqual(alt_contig, "1_899922_899993_alt")
-            mock_ref.assert_called_once_with(None, Range("1",899921,899993))
+            mock_ref.assert_called_once_with(None, Range("1",899921,899993), snv_vcf_path=None)
 
             with open(fasta_path, "r") as fasta:
                 lines = [line.strip() for line in fasta]
@@ -131,7 +131,7 @@ class SymbolicDELVariantTestSuite(unittest.TestCase):
             fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
             self.assertEqual(alt_contig, "1_899922_899993_alt")
-            mock_ref.assert_called_once_with(None, Range("1",899921,899993))
+            mock_ref.assert_called_once_with(None, Range("1",899921,899993), snv_vcf_path=None)
 
             with open(fasta_path, "r") as fasta:
                 lines = [line.strip() for line in fasta]
@@ -194,7 +194,7 @@ class ComplexDELVariantTestSuite(unittest.TestCase):
     @patch("npsv2.variant._reference_sequence", return_value="GTATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATAT")
     def test_consensus_fasta(self, mock_ref):
         fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
-        mock_ref.assert_called_once_with(None, Range.parse_literal("4:20473845-20474270"))
+        mock_ref.assert_called_once_with(None, Range.parse_literal("4:20473845-20474270"), snv_vcf_path=None)
 
         with open(fasta_path, "r") as fasta:
             lines = [line.strip() for line in fasta]
@@ -246,7 +246,7 @@ class SingleBaseComplexDELVariantTestSuite(unittest.TestCase):
     @patch("npsv2.variant._reference_sequence", return_value="AAACCTCCCAACGCAATAGACATTGTGGTTTTCATTGCATATCATTCCTATTTCTCTCTCTCCATTATTTAGCAGTAATTTTTTTAATGAAA")
     def test_consensus_fasta(self, mock_ref):
         fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
-        mock_ref.assert_called_once_with(None, Range.parse_literal("8:79683397-79683488"))
+        mock_ref.assert_called_once_with(None, Range.parse_literal("8:79683397-79683488"), snv_vcf_path=None)
 
         with open(fasta_path, "r") as fasta:
             lines = [line.strip() for line in fasta]
@@ -295,3 +295,38 @@ class IncompleteSequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant.ref_length, 165)
         self.assertEqual(self.variant.alt_length, 1)
         self.assertEqual(self.variant.end, 67808624) # 0-indexed, half-open
+
+@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta"), "Reference genome not available")
+class FASTAWithIUPACCodesDELVariant(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz")))
+        self.variant = Variant.from_pysam(record)
+        self.snv_vcf_path = os.path.join(FILE_DIR, "1_67806460_67811624.snvs.vcf.gz")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_reference_sequence_with_IUPAC(self):
+        region = self.variant.reference_region.expand(1000)
+        ref_seq = _reference_sequence("/data/human_g1k_v37.fasta", region, self.snv_vcf_path)
+        self.assertEqual(len(ref_seq), region.length)
+        self.assertEqual(ref_seq[67808441 - 1 - region.start], "Y")  # Two SNVs (recall POS is 1-indexed) in region
+        self.assertEqual(ref_seq[67808536 - 1 - region.start], "R")
+    
+    def test_consensus_fasta(self):
+        region = self.variant.reference_region.expand(30)
+        fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(
+            reference_fasta="/data/human_g1k_v37.fasta", 
+            dir=self.tempdir.name,
+            line_width=sys.maxsize,
+            flank=30,
+            snv_vcf_path=self.snv_vcf_path,
+        )
+        with open(fasta_path, "r") as fasta:
+            lines = [line.strip() for line in fasta]
+        self.assertEqual(len(lines), 4)
+        ref_seq = lines[1]
+        self.assertEqual(ref_seq[67808441 - 1 - region.start], "Y")  # Two SNVs (recall POS is 1-indexed) in region
+        self.assertEqual(ref_seq[67808536 - 1 - region.start], "R")
+            

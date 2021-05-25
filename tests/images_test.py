@@ -34,7 +34,7 @@ def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, 
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
 
-def _mock_reference_sequence(reference_fasta, region):
+def _mock_reference_sequence(reference_fasta, region, snv_vcf_path=None):
     assert region.contig == "1"
     with pysam.FastaFile(os.path.join(FILE_DIR, "1_896922_902998.fasta")) as ref_fasta:
         return ref_fasta.fetch(reference=region.contig, start=region.start-896921, end=region.end-896921)
@@ -479,9 +479,11 @@ class SNVRenderTest(unittest.TestCase):
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "generator=single_depth",
             "simulation.replicates=1",
+            "pileup.insert_bases=true",
             "pileup.render_snv=true",
             "pileup.match_base_pixel=255",
             "pileup.mismatch_base_pixel=192",
+            "pileup.snv_vcf_input={}".format(os.path.join(FILE_DIR, "1_67806460_67811624.snvs.vcf.gz")),
         ])
 
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
@@ -493,5 +495,5 @@ class SNVRenderTest(unittest.TestCase):
 
     def test_normalized_allele_pixels(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True)) #True))
-        png_path = os.path.join(self.tempdir.name, "test.png")
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True)

@@ -72,8 +72,28 @@ def read_start(read):
         return read.reference_start
 
 
-def _refine_cigar_op(a: str, b: str):
-    return pysam.CEQUAL if a == b else pysam.CDIFF
+_IUPAC_TO_ALLELES = {
+    "A": frozenset("A"),
+    "C": frozenset("C"), 
+    "G": frozenset("G"), 
+    "T": frozenset("T"), 
+    "R": frozenset("AG"),
+    "Y": frozenset("CT"),
+    "S": frozenset("GC"),
+    "W": frozenset("AT"),
+    "K": frozenset("GT"),
+    "M": frozenset("AC"),
+    "B": frozenset("CGT"),
+    "D": frozenset("AGT"),
+    "H": frozenset("ACT"),
+    "V": frozenset("ACG"),
+    "N": frozenset("ACGTN"),
+}
+
+def _refine_cigar_op(base: str, ref: str):
+    # Treat any of the IUPAC alleles as matching
+    match = base.upper() in _IUPAC_TO_ALLELES[ref.upper()]
+    return pysam.CEQUAL if match else pysam.CDIFF
 
 
 
@@ -307,6 +327,8 @@ class Pileup:
         
 
     def add_insert(self, insert_region: Range, **attributes):
+        # Exclude the allele for the insert bases (even though the fragment may be assigned to an allele)
+        attributes.update({ "allele": AlleleRealignment(None, False, 0, 0) })
         overlap = self._region.intersection(insert_region)
         for column in self._columns[(overlap.start - self._region.start):(overlap.end - self._region.start)]:
             column.add_base(overlap.start, BaseAlignment.INSERT, **attributes)

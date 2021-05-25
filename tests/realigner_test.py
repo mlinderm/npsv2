@@ -45,7 +45,34 @@ class RealignerTest(unittest.TestCase):
             ref_sequence = "AGCAGCCGAAGCGCCTCCTTTCACTCTAGGGTCCAGGCATCCAGCAGCCGAAGCGCCTCCTTTCAATCCAGGGTCCACACATCCAGCAGCCGAAGCGCCCTCCTTTCAATCCAGGGTCCAGGCATCTAGCAGCCGAAGCGCCTCCTTT"
             scores = test_score_alignment(ref_sequence, sam_file.name)
             self.assertEqual(len(scores), 1)
-            self.assertLess(scores[0], 0)
+            self.assertTrue(-9 < scores[0] < -8)
+        finally:
+            os.remove(sam_file.name)
+
+    def test_alignment_scoring_with_iupac_ref_seq(self):
+        try:
+            # Create SAM file with a single read
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".sam") as sam_file:
+                # fmt: off
+                print("@HD", "VN:1.3", "SO:coordinate", sep="\t", file=sam_file)
+                print("@SQ", "SN:1", "LN:249250621", sep="\t", file=sam_file)
+                print("@RG", "ID:synth1", "LB:synth1", "PL:illumina", "PU:ART", "SM:HG002", sep="\t", file=sam_file)
+                print(
+                    "ref-354", "147", "1", "1", "60", "148M", "=", "2073433", "-435",
+                    "AGCAGCCGAAGCGCCTCCTTTCACTCTAGGGTCCAGGCATCCAGCAGCCGAAGCGCCTCCTTTCAATCCAGGGTCCACACATCCAGCAGCCGAAGCGCCCTCCTTTCAATCCAGGGTCCAGGCATCTAGCAGCCGAAGCGCCTCCTTT",
+                    "GG8CCGGGCGGGCGGGGGCGGCGGGGGGGGGGGCGGCGGGG=GGGJCCJGGGGGGCGGGGGGCG1GGCGG8GGCGC1GGCGJGCCGGJGJGJGGCGCJGJGJJCGGJJCJJGJJGJJJGJGCJJJGGJJJJGJJJGGGCGGGCGGCCC",
+                    "RG:Z:synth1",
+                    sep="\t",
+                    file=sam_file,
+                )
+                # fmt: on
+
+            # Read is aligned to very beginning of reference, so using read as reference should be all matches (with IUPAC code)
+            iupac_ref_sequence = "WGCAGCCGAAGCGCCTCCTTTCACTCTAGGGTCCAGGCATCCAGCAGCCGAAGCGCCTCCTTTCAATCCAGGGTCCACACATCCAGCAGCCGAAGCGCCCTCCTTTCAATCCAGGGTCCAGGCATCTAGCAGCCGAAGCGCCTCCTTT"
+            
+            scores = test_score_alignment(iupac_ref_sequence, sam_file.name)
+            self.assertEqual(len(scores), 1)
+            self.assertTrue(-9 < scores[0] < -8)  # Should be the same score as above
         finally:
             os.remove(sam_file.name)
 

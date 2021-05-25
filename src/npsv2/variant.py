@@ -1,11 +1,66 @@
-import logging, math, os, tempfile, textwrap
+import logging, math, os, tempfile, textwrap, typing
 import pysam
 from .range import Range
 from . import npsv2_pb2
 
-def _reference_sequence(reference_fasta, region: Range) -> str:
+_VALID_SNV_ALLELES = frozenset("ACGTNacgtn")
+
+_ALLELES_TO_IUPAC = {
+    frozenset("A"): "A",
+    frozenset("C"): "C",
+    frozenset("G"): "G",
+    frozenset("T"): "T",
+    frozenset("AG"): "R",
+    frozenset("CT"): "Y",
+    frozenset("GC"): "S",
+    frozenset("AT"): "W",
+    frozenset("GT"): "K",
+    frozenset("AC"): "M",
+    frozenset("CGT"): "B",
+    frozenset("AGT"): "D",
+    frozenset("ACT"): "H",
+    frozenset("ACG"): "V",
+    frozenset("ACGT"): "N",
+}
+
+def _snv_alleles(record: pysam.VariantRecord) -> typing.FrozenSet:
+    alleles = []
+    for allele in record.alleles:
+        if len(allele) != 1 or allele not in _VALID_SNV_ALLELES:
+            return frozenset()
+        alleles.append(allele)
+    return frozenset(alleles)
+    
+def _iupac_code(alleles: typing.FrozenSet) -> str:
+    return _ALLELES_TO_IUPAC.get(alleles, "N")
+
+def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str = None) -> str:
     with pysam.FastaFile(reference_fasta) as ref_fasta:
-        return ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end)
+        ref_seq = ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end)    
+
+    # If SNV VCF is provided, modify the reference sequence with IUPAC codes
+    if snv_vcf_path is None:
+        return ref_seq
+    
+    with pysam.VariantFile(snv_vcf_path) as vcf_file:
+        vcf_file.subset_samples([])  # Drop all samples
+        for record in vcf_file.fetch(**region.pysam_fetch):
+            alleles = _snv_alleles(record)
+            if len(alleles) == 0:  # TODO: Add additional filtering criteria?
+                continue
+            ref_seq_index = record.start - region.start
+            if record.ref != ref_seq[ref_seq_index]:
+                print(record)
+                print(ref_seq[ref_seq_index])
+            
+            
+            assert record.ref == ref_seq[ref_seq_index]
+            # Replace reference base with IUPAC code
+            ref_seq = ref_seq[:ref_seq_index] + _iupac_code(alleles) + ref_seq[ref_seq_index+1:]
+
+    assert len(ref_seq) == region.length
+    return ref_seq
+
 
 class Variant(object):
     def __init__(self, record):
@@ -107,10 +162,11 @@ class Variant(object):
         ref_contig=None,
         alt_contig=None,
         line_width=60,
-        dir=None
+        dir=None,
+        snv_vcf_path: str = None,
     ):
         region = self.reference_region.expand(flank)
-        ref_seq = _reference_sequence(reference_fasta, region)
+        ref_seq = _reference_sequence(reference_fasta, region, snv_vcf_path=snv_vcf_path)
         if ac != 0:
             alt_seq = self._alt_seq(ref_seq, flank)
         

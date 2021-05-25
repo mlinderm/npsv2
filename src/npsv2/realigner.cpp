@@ -42,6 +42,29 @@ const double kGapExtend = -1.;
 // svviz2 rescales all base qualities
 double RescaleQuality(char quality, double scale = 0.25) { return scale * static_cast<double>(quality); }
 
+bool IUPACMatch(char base, char ref) {
+  switch (ref) {
+    default:
+      throw std::invalid_argument("Invalid reference base");
+    case 'A':
+    case 'C':
+    case 'G':
+    case 'T':
+      return base == ref;
+    case 'R':	return base == 'A' || base == 'G';
+    case 'Y':	return base == 'C' || base == 'T';
+    case 'S':	return base == 'G' || base == 'C';
+    case 'W':	return base == 'A' || base == 'T';
+    case 'K':	return base == 'G' || base == 'T';
+    case 'M':	return base == 'A' || base == 'C';
+    case 'B':	return base == 'C' || base == 'G' || base == 'T';
+    case 'D':	return base == 'A' || base == 'G' || base == 'T';
+    case 'H':	return base == 'A' || base == 'C' || base == 'T';
+    case 'V':	return base == 'A' || base == 'C' || base == 'G';
+    case 'N':	return true;
+  }
+}
+
 double ScoreAlignment(const std::string& read_sequence, const std::string& base_qualities,
                       const std::string& ref_sequence, const sl::BamRecord& alignment) {
   int entry_read_pos = 0;
@@ -63,7 +86,7 @@ double ScoreAlignment(const std::string& read_sequence, const std::string& base_
         break;
       case 'M':
         for (; entry_read_pos < entry_read_end; entry_read_pos++, entry_ref_pos++) {
-          if (read_sequence[entry_read_pos] == ref_sequence[entry_ref_pos]) {
+          if (IUPACMatch(read_sequence[entry_read_pos], ref_sequence[entry_ref_pos])) {
             auto quality = RescaleQuality(base_qualities[entry_read_pos]);
             log_prob += log10(1. - PhredToProb(quality));
           } else {
@@ -199,7 +222,7 @@ void RealignRead(const IndexedSequence& index, const sl::BamRecord& read, sl::Ba
                  int quality_offset) {
   const std::string read_seq(read.Sequence());
   const std::string base_qualities(read.Qualities(quality_offset));
-  const std::string& ref_seq(index.Sequence());
+  const std::string& ref_seq(index.IUPACSequence());
 
   index.AlignSequence(read.Qname(), read_seq, alignments);
   auto max_log_prob = MaxScoreAlignment(read_seq, base_qualities);
@@ -258,6 +281,13 @@ void IndexedSequence::Initialize(const sl::UnalignedSequence& sequence) {
   bwa_.ConstructIndex({sequence});
 }
 
+const std::string& IndexedSequence::IUPACSequence() const {
+  if (!iupac_sequence_.Seq.empty())
+    return iupac_sequence_.Seq;
+  else 
+    return sequence_.Seq;
+}
+
 void IndexedSequence::AlignSequence(const std::string& name, const std::string& seq,
                                     sl::BamRecordVector& alignments) const {
   bwa_.AlignSequence(seq, name, alignments, false, 0.9, 10);
@@ -273,11 +303,8 @@ namespace {
   }
 }
 
-FragmentRealigner::FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std)
+FragmentRealigner::FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std, py::kwargs kwargs)
     : insert_size_dist_(insert_size_mean, insert_size_std) {
-  // Release the GIL while executing the C++ realignment code
-  py::gil_scoped_release release;
-  
   // Load alleles from a FASTA file
   sl::FastqReader contigs(fasta_path);
   sl::UnalignedSequence next_sequence;
@@ -301,6 +328,18 @@ FragmentRealigner::FragmentRealigner(const std::string& fasta_path, const Breakp
       BreakpointToGenomicRegion(std::get<2>(allele_breakpoints), AltHeader(i)),
       BreakpointToGenomicRegion(std::get<3>(allele_breakpoints), AltHeader(i)) 
     });
+  }
+
+  // Load the FASTA file with IUPAC sequence if provided
+  if (kwargs && kwargs.contains("iupac_fasta_path")) {
+    sl::FastqReader contigs(py::cast<std::string>(kwargs["iupac_fasta_path"]));
+    // We assumed the first sequence is the reference sequence
+    pyassert(contigs.GetNextSequence(next_sequence), "Reference sequence not present in the IUPAC FASTA");
+    ref_index_.SetIUPACSequence(next_sequence);
+    for (int i = 0; i < NumAltAlleles(); i++) {
+      pyassert(contigs.GetNextSequence(next_sequence), "Missing alternate sequence in the IUPAC FASTA");
+      alt_indexes_[i].SetIUPACSequence(next_sequence);
+    }
   }
 }
 
@@ -420,7 +459,7 @@ FragmentRealigner::RealignTuple TestRealignReadPair(const std::string& fasta_pat
            "Insert size distribution must be provided");
 
   FragmentRealigner realigner(fasta_path, breakpoints, py::cast<double>(kwargs["fragment_mean"]),
-                              py::cast<double>(kwargs["fragment_sd"]));
+                              py::cast<double>(kwargs["fragment_sd"]), kwargs);
   return realigner.RealignReadPair(name, read1_seq, read1_qual, kwargs);
 }
 

@@ -102,12 +102,16 @@ class IndexedSequence {
   const std::string& Sequence() const { return sequence_.Seq; }
   sl::BamHeader Header() const { return bwa_.HeaderFromIndex(); }
 
+  const std::string& IUPACSequence() const;
+  void SetIUPACSequence(const sl::UnalignedSequence& sequence) { iupac_sequence_ = sequence; }
+
   void AlignSequence(const sl::BamRecord& read, sl::BamRecordVector& alignments) const;
   void AlignSequence(const std::string& name, const std::string& seq, sl::BamRecordVector& alignments) const;
 
  private:
   sl::UnalignedSequence sequence_;
   sl::BWAWrapper bwa_;
+  sl::UnalignedSequence iupac_sequence_;
 };
 
 class FragmentRealigner {
@@ -116,7 +120,7 @@ class FragmentRealigner {
   typedef std::vector<std::tuple<std::string, std::string, std::string, std::string>> BreakpointList;
   typedef std::tuple<double, bool, double, double, double, bool, double, double> RealignTuple;
 
-  FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std);
+  FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std, py::kwargs kwargs);
 
   AltIndexesSequence::size_type NumAltAlleles() const { return alt_indexes_.size(); }
 

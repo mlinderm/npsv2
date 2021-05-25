@@ -10,7 +10,7 @@ PYBIND11_MODULE(_native, m) {
   m.doc() = "NPSV2 native tools";
 
   py::class_<npsv2::FragmentRealigner>(m, "FragmentRealigner")
-      .def(py::init<const std::string&, const npsv2::FragmentRealigner::BreakpointList&, double, double>())
+      .def(py::init<const std::string&, const npsv2::FragmentRealigner::BreakpointList&, double, double, py::kwargs>())
       .def("realign_read_pair", &npsv2::FragmentRealigner::RealignReadPair);
 
   m.def("filter_reads_gc", &npsv2::FilterReadsGC, "Filter reads based on GC normalized coverage");
