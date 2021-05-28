@@ -16,8 +16,12 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
         kw["read2_seq"] = fragment.read2.query_sequence
         kw["read2_qual"] = _quality_string(fragment.read2)
     
-    ref_quality, ref_break, ref_score, ref_max_score, alt_quality, alt_break, alt_score, alt_max_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
-    
+    try:
+        ref_quality, ref_break, ref_score, ref_max_score, alt_quality, alt_break, alt_score, alt_max_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
+    except ValueError:
+        print(fragment.read1, fragment.read2)
+        raise
+        
     # The scores are log probabilities
     normalized_ref_score = ref_score - ref_max_score
     normalized_alt_score = alt_score - alt_max_score

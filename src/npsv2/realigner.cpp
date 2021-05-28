@@ -45,7 +45,7 @@ double RescaleQuality(char quality, double scale = 0.25) { return scale * static
 bool IUPACMatch(char base, char ref) {
   switch (ref) {
     default:
-      throw std::invalid_argument("Invalid reference base");
+      throw std::invalid_argument(std::string("Invalid reference base: ") + ref);
     case 'A':
     case 'C':
     case 'G':
