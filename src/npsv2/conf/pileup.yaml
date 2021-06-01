@@ -22,6 +22,7 @@ amb_allele_pixel: 50
 ref_allele_pixel: 150
 alt_allele_pixel: 250
 min_normalized_allele_score: -.inf
+max_alleleq: 40
 
 max_mapq: 60
 

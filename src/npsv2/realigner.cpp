@@ -1,3 +1,5 @@
+#include <limits>
+
 #include "realigner.hpp"
 
 #include "SeqLib/FastqReader.h"
@@ -403,7 +405,7 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
     }
   }
 
-  RealignedFragment::score_type max_alt_score = 0, max_alt_quality = 0, max_alt_max_score = 0;
+  RealignedFragment::score_type max_alt_score = -std::numeric_limits<RealignedFragment::score_type>::infinity(), max_alt_quality = 0, max_alt_max_score = 0;
   bool max_alt_breakpoint_overlap = false;
   for (int i = 0; i < NumAltAlleles(); i++) {
     const auto& alt_realignment = alt_realignments[i];
@@ -411,7 +413,7 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
       auto & best_pair = alt_realignment.BestPair();
       auto alt_score = best_pair.Score();
       auto alt_quality = LogProbToPhredQual(alt_score - total_log_prob, 40);
-      if (alt_quality >= max_alt_quality) {
+      if (alt_score >= max_alt_score) {
         max_alt_score = alt_score;
         max_alt_quality = alt_quality;
         max_alt_max_score = best_pair.MaxPossibleScore();

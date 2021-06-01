@@ -104,10 +104,12 @@ def _refine_base_alignment(base: str, ref: str):
 
 @dataclass
 class AlleleRealignment:
-    allele: AlleleAssignment
-    breakpoint: bool
-    quality: float = 0
-    normalized_score: float = 0
+    ref_quality: int = None
+    alt_quality: int = None
+    # allele: AlleleAssignment
+    # breakpoint: bool
+    # quality: float = 0
+    # normalized_score: float = 0
 
 
 class Fragment(object):
@@ -211,7 +213,7 @@ class PileupBase(NamedTuple):
     read_start: int
     aligned: BaseAlignment
     mapq: int = None
-    allele: AlleleRealignment = AlleleRealignment(AlleleAssignment.AMB, False, 0, 0)
+    allele: AlleleRealignment = AlleleRealignment() #AlleleAssignment.AMB, False, 0, 0)
     ref_zscore: float = None
     alt_zscore: float = None
     strand: Strand = None
@@ -474,7 +476,7 @@ class ReadPileup:
 
     def add_insert(self, insert_region: Range, **attributes):
         # Exclude the allele for the insert bases (even though the fragment may be assigned to an allele)
-        attributes.update({ "allele": AlleleRealignment(None, False, 0, 0) })
+        attributes.update({ "allele": AlleleRealignment() }) #None, False, 0, 0) })
         for region, reads in self._reads.items():
             overlap = region.intersection(insert_region)
             if overlap.length > 0:

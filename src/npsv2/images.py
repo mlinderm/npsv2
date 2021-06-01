@@ -27,6 +27,9 @@ MAPQ_CHANNEL = 4
 STRAND_CHANNEL = 5
 BASEQ_CHANNEL = 6
 
+REF_ALLELE_CHANNEL = 3
+ALT_ALLELE_CHANNEL = 7
+
 
 def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
@@ -123,7 +126,7 @@ class ImageGenerator:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
         channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
-        channels = 3*[ALIGNED_CHANNEL]
+        channels = 3*[ALT_ALLELE_CHANNEL]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -264,7 +267,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
 
 class SingleDepthImageGenerator(SingleImageGenerator):
     def __init__(self, cfg):
-        super().__init__(cfg, num_channels=7)
+        super().__init__(cfg, num_channels=8) #7)
         
 
     def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, **kwargs):
@@ -306,10 +309,13 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[row_idxs[col_slice], col_idxs, MAPQ_CHANNEL] = self._qual_pixel(read.mapq, self._cfg.pileup.max_mapq)
                 image_tensor[row_idxs[col_slice], col_idxs, REF_PAIRED_CHANNEL] = self._zscore_pixel(read.ref_zscore)
                 image_tensor[row_idxs[col_slice], col_idxs, ALT_PAIRED_CHANNEL] = self._zscore_pixel(read.alt_zscore)
-                image_tensor[row_idxs[col_slice], col_idxs, ALLELE_CHANNEL] = self._allele_pixel(read.allele)
+                #image_tensor[row_idxs[col_slice], col_idxs, ALLELE_CHANNEL] = self._allele_pixel(read.allele)
                 image_tensor[row_idxs[col_slice], col_idxs, STRAND_CHANNEL] = self._strand_to_pixel[read.strand]
                 image_tensor[row_idxs[col_slice], col_idxs, BASEQ_CHANNEL] = self._qual_pixel(read.baseq(read_slice), self._cfg.pileup.max_baseq)
                 
+                image_tensor[row_idxs[col_slice], col_idxs, REF_ALLELE_CHANNEL] = self._qual_pixel(read.allele.ref_quality, self._cfg.pileup.max_alleleq)
+                image_tensor[row_idxs[col_slice], col_idxs, ALT_ALLELE_CHANNEL] = self._qual_pixel(read.allele.alt_quality, self._cfg.pileup.max_alleleq)
+
                 # Increment the 'current' row for the bases we just added to the pileup, overwrite the last row if we exceed
                 # the maximum coverage
                 row_idxs[col_slice] = np.clip(row_idxs[col_slice] + 1, self._cfg.pileup.variant_band_height, image_height - 1) 
