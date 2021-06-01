@@ -2,11 +2,7 @@
 generator:
   _target_: npsv2.images.SingleDepthImageGenerator
 pileup:
-  num_channels: 7
-  insert_base_pixel: 64
-  insert_bases: false
-  baseq_channel: 6
-  max_baseq: 40
-  render_snv: false
+  insert_bases: true
+  render_snv: true
   match_base_pixel: ${pileup.aligned_base_pixel}
-  mismatch_base_pixel: ${pileup.aligned_base_pixel}
+  mismatch_base_pixel: 192
