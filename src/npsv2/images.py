@@ -104,9 +104,12 @@ class ImageGenerator:
             return [self._aligned_to_pixel[a] for a in align]
 
     def _zscore_pixel(self, zscore):
-        return np.clip(
-            self._cfg.pileup.insert_size_mean_pixel + zscore * self._cfg.pileup.insert_size_sd_pixel, 1, MAX_PIXEL_VALUE
-        )
+        if zscore is None:
+            return 0
+        else:
+            return np.clip(
+                self._cfg.pileup.insert_size_mean_pixel + zscore * self._cfg.pileup.insert_size_sd_pixel, 1, MAX_PIXEL_VALUE
+            )
 
     def _allele_pixel(self, realignment: AlleleRealignment):
         if realignment.ref_quality is None or realignment.alt_quality is None:
@@ -130,7 +133,7 @@ class ImageGenerator:
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
         channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
-        channels = 3*[ALLELE_CHANNEL]
+        channels = 3*[ALT_PAIRED_CHANNEL]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -285,14 +288,27 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = ReadPileup(regions)
 
+
+        left_region = variant.left_flank_region(self._cfg.pileup.fetch_flank)  # TODO: Incorporate CIPOS and CIEND?
+        event_region = variant.reference_region
+        right_region = variant.right_flank_region(self._cfg.pileup.fetch_flank)
+
+
         for fragment in fragments:
             # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
             # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
             if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
                 realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
                 
-                ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
+                if fragment.fragment_straddles(left_region, right_region):
+                    ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                    alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
+                elif fragment.fragment_straddles(left_region, event_region) ^ fragment.fragment_straddles(event_region, right_region):
+                    ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                    alt_zscore = None
+                else:
+                    ref_zscore = None
+                    alt_zscore = None
 
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
                 # otherwise be represented)

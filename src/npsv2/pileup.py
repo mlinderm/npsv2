@@ -173,9 +173,18 @@ class Fragment(object):
             self.read1, self.read2 = self.read2, self.read1
 
     def fragment_straddles(self, left_region: Range, right_region: Range, min_aligned=3):
+        assert left_region.contig == right_region.contig
+        assert left_region.length > min_aligned and right_region.length > min_aligned
+
         # TODO: Allow fragments with just one read
         if not self.is_properly_paired:
             return False
+        if self.read1.reference_name != left_region.contig:
+            return False
+        return (
+            (left_region.start <= self.read1.reference_start < (left_region.end - min_aligned)) and 
+            (right_region.start <= self.read2.reference_start < (right_region.end - min_aligned))
+        )
 
         return (
             left_region.get_overlap(self.read1) >= min_aligned and right_region.get_overlap(self.read2) >= min_aligned
