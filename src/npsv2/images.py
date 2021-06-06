@@ -1,4 +1,4 @@
-import datetime, functools, logging, os, random, shutil, subprocess, sys, tempfile, typing
+import datetime, functools, math, logging, os, random, shutil, subprocess, sys, tempfile, typing
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -112,7 +112,7 @@ class ImageGenerator:
             )
 
     def _allele_pixel(self, realignment: AlleleRealignment):
-        if realignment.ref_quality is None or realignment.alt_quality is None:
+        if realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
             return 0
         else:
             return (realignment.alt_quality - realignment.ref_quality) / 40 * 100 + 150

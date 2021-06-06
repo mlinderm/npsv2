@@ -12,7 +12,7 @@ def _variant_descriptor(record):
 
 
 
-def refine_vcf(params, vcf_path: str, output_path: str, progress_bar=False, include_orig_ref=True, merge_blocks=True, include_orig_in_block=False):
+def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include_orig_ref=True, merge_blocks=True, include_orig_in_block=False):
     # Include reference genotype for original variant or not in minimum calculation
     orig_start_idx = 0 if include_orig_ref else 1
     
