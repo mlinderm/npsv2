@@ -1,11 +1,9 @@
 defaults:
-  - pileup: six_channel
-  - generator: single_hybrid
+  - pileup
+  - generator: single_depth
   - simulation: augmented
   - model: joint_embeddings
   - training
-  - pileup_generator: ${defaults.1.generator}
-    optional: true
   - model_training: ${defaults.3.model}
     optional: true
   - command: genotype

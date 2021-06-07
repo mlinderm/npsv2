@@ -34,30 +34,21 @@ def _mock_simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, 
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
 
-def _mock_reference_sequence(reference_fasta, region):
+def _mock_reference_sequence(reference_fasta, region, snv_vcf_path=None):
     assert region.contig == "1"
     with pysam.FastaFile(os.path.join(FILE_DIR, "1_896922_902998.fasta")) as ref_fasta:
         return ref_fasta.fetch(reference=region.contig, start=region.start-896921, end=region.end-896921)
 
 
-def _mock_chunk_genome(ref_path: str, vcf_path: str, chunk_size=30000000):
-    return ["1:1-249250621"]
-
-
-def _mock_generate_deletions(size, n=1, flank=0):
-    with pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")) as vcf_file:
-        for record in vcf_file:
-            yield Variant.from_pysam(record)
-
 class ImageGeneratorConfigTest(unittest.TestCase):
-    def test_composed_config(self):
+    def test_inferred_config(self):
         cfg = compose(config_name="config", overrides=[])
-        self.assertEqual(cfg.pileup.num_channels, 6)
-
+        self.assertEqual(cfg.pileup.aligned_base_pixel, cfg.pileup.match_base_pixel)
+    
     def test_instantiate_generator(self):
         cfg = compose(config_name="config", overrides=[])
         generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
-        self.assertIsInstance(generator, images.SingleImageGenerator)
+        self.assertIsInstance(generator, images.SingleDepthImageGenerator)
 
     def test_override_generator(self):
         cfg = compose(config_name="config", overrides=["generator=windowed_read"])
@@ -85,7 +76,7 @@ class SingleHybridImageGeneratorClassTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_image_shape(self):
-        self.assertEqual(self.generator.image_shape, (self.cfg.pileup.image_height, 200, self.cfg.pileup.num_channels))
+        self.assertEqual(self.generator.image_shape, (self.cfg.pileup.image_height, 200, 6))
 
     def test_region(self):
         image_region = self.generator.image_regions(self.variant)
@@ -180,7 +171,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
         self.variant = Variant.from_pysam(record)
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, read_length=148)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -217,7 +208,7 @@ class SingleFragmentImageGeneratorClassTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_image_shape(self):
-        self.assertEqual(self.generator.image_shape, (100, 1000, self.cfg.pileup.num_channels))
+        self.assertEqual(self.generator.image_shape, (100, 1000, 6))
 
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_generate(self,  mock_ref):
@@ -276,7 +267,7 @@ class WindowedReadImageGeneratorClassTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_image_shape(self):
-        self.assertEqual(self.generator.image_shape, (None, self.cfg.pileup.image_height, 50, self.cfg.pileup.num_channels))
+        self.assertEqual(self.generator.image_shape, (None, self.cfg.pileup.image_height, 50, 6))
 
     def test_region(self):
         image_regions = self.generator.image_regions(self.variant)
@@ -324,7 +315,6 @@ class WindowedReadImageGeneratorExampeTest(unittest.TestCase):
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "generator=windowed_read",
             "simulation.replicates=5",         
-            "simulation.sample_ref=false",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
@@ -359,7 +349,7 @@ class BreakpointReadImageGeneratorTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_image_shape(self):
-        self.assertEqual(self.generator.image_shape, (2, self.cfg.pileup.image_height, self.cfg.pileup.image_width, self.cfg.pileup.num_channels))
+        self.assertEqual(self.generator.image_shape, (2, self.cfg.pileup.image_height, self.cfg.pileup.image_width, 6))
 
     def test_region(self):
         image_regions = self.generator.image_regions(self.variant)
@@ -382,11 +372,11 @@ class VCFExampleGenerateTest(unittest.TestCase):
         self.cfg = compose(config_name="config", overrides=[
             "reference=placeholder.fasta",
             "simulation.replicates=1",
-            "simulation.sample_ref=false",
+            "pileup.render_snv=false",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
-        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2)
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, read_length=148)
         self.vcf_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
 
@@ -470,17 +460,17 @@ class VCFExampleGenerateTest(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
-class NormalizedAlignmentScoreTest(unittest.TestCase):
+class SNVRenderTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = compose(config_name="config", overrides=[
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "generator=single_depth",
-            "simulation.replicates=1",         
-            #"pileup.min_normalized_allele_score=-10",
+            "simulation.replicates=1",
+            "pileup.render_snv=true",
+            "pileup.snv_vcf_input={}".format(os.path.join(FILE_DIR, "1_67806460_67811624.snvs.vcf.gz")),
         ])
-        self.generator = hydra.utils.instantiate(self.cfg.generator, cfg=self.cfg)
 
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
         self.vcf_path = os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz")
@@ -490,6 +480,6 @@ class NormalizedAlignmentScoreTest(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_normalized_allele_pixels(self):
-        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False)) #True))
-        png_path = os.path.join(self.tempdir.name, "test.png")
-        images.example_to_image(self.cfg, example, png_path, with_simulations=True) #True)
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True)) #True))
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True)

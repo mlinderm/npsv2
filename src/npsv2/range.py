@@ -66,6 +66,12 @@ class Range(object):
             raise ValueError("Can't union Ranges with different contigs")
         return Range(self.contig, min(self.start, other.start), max(self.end, other.end))
 
+    def intersection(self, other: "Range") -> "Range":
+        if self.contig != other.contig or other.start >= self.end or self.start >= other.end:
+            return Range("", 0, 0)
+        else:
+            return Range(self.contig, max(self.start, other.start), min(self.end, other.end))
+
     def window(self, size):
         assert self.length % size == 0
         return [Range(self.contig, s, s+size) for s in range(self.start, self.end, size)]

@@ -1,31 +1,34 @@
-# @package _group_
+# @package pileup
 image_width: 300
 image_height: 100
-num_channels: 6
 
 variant_padding: 100
 
-aligned_channel: 0
+insert_bases: false
+render_snv: false
+snv_vcf_input: null
+
 aligned_base_pixel: 255
 soft_clip_base_pixel: 128
+match_base_pixel: ${pileup.aligned_base_pixel}
+mismatch_base_pixel: ${pileup.aligned_base_pixel}
+insert_base_pixel: 64
 
-ref_paired_channel: 1
-alt_paired_channel: 2
 insert_size_mean_pixel: 128
 insert_size_sd_pixel: 24
 
-allele_channel: 3
 weight_allele: false
 amb_allele_pixel: 50
 ref_allele_pixel: 150
 alt_allele_pixel: 250
 min_normalized_allele_score: -.inf
+max_alleleq: 40
 
-mapq_channel: 4
 max_mapq: 60
 
-strand_channel: 5
-forward_strand_pixel: 70
+max_baseq: 40
+
+positive_strand_pixel: 70
 negative_strand_pixel: 240
 
 fetch_flank: 1000
@@ -35,3 +38,4 @@ assign_delta: 1.0
 
 variant_band_height: 0
 variant_mapq: 60
+variant_baseq: 40

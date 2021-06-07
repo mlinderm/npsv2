@@ -1,2 +1,8 @@
-# @package _group_
-_target_: npsv2.images.SingleDepthImageGenerator
+# @package _global_
+generator:
+  _target_: npsv2.images.SingleDepthImageGenerator
+pileup:
+  insert_bases: true
+  render_snv: true
+  match_base_pixel: ${pileup.aligned_base_pixel}
+  mismatch_base_pixel: 192
