@@ -59,7 +59,7 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
         # Determine the best alternate representation(s) in each group
         closest_alts = {}
         for ids in variant_ranges.values():
-            best_alts = [(float("Inf"), None, None)] * num_samples
+            best_alts = [(float("Inf"), None, None, False)] * num_samples
             for id in ids:
                 possible_alternate_records = alternate_records.get(id, [])
                 if include_orig_in_block:
@@ -70,8 +70,16 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
                         
                         alt_dist = alternate_call["DS"]
                         min_idx = np.argmin(alt_dist)
+                        alt_ratio = alternate_call["DHFFC"]
                         if min_idx != 0 and alt_dist[min_idx] < best_dist:
-                            best_alts[i] = (alt_dist[min_idx], id, alternate_record)
+                            best_alts[i] = (alt_dist[min_idx], id, alternate_record, False)
+                            if alt_dist[min_idx]/alt_dist[0] < 0.125:
+                                if min_idx == 1:
+                                    if (alt_dist[min_idx]/alt_dist[2] < 0.125 and 0.4 <= alt_ratio <= 0.6):
+                                        best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
+                                else:
+                                    if (alt_dist[min_idx]/alt_dist[1] < 0.125 and alt_ratio <= 0.2):
+                                        best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
 
             for id in ids:
                 closest_alts[id] = best_alts
@@ -87,13 +95,26 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
                     # Identify best alternate representation and genotype for each sample
                     closest_alt = closest_alts[id]
                     for i, call in enumerate(record.samples.itervalues()):
-                        alt_dist, alt_id, alt_record = closest_alt[i]
+                        alt_dist, alt_id, alt_record, alt_better = closest_alt[i]
                         if alt_record is None or alt_record is record:
                             # No alternate record to update with, or we are tying to update with ourselves (same original record)
                             continue
 
                         orig_dist = min(call["DS"][orig_start_idx:])
-                        if alt_dist < orig_dist and alt_id == id:
+                        diff = alt_dist - orig_dist
+                        if diff <= 0.1 and alt_better == True and alt_id == id:
+                            #One of our alternate representations is best, based on coverage criteria
+                            alt_call = alt_record.samples[i]    
+                            call.update({
+                                "SRC": "var",
+                                "DS": alt_call["DS"],
+                                "CL": _variant_descriptor(alt_record),
+                                "OGT": "/".join(map(str, call.allele_indices)),
+                                "ODS": call["DS"],
+                            })
+                            call.allele_indices = alt_call.allele_indices
+
+                        elif alt_dist < orig_dist and alt_id == id:
                             # One of our alternate representations is best, use that alternate genotype
                             alt_call = alt_record.samples[i]    
                             call.update({
@@ -104,6 +125,7 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
                                 "ODS": call["DS"],
                             })
                             call.allele_indices = alt_call.allele_indices
+                        
                         elif alt_dist < orig_dist and alt_id != id:
                             # A different variant's alternate representation is best, set our genotype to 0/0
                             alt_call = alt_record.samples[i]
