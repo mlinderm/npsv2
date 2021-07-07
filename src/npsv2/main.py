@@ -195,7 +195,7 @@ def main(cfg: DictConfig) -> None:
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
 
-        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), progress_bar=True)
+        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), classifier_path=hydra.utils.to_absolute_path(cfg.refine.classifier_path), progress_bar=True)
 
 if __name__ == "__main__":
     main()
