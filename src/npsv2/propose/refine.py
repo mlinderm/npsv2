@@ -20,20 +20,23 @@ def _record_to_rows(record, orig_min_dist):
     rows = []
     for i, call in enumerate(record.samples.itervalues()):
         distances = call["DS"]
-        rows.append(pd.DataFrame({
-            "ID": record.id,
-            "POS": int(record.pos),
-            "END": record.stop,
-            "ORIGINAL": record.info.get(ORIGINAL_KEY, None),
-            "SV": record.info.get(ORIGINAL_KEY, record.id),
-            "SAMPLE": i,
-            "GT":  "/".join(map(str, call.allele_indices)),
-            "ORIGINAL_MIN": orig_min_dist[i],
-            "HOMO_REF_DIST": distances[0],
-            "HET_DIST": distances[1],
-            "HOMO_ALT_DIST": distances[2],
-            "DHFFC": call["DHFFC"],
-        },index=[0]))
+        # There might be multiple original entries
+        originals = np.unique(np.atleast_1d(record.info.get(ORIGINAL_KEY, None)))
+        for original in originals:
+            rows.append(pd.DataFrame({
+                "ID": record.id,
+                "POS": int(record.pos),
+                "END": record.stop,
+                "ORIGINAL": original,
+                "SV": original or record.id,
+                "SAMPLE": i,
+                "GT":  "/".join(map(str, call.allele_indices)),
+                "ORIGINAL_MIN": orig_min_dist[i],
+                "HOMO_REF_DIST": distances[0],
+                "HET_DIST": distances[1],
+                "HOMO_ALT_DIST": distances[2],
+                "DHFFC": call["DHFFC"],
+            },index=[0]))
     return pd.concat(rows, ignore_index=True)
 
 
@@ -150,7 +153,10 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
                 record.translate(dst_header)
                 
                 for i, call in enumerate(record.samples.itervalues()):
-                    possible_calls = variant_table.get_group((id, i))
+                    possible_calls = variant_table.get_group((id, i)).reset_index(drop=True)
+
+                    # with pd.option_context('display.max_rows', None, 'display.max_columns', None): 
+                    #     print(possible_calls)
 
                     if possible_calls.shape[0] == 1:
                         # No alternate record to update with
