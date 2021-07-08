@@ -1,2 +1,8 @@
 #@package refine
 classifier_path: ???
+simple_repeats_path: ???
+max_propose_length: 1000
+min_consensus_length: 4
+peak_finding_flank: 5
+all_alignments: false
+max_proposals: 10

@@ -192,6 +192,12 @@ def main(cfg: DictConfig) -> None:
             hydra.utils.to_absolute_path(cfg.output),
             progress_bar=True,
         )
+    
+    elif cfg.command == "propose":
+        from .propose.propose import propose_vcf
+
+        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), repeats_bed_path=hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path))
+    
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
 
