@@ -1,5 +1,6 @@
 import argparse
 from ..simulation import filter_reads_gc, filter_reads_gnomad
+from ..propose.refine import train_model
 
 def main():
     parser = argparse.ArgumentParser(
@@ -42,12 +43,27 @@ def main():
         "-i", "--input", help="Input SAM file.", type=str, dest="input", required=True
     )
 
+    parser_refinetrain = subparsers.add_parser(
+        "refine_train", help="train model for refine with RF"
+    )
+    parser_refinetrain.add_argument(
+        "-i", "--input", help="Input VCF file.", type=str, required=True
+    )
+    parser_refinetrain.add_argument(
+        "-o", "--output", help="Specify output file", type=str, required=True
+    )
+    parser_refinetrain.add_argument(
+        "-p", "--pbsv", help="Input PBSV file.", type=str, required=True
+    )
+
     args = parser.parse_args()
 
     if args.command == "gc_covg":
         filter_reads_gc(args.stats_path, args.fasta_path, args.input, "/dev/stdout")
     elif args.command == "gnomad_covg":
         filter_reads_gnomad(args.covg_path, args.input, "/dev/stdout")
+    elif args.command == "refine_train":
+        train_model(args.input, args.pbsv, args.output)
 
 if __name__ == "__main__":
     main()

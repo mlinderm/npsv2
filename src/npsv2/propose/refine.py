@@ -6,6 +6,10 @@ import sklearn
 from tqdm import tqdm
 from ..variant import Variant
 from ..range import Range, RangeTree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import precision_recall_fscore_support
+from imblearn.under_sampling import RandomUnderSampler
+import joblib
 
 ORIGINAL_KEY = "ORIGINAL"
 
@@ -53,23 +57,8 @@ def _gt_to_alleles(gt):
     # TODO: Handle phased genotypes
     return list(map(int, gt.split("/")))
 
-
-def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include_orig_ref=True, merge_blocks=True, include_orig_in_block=False, classifier_path=None):
-    # Include reference genotype for original variant or not in minimum calculation
-    orig_start_idx = 0 if include_orig_ref else 1
-    
+def _vcf_to_table(vcf_path):
     with pysam.VariantFile(vcf_path) as src_vcf_file:
-        # Create header for destination file
-        src_header = src_vcf_file.header
-        dst_header = src_header.copy()
-        dst_header.add_line('##FORMAT=<ID=CL,Number=1,Type=String,Description="Call location used for genotype">')
-        dst_header.add_line('##FORMAT=<ID=OGT,Number=1,Type=String,Description="Genotype for the original variant">')
-        dst_header.add_line('##FORMAT=<ID=ODS,Number=G,Type=Float,Description="Distance between real and simulated data for the original variant">')
-        dst_header.add_line('##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">')
-
-
-        num_samples = len(dst_header.samples)
-
         original_records = {}
         alternate_records = {}
 
@@ -97,6 +86,53 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
         table = pd.concat(rows, ignore_index=True)
 
         _add_derived_features(table)
+    
+    return table, original_records, alternate_records
+
+def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include_orig_ref=True, merge_blocks=True, include_orig_in_block=False, classifier_path=None):
+    # Include reference genotype for original variant or not in minimum calculation
+    orig_start_idx = 0 if include_orig_ref else 1
+    
+    with pysam.VariantFile(vcf_path) as src_vcf_file:
+        # Create header for destination file
+        src_header = src_vcf_file.header
+        dst_header = src_header.copy()
+        dst_header.add_line('##FORMAT=<ID=CL,Number=1,Type=String,Description="Call location used for genotype">')
+        dst_header.add_line('##FORMAT=<ID=OGT,Number=1,Type=String,Description="Genotype for the original variant">')
+        dst_header.add_line('##FORMAT=<ID=ODS,Number=G,Type=Float,Description="Distance between real and simulated data for the original variant">')
+        dst_header.add_line('##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">')
+
+
+        num_samples = len(dst_header.samples)
+
+        # original_records = {}
+        # alternate_records = {}
+
+        # for record in src_vcf_file:
+        #     if ORIGINAL_KEY not in record.info:
+        #         assert record.id and record.id not in original_records, "Duplicate original variants"
+        #         original_records[record.id] = record
+        #     else:
+        #         originals = record.info[ORIGINAL_KEY]
+        #         for original in originals:
+        #             if original in alternate_records:
+        #                 alternate_records[original].append(record)
+        #             else:
+        #                 alternate_records[original] = [record]
+
+        
+        # rows = []
+        # for id, original_record in original_records.items():
+        #     # Determine minimum "original" distance for each sample
+        #     orig_min_dist = [np.min(call["DS"]) for call in original_record.samples.itervalues()]
+
+        #     rows.append(_record_to_rows(original_record, orig_min_dist))
+        #     for alt_record in alternate_records.get(id, []):
+        #         rows.append(_record_to_rows(alt_record, orig_min_dist))
+        # table = pd.concat(rows, ignore_index=True)
+
+        # _add_derived_features(table)
+        table, *_ = _vcf_to_table(vcf_path)
 
         # Load the "refine" classifier
         clf = joblib.load(classifier_path)
@@ -227,6 +263,75 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
                 #             call.allele_indices = [0, 0]
                     
                 dst_vcf_file.write(record)
+
+def train_model(vcf_path: str, pbsv_file: str, output_path: str):
+    #create table to train model and return saved model
+    table, *_ = _vcf_to_table(vcf_path)
+    
+    FEATURES_VALS = ["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "BIG CONF", "SMALL CONF", "MIN", "DIFF"]
+    FEATURES = ["ID", "ORIGINAL", "GT", "POS", "END", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "BIG CONF", "SMALL CONF", "MIN", "DIFF", "SV"]
+
+    pbsv_table = pd.read_csv(pbsv_file, sep='\t')
+    pbsv_table.columns = ['ID', 'ORIGINAL', 'POS', 'END', 'MATCHGT']
+
+    merge_table_prop = pd.merge(table, pbsv_table, on=["ORIGINAL","POS","END"], how = "left")
+    merge_table_prop = merge_table_prop.drop('ID_y', axis=1)
+    merge_table_prop = merge_table_prop.rename(columns={'ID_x':'ID'})
+
+    merge_table_original = pd.merge(table, pbsv_table, on=["ID","POS","END"], how = "left")
+    merge_table_original = merge_table_original.drop('ORIGINAL_y', axis=1)
+    merge_table_original = merge_table_original.rename(columns={'ORIGINAL_x':'ORIGINAL'})
+
+    train_table = pd.merge(merge_table_original, merge_table_prop, on = FEATURES)
+    train_table['PBSV'] = (train_table.MATCHGT_x == True) | (train_table.MATCHGT_y == True)
+    train_table = train_table.drop(columns=['MATCHGT_x','MATCHGT_y'], axis=1)
+
+    train_sorted = train_table.sort_values(by = 'SV').reset_index()
+    train_input = train_sorted[FEATURES_VALS]
+    train_output = train_sorted['PBSV']
+
+    #our own undersample, includes a false for every true with at least one false
+    true_table = train_table[train_table["PBSV"] == True]
+    undersampled_df = true_table
+    zeros = 0
+    for sv in true_table['SV']:
+        filtered_table = train_table[train_table['SV'] == sv]
+        filtered_table = filtered_table[filtered_table['PBSV'] == False]
+        if(len(filtered_table.index) > 0):
+            row = filtered_table.iloc[0]
+            undersampled_df = undersampled_df.append(row)
+        else:
+            zeros += 1
+
+    merge_with_sample = pd.merge(train_table, undersampled_df, how = "left", on = train_table.columns.values.tolist(), indicator = "EXIST")
+    unsampled_false_table = merge_with_sample[merge_with_sample['EXIST'] == 'left_only']
+    false_samples = unsampled_false_table.sample(n = zeros)
+    undersampled_df = pd.concat([undersampled_df, false_samples])
+
+    #first training to select hard falses
+    clf = RandomForestClassifier(n_estimators = 100, class_weight = "balanced")
+    clf.fit(undersampled_df[FEATURES_VALS], undersampled_df['PBSV'])
+    train_sorted.loc[:,'PROBFALSE'] = (clf.predict_proba(train_sorted[FEATURES_VALS]))[:, 0]
+    train_df_true = train_sorted[train_sorted['PBSV'] == True]
+    train_df_false = train_sorted[train_sorted['PBSV'] == False]
+    train_df_hardfalse = train_df_false.groupby('SV').min('PROBFALSE')
+    train_df = pd.concat([train_df_true, train_df_hardfalse])
+
+    hardfalse_train_input = train_df[FEATURES]
+    hardfalse_train_output = train_df['PBSV']
+
+    #second random undersampling for hard falses
+    rus = RandomUnderSampler()
+    x_res, y_res = rus.fit_resample(hardfalse_train_input, hardfalse_train_output)
+    undersampled_hardfalse = x_res.merge(y_res, left_index = True, right_index = True)
+
+    #train on hard falses
+    undersampled_rand = undersampled_hardfalse.sample(frac=1)
+    clf = RandomForestClassifier(n_estimators = 100, class_weight = "balanced")
+    clf.fit(undersampled_rand[FEATURES_VALS], undersampled_rand['PBSV'])
+
+    #save model
+    joblib.dump(clf, output_path, compress=3)
 
 
 
