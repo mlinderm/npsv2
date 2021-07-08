@@ -132,7 +132,7 @@ def refine_vcf(cfg, vcf_path: str, output_path: str, progress_bar=False, include
         # table = pd.concat(rows, ignore_index=True)
 
         # _add_derived_features(table)
-        table, *_ = _vcf_to_table(vcf_path)
+        table, original_records, alternate_records = _vcf_to_table(vcf_path)
 
         # Load the "refine" classifier
         clf = joblib.load(classifier_path)
