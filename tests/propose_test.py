@@ -18,31 +18,58 @@ def tearDownModule():
 class ProposeTestSuite(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=["reference=/data/human_g1k_v37.fasta",])
+        self.tempdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
 
     @unittest.skipUnless(
         os.path.exists("/data/human_g1k_v37.fasta") and os.path.exists("/data/simple_repeats.b37.bed.gz"),
         "Reference genome not available",
     )
     def test_propose(self):
+        output_path = os.path.join(self.tempdir.name, "test.vcf")
         propose.propose_vcf(
-            self.cfg, os.path.join(FILE_DIR, "propose_input.vcf"), "/dev/stdout", "/data/simple_repeats.b37.bed.gz"
+            self.cfg, os.path.join(FILE_DIR, "propose_input.vcf"), output_path, "/data/simple_repeats.b37.bed.gz"
         )
+        self.assertTrue(os.path.exists(output_path))
 
 
 class RefineTestSuite(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[])
+        self.tempdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
 
     def test_generate_rows_from_record(self):
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "refine_input.vcf")))
-        table = refine._record_to_rows(record)
+        table = refine._record_to_rows(record, [0.1])
         self.assertEqual(table.shape[0], 1)  # VCF has only one sample (thus one row)
 
     def test_refine(self):
+        output_path = os.path.join(self.tempdir.name, "test.vcf")
         refine.refine_vcf(
             self.cfg,
             os.path.join(FILE_DIR, "refine_input.vcf"),
-            "/dev/null",
+            output_path,
             classifier_path=os.path.join(FILE_DIR, "refineML_model.joblib"),
         )
+        self.assertTrue(os.path.exists(output_path))
+
+
+class RefineTrainTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_train_refine_model(self):
+        model_path = os.path.join(self.tempdir.name, "test.joblib")
+        refine.train_model(
+            os.path.join(FILE_DIR, "refine_input.vcf"), os.path.join(FILE_DIR, "refine_pbsv.tsv"), model_path
+        )
+        self.assertTrue(os.path.exists(model_path))
 
