@@ -105,12 +105,16 @@ def refine_vcf(
     cfg,
     vcf_path: str,
     output_path: str,
+    classifier_path: str = None,
     progress_bar=False,
     include_orig_ref=True,
     merge_blocks=True,
     include_orig_in_block=False,
-    classifier_path=None,
+    
 ):
+    if cfg.refine.select_algo not in { "original", "ml", "min_distance" }:
+        raise ValueError(f"{cfg.refine.select_algo} is not a supported selection algorithm")
+    
     # Include reference genotype for original variant or not in minimum calculation
     orig_start_idx = 0 if include_orig_ref else 1
 
@@ -129,10 +133,11 @@ def refine_vcf(
 
         table, original_records, _ = _vcf_to_table(src_vcf_file)
 
-        # Load the "refine" classifier
-        clf = joblib.load(classifier_path)
-        table["PROBTRUE"] = clf.predict_proba(table[FEATURES])[:, 1]
-
+        if cfg.refine.select_algo == "ml":
+            # Load the "refine" classifier and predict best proposal
+            clf = joblib.load(classifier_path)
+            table["PROBTRUE"] = clf.predict_proba(table[FEATURES])[:, 1]
+         
         # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
         #     print(table)
 
@@ -182,6 +187,11 @@ def refine_vcf(
             for id, record in original_records.items():
                 record.translate(dst_header)
 
+                if cfg.refine.select_algo == "original":
+                    dst_vcf_file.write(record)  # Just use original SV genotype without trying to refine
+                    continue
+
+
                 for i, call in enumerate(record.samples.itervalues()):
                     possible_calls = variant_table.get_group((id, i)).reset_index(drop=True)
 
@@ -193,11 +203,13 @@ def refine_vcf(
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
                         continue
                     else:
-                        # min_dist_idx = np.unravel_index(np.argmin(possible_calls[["HOMO_REF_DIST","HET_DIST","HOMO_ALT_DIST"]]), (possible_calls.shape[0], 3))
-                        # alt_row = possible_calls.iloc[min_dist_idx[0], :]
+                        if cfg.refine.select_algo == "ml":
+                            max_prob_idx = possible_calls.PROBTRUE.idxmax()
+                            alt_row = possible_calls.iloc[max_prob_idx, :]
+                        else:
+                            min_dist_idx = np.unravel_index(np.argmin(possible_calls[["HOMO_REF_DIST","HET_DIST","HOMO_ALT_DIST"]]), (possible_calls.shape[0], 3))
+                            alt_row = possible_calls.iloc[min_dist_idx[0], :]
 
-                        max_prob_idx = possible_calls.PROBTRUE.idxmax()
-                        alt_row = possible_calls.iloc[max_prob_idx, :]
                         if not pd.isna(alt_row.ORIGINAL):
                             call.update(
                                 {

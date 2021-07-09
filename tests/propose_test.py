@@ -2,6 +2,7 @@ import os, tempfile, unittest
 import pysam
 import hydra
 from omegaconf import OmegaConf
+from parameterized import parameterized
 from npsv2.propose import propose, refine
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -17,7 +18,10 @@ def tearDownModule():
 
 class ProposeTestSuite(unittest.TestCase):
     def setUp(self):
-        self.cfg = hydra.compose(config_name="config", overrides=["reference=/data/human_g1k_v37.fasta",])
+        self.cfg = hydra.compose(
+            config_name="config",
+            overrides=["reference=/data/human_g1k_v37.fasta"],
+        )
         self.tempdir = tempfile.TemporaryDirectory()
 
     def tearDown(self):
@@ -47,11 +51,13 @@ class RefineTestSuite(unittest.TestCase):
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "refine_input.vcf")))
         table = refine._record_to_rows(record, [0.1])
         self.assertEqual(table.shape[0], 1)  # VCF has only one sample (thus one row)
-
-    def test_refine(self):
+    
+    @parameterized.expand([("original",), ("ml",), ("min_distance",)])
+    def test_refine(self, select_algo):
+        cfg = OmegaConf.merge(self.cfg, { "refine": { "select_algo": select_algo }})
         output_path = os.path.join(self.tempdir.name, "test.vcf")
         refine.refine_vcf(
-            self.cfg,
+            cfg,
             os.path.join(FILE_DIR, "refine_input.vcf"),
             output_path,
             classifier_path=os.path.join(FILE_DIR, "refineML_model.joblib"),

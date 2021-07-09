@@ -1,5 +1,6 @@
 #@package refine
 classifier_path: ???
+select_algo: ml
 simple_repeats_path: ???
 max_propose_length: 1000
 min_consensus_length: 4

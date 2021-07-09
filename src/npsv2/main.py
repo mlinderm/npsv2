@@ -196,12 +196,15 @@ def main(cfg: DictConfig) -> None:
     elif cfg.command == "propose":
         from .propose.propose import propose_vcf
 
-        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), repeats_bed_path=hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path))
+        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path))
     
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
-
-        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), classifier_path=hydra.utils.to_absolute_path(cfg.refine.classifier_path), progress_bar=True)
+        if cfg.refine.select_algo == "ml" and not OmegaConf.is_missing(cfg, "refine.classifier_path"):
+            classifier_path = hydra.utils.to_absolute_path(cfg.refine.classifier_path)
+        else:
+            classifier_path = None
+        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), classifier_path=classifier_path, progress_bar=True)
 
 if __name__ == "__main__":
     main()

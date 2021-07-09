@@ -20,23 +20,15 @@ def ac_to_genotype(ac):
 
 def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_baseq=15, min_anchor=11):
     """Compute coverage"""
-    if reference:
-        depth_result = pysam.depth(  # pylint: disable=no-member
-            "-Q", str(min_mapq),
-            "-q", str(min_baseq),
-            "-l", str(min_anchor),
-            "-r", str(region),
-            "--reference", reference,
-            input_bam,
-        )
-    else:
-        depth_result = pysam.depth(  # pylint: disable=no-member
-            "-Q", str(min_mapq),
-            "-q", str(min_baseq),
-            "-l", str(min_anchor),
-            "-r", str(region),
-            input_bam,
-        )
+    depth_result = pysam.depth(  # pylint: disable=no-member
+        "-Q", str(min_mapq),
+        "-q", str(min_baseq),
+        "-l", str(min_anchor),
+        "-r", str(region),
+        "--reference", reference,
+        input_bam,
+    )
+    
     # start, end are 0-indexed half-open coordinates
     region_length = region.length
     if len(depth_result) > 0 and region_length > 0:

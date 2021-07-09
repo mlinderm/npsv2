@@ -8,3 +8,5 @@ ray>=1.2.0
 hydra-core>=1.1
 intervaltree
 dataclasses
+scipy>=1.2.0
+parameterized
