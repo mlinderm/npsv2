@@ -51,9 +51,9 @@ def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str
         return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size, **addl_args)
 
 
-def _fetch_reads(read_path: str, fetch_region: Range) -> FragmentTracker:
+def _fetch_reads(read_path: str, fetch_region: Range, reference: str = None) -> FragmentTracker:
     fragments = FragmentTracker()
-    with pysam.AlignmentFile(read_path) as alignment_file:
+    with pysam.AlignmentFile(read_path, reference_filename=reference) as alignment_file:
         for read in alignment_file.fetch(
             contig=fetch_region.contig, start=fetch_region.start, stop=fetch_region.end
         ):
@@ -132,8 +132,8 @@ class ImageGenerator:
             image_tensor = image_tensor.numpy()
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
-        channels = 3*[ALT_PAIRED_CHANNEL]
+        #channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
+        channels = 3*[ALLELE_CHANNEL]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -146,20 +146,25 @@ class SingleImageGenerator(ImageGenerator):
         # TODO: Handle odd-sized variants
         # Construct a single "padded" region to render as the pileup image
         variant_region = variant.reference_region
+        #variant_region = Range("chr2",197462,198527)
         padding = max((self._cfg.pileup.image_width - variant_region.length + 1) // 2, self._cfg.pileup.variant_padding)
         return variant_region.expand(padding)
 
 
-    def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, image_tensor):
-        image_tensor[:self._cfg.pileup.variant_band_height, :, ALIGNED_CHANNEL] = self._cfg.pileup.aligned_base_pixel
-        image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = min(self._cfg.pileup.variant_mapq / self._cfg.pileup.max_mapq, 1.0) * MAX_PIXEL_VALUE
+    def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, region: Range, image_tensor):
+        image_tensor[:self._cfg.pileup.variant_band_height, :, ALIGNED_CHANNEL] = self._align_pixel(BaseAlignment.MATCH)
+        image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_mapq, self._cfg.pileup.max_mapq)
         
         ref_zscore, alt_zscore = abs(variant.length_change() / sample.std_insert_size), 0
         image_tensor[:self._cfg.pileup.variant_band_height, :, REF_PAIRED_CHANNEL] = self._zscore_pixel(ref_zscore)
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALT_PAIRED_CHANNEL] = self._zscore_pixel(alt_zscore)
-
+                        
+        image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250 #self._allele_pixel(read.allele)
+        image_tensor[:self._cfg.pileup.variant_band_height, :, STRAND_CHANNEL] = self._strand_to_pixel[Strand.POSITIVE]
+        image_tensor[:self._cfg.pileup.variant_band_height, :, BASEQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_baseq, self._cfg.pileup.max_baseq)
+      
         # Clip out the region containing the variant
-        for col_slice in pileup.region_columns(variant.reference_region):
+        for col_slice in pileup.region_columns(region, variant.reference_region):
             image_tensor[:self._cfg.pileup.variant_band_height, col_slice, :] = 0
 
     def render(self, image_tensor) -> Image:
@@ -200,7 +205,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
-        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
 
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = Pileup(regions)
@@ -231,7 +236,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
-            self._add_variant_strip(variant, sample, pileup, image_tensor)
+            self._add_variant_strip(variant, sample, pileup, regions, image_tensor)
 
         # Add pileup bases to the image
         # This is the slowest portion of image generation as we iterate through every valid pixel in the image, 
@@ -283,7 +288,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
-        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
 
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = ReadPileup(regions)
@@ -317,7 +322,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
-            self._add_variant_strip(variant, sample, pileup, image_tensor)
+            self._add_variant_strip(variant, sample, pileup, regions, image_tensor)
 
         # Add pileup bases to the image (downsample reads based on simple coverage-based heuristic)
         row_idxs = np.full((regions.length,), self._cfg.pileup.variant_band_height)
@@ -353,7 +358,7 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
-        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank))
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
     
         pileup = FragmentPileup([regions])
         for fragment in fragments:
@@ -442,7 +447,7 @@ class WindowedReadImageGenerator(WindowedImageGenerator):
         # Determine the outer extent of all windows
         region = functools.reduce(lambda a, b: a.union(b), regions)
 
-        fragments = _fetch_reads(read_path, region.expand(self._cfg.pileup.fetch_flank))
+        fragments = _fetch_reads(read_path, region.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
 
         pileup = ReadPileup(regions)
 
@@ -636,7 +641,8 @@ def make_vcf_examples(
                 raise ValueError("Sample identifier is not present in the file")
             logging.info("Using %s genotypes as labels (VCF sample index %d)", sample_or_label, sample_index)
             vcf_file.subset_samples([sample_or_label])
-            label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(sample_index))
+            # After subsetting there is only one sample (so index is always 0)
+            label_extractor = lambda variant: _genotype_to_label(variant.genotype_indices(0))
         else:
             if sample_or_label is not None:
                 logging.info("Using fixed AC=%d as label", sample_or_label)
@@ -794,7 +800,7 @@ def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulat
     features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, margin=margin, max_replicates=max_replicates)
 
 
-def load_example_dataset(filenames, with_label=False, with_simulations=False) -> tf.data.Dataset:
+def load_example_dataset(filenames, with_label=False, with_simulations=False, num_parallel_reads=None) -> tf.data.Dataset:
     if isinstance(filenames, str):
         filenames = [filenames]
     assert len(filenames) > 0
@@ -835,7 +841,11 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False) ->
         else:
             return features, None
 
-    return tf.data.TFRecordDataset(filenames=filenames, compression_type=_filename_to_compression(filenames[0])).map(
-        map_func=_process_input
-    )
+    compression = _filename_to_compression(filenames[0])
+    num_parallel_calls = num_parallel_reads if num_parallel_reads is None or num_parallel_reads == tf.data.experimental.AUTOTUNE else min(len(filenames), num_parallel_reads)
+    return tf.data.Dataset.from_tensor_slices(filenames).interleave(lambda filename: tf.data.TFRecordDataset(filename, compression_type=compression).map(_process_input, num_parallel_calls=1), cycle_length=len(filenames), num_parallel_calls=num_parallel_calls)
+    
+    # return tf.data.TFRecordDataset(filenames=filenames, compression_type=_filename_to_compression(filenames[0]), num_parallel_reads=num_parallel_reads).map(
+    #     map_func=_process_input
+    # )
 

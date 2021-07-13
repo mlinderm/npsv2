@@ -186,6 +186,24 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
 
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    def test_generate_with_variant_strip(self,  mock_ref):
+        # Reconfigure with variant band
+        cfg = OmegaConf.merge(self.cfg, { "pileup": { "variant_band_height": 5 }})
+        generator = hydra.utils.instantiate(self.cfg.generator, cfg=cfg)
+        
+        image_tensor = generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, self.generator.image_shape)
+        
+        # The first 5 rows should all be identical
+        for i in range(1,5):
+            self.assertTrue(np.array_equal(image_tensor[i], image_tensor[0]))
+
+        png_path = "test.png" #os.path.join(self.tempdir.name, "test.png")
+        image = self.generator.render(image_tensor)
+        image.save(png_path)
+        self.assertTrue(os.path.exists(png_path))
+
 
 class SingleFragmentImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):

@@ -1,5 +1,6 @@
 import argparse
 from ..simulation import filter_reads_gc, filter_reads_gnomad
+from ..multiallelic import filter_nonref
 
 def main():
     parser = argparse.ArgumentParser(
@@ -42,12 +43,30 @@ def main():
         "-i", "--input", help="Input SAM file.", type=str, dest="input", required=True
     )
 
+    parser_filter = subparsers.add_parser(
+        "filter_nonref", help="Filter VCF to just non-reference genotypes in SV regions"
+    )
+    parser_filter.add_argument(
+        "-i", "--input", help="Input VCF file.", type=str, required=True
+    )
+    parser_filter.add_argument(
+        "-o", "--output", help="Output VCF file.", default="/dev/stdout"
+    )
+    parser_filter.add_argument(
+        "--sample", help="Sample genotypes to use in filter", type=str, required=True
+    )
+    parser_filter.add_argument(
+        "--flank", help="Flank (bp) for determining variant overlap", default=500
+    )
+
     args = parser.parse_args()
 
     if args.command == "gc_covg":
         filter_reads_gc(args.stats_path, args.fasta_path, args.input, "/dev/stdout")
     elif args.command == "gnomad_covg":
         filter_reads_gnomad(args.covg_path, args.input, "/dev/stdout")
+    elif args.command == "filter_nonref":
+        filter_nonref(args.input, args.output, args.sample, flank=args.flank)
 
 if __name__ == "__main__":
     main()

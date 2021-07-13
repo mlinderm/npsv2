@@ -5,6 +5,7 @@ import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
+from deeplab2.model.encoder import axial_resnet_instances
 
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 
@@ -76,6 +77,26 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
     
     return base_model
 
+def _get_backbone(name, input_shape):
+    backbone = axial_resnet_instances.get_model("resnet50", backbone_layer_multiplier=1, bn_layer=tf.keras.layers.BatchNormalization, conv_kernel_weight_decay=0.0001)
+     
+    image = layers.Input(input_shape) 
+    output = backbone(image)
+    embedding = layers.GlobalAveragePooling2D()(output["res5"])
+    model = tf.keras.Model(inputs=image, outputs=embedding)
+    return model
+
+
+class AxialWrapperLayer(layers.Layer):
+    def __init__(self, encoder):
+        super(AxialWrapperLayer, self).__init__()
+        self.encoder = encoder
+
+    def call(self, inputs):
+        return self.encoder(inputs)
+
+    def compute_output_shape(self, input_shape):
+        return (None, 2048)
 
     # base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
    
@@ -131,6 +152,7 @@ def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normali
     # Set training=False to avoid updates to non-trainable BatchNorm parameters as described at
     # https://www.tensorflow.org/guide/keras/transfer_learning#build_a_model)
     base_model = _base_model(input_shape, weights=weights, trainable=base_trainable or weights is None)
+    #base_model = AxialWrapperLayer(_get_backbone("test", input_shape))
     embedding = base_model(image, training=(None if weights is None else False))
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
@@ -181,7 +203,7 @@ class GenotypingModel:
         if cfg.training.log_dir:
             log_dir = os.path.join(cfg.training.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
             logging.info("Logging TensorBoard data to: %s", log_dir)
-            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, write_graph=False, histogram_freq=1, profile_batch=(10,15))
             callbacks.append(tensorboard_callback)
 
         self._model.fit(
@@ -328,6 +350,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         return (dataset.shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
             .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch, block_length=3)
             .batch(3*cfg.training.variants_per_batch)
+            .prefetch(tf.data.AUTOTUNE)
         )
    
 
@@ -388,7 +411,8 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 class JointEmbeddingsModel(SimulatedEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
         super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
-       
+
+    
     def _train_input(self, cfg, dataset):
         def _variant_to_training(features, original_label):
             support_shape = tf.shape(features["sim/images"])
@@ -412,11 +436,42 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
         
         # Interleave SVs into the batch
         return (
-            dataset.shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
-            .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch)
+            dataset.filter(lambda _, original_label: original_label is not None)
+            .shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
+            .interleave(self._variant_to_training, cycle_length=cfg.training.variants_per_batch, num_parallel_calls=cfg.threads)
             .batch(cfg.training.variants_per_batch)
+            .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )
 
+    def _test_input(self, cfg, dataset, batch_size):
+        def _variant_to_test(features, original_label):
+            support_shape = tf.shape(features["sim/images"])
+            support_replicates = support_shape[1]
+            tf.debugging.assert_greater(support_replicates, 0)
+
+            queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
+            queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
+
+            # Swap AC and replicates dimensions, so we can pass triples of all genotypes to the model
+            support = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+            support = tf.transpose(support, perm=(1, 0) + tuple(range(2, 2+len(self.image_shape))))
+            
+            one_hot_label = original_label if original_label is not None else -1
+        
+            return tf.data.Dataset.from_tensor_slices(({ 
+                "query": queries,
+                "support": support,
+            }, None))
+
+            # return tf.data.Dataset.from_tensor_slices(({ 
+            #     "query": queries,
+            #     "support": support,
+            # }, {
+            #     "distances": tf.tile(tf.one_hot([one_hot_label], depth=3, dtype=tf.float32), (support_replicates, 1)),
+            #     "genotypes": tf.repeat(original_label, support_replicates),
+            # }))
+
+        return dataset.flat_map(_variant_to_test).batch(batch_size)
 
 class EncoderWrapperLayer(layers.Layer):
       def __init__(self, encoder):

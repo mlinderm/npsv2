@@ -80,12 +80,15 @@ class Variant(object):
     @classmethod
     def from_pysam(cls, record):
         # TODO: Actually detect SV kind
-        assert record.info["SVTYPE"] == "DEL"
+        svtype = record.info["SVTYPE"]
+        if not isinstance(svtype, str):
+            svtype = svtype[0]
+        assert svtype == "DEL"
         return DeletionVariant(record)
 
     @property
     def name(self):
-        return f"{self.contig}_{self.start + 1}_{self.end}_{self._record.info['SVTYPE']}"
+        return f"{self.contig}_{self.start + 1}_{self.end}_DEL"
 
     @property
     def is_deletion(self):
@@ -147,6 +150,8 @@ class Variant(object):
         return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
 
     def genotype_indices(self, index_or_id):
+        if index_or_id > len(self._record.samples):
+          print(self._record)
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
 

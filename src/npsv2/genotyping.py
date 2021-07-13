@@ -101,8 +101,10 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
 
                     # Predict genotype
                     dataset = tf.data.Dataset.from_tensors((features, None))
-                    genotypes, distances, *_  = model.predict(cfg, dataset)
-                    
+                    _, distances, *_  = model.predict(cfg, dataset)
+                    distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
+                    genotypes = tf.nn.softmax(-distances)
+                    #print(distances, tf.math.reduce_mean(distances, axis=0), tf.nn.softmax(-tf.math.reduce_mean(distances, axis=0)))
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     dst_samples.append({
                         "GT": ac_to_genotype(np.argmax(genotypes)),

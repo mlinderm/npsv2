@@ -456,6 +456,9 @@ class ReadPileup:
             reference_regions = [reference_regions]
         self._reads = { r:[] for r in reference_regions }
 
+    def region_columns(self, region: Range, region_item: Range):
+        return _region_columns(region, region_item)
+
     def read_columns(self, region: Range, pileup_item, ref_seq: str = None):
         if isinstance(pileup_item, PileupRead):
             assert ref_seq is None or region.length == len(ref_seq)

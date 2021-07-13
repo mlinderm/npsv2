@@ -92,7 +92,7 @@ def main(cfg: DictConfig) -> None:
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
         model = hydra.utils.instantiate(cfg.model, image_shape, replicates)
 
-        dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True)
+        dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
         model.fit(cfg, dataset)
     
         model_path = os.path.join(os.getcwd(), "model.h5")
@@ -117,6 +117,9 @@ def main(cfg: DictConfig) -> None:
         errors = 0
         rows = []
         for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
+            if original_label is None:
+                continue  # Skip invalid genotypes
+                
             # Extract metadata for the variant
             variant_proto = npsv2_pb2.StructuralVariant.FromString(features.pop("variant/encoded").numpy())
             
@@ -124,14 +127,15 @@ def main(cfg: DictConfig) -> None:
             dataset = tf.data.Dataset.from_tensors((features, original_label))
             genotypes, distances, *_  = model.predict(cfg, dataset)
 
-            if tf.math.argmax(genotypes, axis=1) != original_label.numpy() and original_label.numpy() == 0:
-                print(variant_proto, genotypes, distances)
-                errors += 1
+            # if tf.math.argmax(genotypes, axis=1) != original_label.numpy() and original_label.numpy() == 0:
+            # #if tf.math.argmax(genotypes, axis=1) == 0 and  original_label.numpy() == 1:
+            #     print(variant_proto, genotypes, distances)
+            #     errors += 1
             # if errors == 10:
             #     break
 
-            if tf.math.argmax(genotypes, axis=1) != original_label:
-                print(variant_proto, genotypes)
+            # if tf.math.argmax(genotypes, axis=1) != original_label:
+            #     print(variant_proto, genotypes)
 
             # Construct the DataFrame rows
             rows.append(pd.DataFrame({
