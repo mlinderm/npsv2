@@ -1,6 +1,7 @@
 import argparse
 from ..simulation import filter_reads_gc, filter_reads_gnomad
 from ..multiallelic import filter_nonref
+from ..propose.refine import train_model
 
 def main():
     parser = argparse.ArgumentParser(
@@ -58,6 +59,19 @@ def main():
     parser_filter.add_argument(
         "--flank", help="Flank (bp) for determining variant overlap", default=500
     )
+    
+    parser_refinetrain = subparsers.add_parser(
+        "refine_train", help="train model for refine with RF"
+    )
+    parser_refinetrain.add_argument(
+        "-i", "--input", help="Input VCF file.", type=str, required=True
+    )
+    parser_refinetrain.add_argument(
+        "-o", "--output", help="Specify output file", type=str, required=True
+    )
+    parser_refinetrain.add_argument(
+        "-p", "--pbsv", help="Input PBSV file.", type=str, required=True
+    )
 
     args = parser.parse_args()
 
@@ -67,6 +81,8 @@ def main():
         filter_reads_gnomad(args.covg_path, args.input, "/dev/stdout")
     elif args.command == "filter_nonref":
         filter_nonref(args.input, args.output, args.sample, flank=args.flank)
+    elif args.command == "refine_train":
+        train_model(args.input, args.pbsv, args.output)
 
 if __name__ == "__main__":
     main()

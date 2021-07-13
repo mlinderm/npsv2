@@ -36,7 +36,7 @@ def _is_tfrecords_file(filename: str) -> bool:
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
+    print(OmegaConf.to_yaml(cfg), file=sys.stderr)
     if cfg.command == "images":
         import ray
         from .images import vcf_to_tfrecords
@@ -196,10 +196,19 @@ def main(cfg: DictConfig) -> None:
             hydra.utils.to_absolute_path(cfg.output),
             progress_bar=True,
         )
+    
+    elif cfg.command == "propose":
+        from .propose.propose import propose_vcf
+
+        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path))
+    
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
-
-        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), progress_bar=True)
+        if cfg.refine.select_algo == "ml" and not OmegaConf.is_missing(cfg, "refine.classifier_path"):
+            classifier_path = hydra.utils.to_absolute_path(cfg.refine.classifier_path)
+        else:
+            classifier_path = None
+        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), classifier_path=classifier_path, progress_bar=True)
 
 if __name__ == "__main__":
     main()

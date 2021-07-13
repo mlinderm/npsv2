@@ -4,9 +4,9 @@ defaults:
   - simulation: augmented
   - model: joint_embeddings
   - training
-  - model_training: ${defaults.3.model}
-    optional: true
+  - optional model_training: ${model}
   - command: genotype
+  - refine
 
 threads: 1
 
