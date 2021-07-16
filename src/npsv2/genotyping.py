@@ -1,6 +1,7 @@
-import io, tempfile, typing
+import io, os, tempfile, typing
 from functools import partial
 import pysam
+import pysam.bcftools as bcftools
 import ray
 import tensorflow as tf
 import numpy as np
@@ -11,6 +12,7 @@ from .variant import Variant
 from . import images
 from . import models
 from .range import Range
+from .utilities.vcf import index_variant_file, bcftools_format
 
 VCF_HEADER_TYPES_TO_COPY = frozenset(["GENERIC", "STRUCTURED", "INFO", "FILTER", "CONTIG"])
 
@@ -46,10 +48,10 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
     ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=tempfile.gettempdir(), ignore_reinit_error=True, include_dashboard=False)
 
     # Create image generator and genotyper model
-    generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+    generator = hydra.utils.instantiate(cfg.generator, cfg)
     model = hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], 1)
 
-    with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
+    with tempfile.TemporaryDirectory() as output_dir, pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 
         # Create header for destination file
         src_header = src_vcf_file.header
@@ -113,8 +115,8 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
                         else:
                             yield (i, record)
 
-
-        with pysam.VariantFile(output_path, mode="w", header=dst_header) as dst_vcf_file:
+        unsorted_output_path = os.path.join(output_dir, "genotypes.vcf.gz")
+        with pysam.VariantFile(unsorted_output_path, mode="w", header=dst_header) as dst_vcf_file:
             # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
             # Ray gather_async ensures that examples generated in each shared are generated in order, so we
             # use a corresponding set of iterators for obtaining the associated VCF records.
@@ -142,9 +144,11 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
                     # Predict genotype
                     dataset = tf.data.Dataset.from_tensors((features, None))
                     _, distances, *_  = model.predict(cfg, dataset)
+                    #print(distances)
                     distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
                     genotypes = tf.nn.softmax(-distances)
                     #print(distances, tf.math.reduce_mean(distances, axis=0), tf.nn.softmax(-tf.math.reduce_mean(distances, axis=0)))
+                    
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     dst_samples.append({
                         "GT": ac_to_genotype(np.argmax(genotypes)),
@@ -165,3 +169,7 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
                     samples=dst_samples,
                 )
                 dst_vcf_file.write(dst_record)
+
+        # Sort output file and index (if relevant)
+        bcftools.sort("-O", bcftools_format(output_path), "-o", output_path, "-T", output_dir, unsorted_output_path, catch_stdout=False)
+        index_variant_file(output_path)

@@ -22,12 +22,13 @@ def _configure_gpu():
 
 
 def _check_shared_reference(cfg: DictConfig):
-    cfg.shared_reference = bwa_index_loaded(hydra.utils.to_absolute_path(cfg.reference))
-    if cfg.simulation.replicates > 0 and not cfg.shared_reference:
-        logging.warning(
-            "Consider loading BWA indices into shared memory before generating examples with 'bwa shm %s'",
-            cfg.reference,
-        )
+    if cfg.simulation.replicates > 0:
+        cfg.shared_reference = bwa_index_loaded(hydra.utils.to_absolute_path(cfg.reference), load=cfg.load_reference)
+        if not cfg.shared_reference:
+            logging.warning(
+                "Consider loading BWA indices into shared memory before generating examples with 'bwa shm %s'",
+                cfg.reference,
+            )
 
 
 def _is_tfrecords_file(filename: str) -> bool:
@@ -189,18 +190,24 @@ def main(cfg: DictConfig) -> None:
         # Make sure model path is absolute
         cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
 
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "genotypes.vcf.gz"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+
         genotype_vcf(
             cfg,
             hydra.utils.to_absolute_path(cfg.input),
             samples,
-            hydra.utils.to_absolute_path(cfg.output),
+            output,
             progress_bar=True,
         )
     
     elif cfg.command == "propose":
         from .propose.propose import propose_vcf
 
-        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path))
+        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path), progress_bar=True)
     
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
@@ -208,7 +215,14 @@ def main(cfg: DictConfig) -> None:
             classifier_path = hydra.utils.to_absolute_path(cfg.refine.classifier_path)
         else:
             classifier_path = None
-        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), classifier_path=classifier_path, progress_bar=True)
+        
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "genotypes.vcf.gz"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+        
+        refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), output, classifier_path=classifier_path, progress_bar=True)
 
 if __name__ == "__main__":
     main()

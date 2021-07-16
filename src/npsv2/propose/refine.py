@@ -4,11 +4,12 @@ import pysam
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from tqdm import tqdm
 
 from . import ORIGINAL_KEY
 from ..variant import Variant
 from ..range import Range, RangeTree
-
+from ..utilities.vcf import index_variant_file
 
 FEATURES = ["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "MIN", "DIFF", "BIG CONF", "SMALL CONF"]
 KLASS = "MATCHGT"
@@ -62,7 +63,7 @@ def _gt_to_alleles(gt):
     return list(map(int, gt.split("/")))
 
 
-def _vcf_to_table(src_vcf_file: pysam.VariantFile):
+def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
     """Generate Pandas table from pysam.VariantFile
 
     Args:
@@ -74,8 +75,10 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile):
     original_records = {}
     alternate_records = {}
 
-    for record in src_vcf_file:
+    for record in tqdm(src_vcf_file, desc="Reading variants into table", disable=not progress_bar, mininterval=1):
         if ORIGINAL_KEY not in record.info:
+            if not record.id or record.id in original_records:
+                continue
             assert record.id and record.id not in original_records, "Duplicate original variants"
             original_records[record.id] = record
         else:
@@ -131,7 +134,7 @@ def refine_vcf(
             '##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">'
         )
 
-        table, original_records, _ = _vcf_to_table(src_vcf_file)
+        table, original_records, _ = _vcf_to_table(src_vcf_file, progress_bar=progress_bar)
 
         if cfg.refine.select_algo == "ml":
             # Load the "refine" classifier and predict best proposal
@@ -184,7 +187,8 @@ def refine_vcf(
         variant_table = table.groupby(["SV", "SAMPLE"])
 
         with pysam.VariantFile(output_path, mode="w", header=dst_header) as dst_vcf_file:
-            for id, record in original_records.items():
+            # Since Python dictionaries iterate in insertion order, if original dictionary was sorted, so is the output
+            for id, record in tqdm(original_records.items(), desc="Refining SV description", disable=not progress_bar, mininterval=1):
                 record.translate(dst_header)
 
                 if cfg.refine.select_algo == "original":
@@ -271,6 +275,9 @@ def refine_vcf(
 
                 dst_vcf_file.write(record)
 
+        # Write index if file if compressed variant file
+        index_variant_file(output_path)
+
 
 def _supplement_false_training_examples(orig_table, matched_training, method="random"):
     """Supplement training data with additional FALSE entries, if needed, to create balanced classes
@@ -287,7 +294,7 @@ def _supplement_false_training_examples(orig_table, matched_training, method="ra
     if delta_true > 0:
         # Get FALSE examples not already included in the training data
         other_falses = orig_table.loc[orig_table.index.difference(matched_training.index)]
-        assert not other_falses[KLASS].any(), "All TRUE examples should be in downsampled training data"
+        #assert not other_falses[KLASS].any(), "All TRUE examples should be in downsampled training data"
         if method == "random":
             delta_examples = other_falses.sample(n=delta_true)
         elif method == "hard":

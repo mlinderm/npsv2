@@ -150,8 +150,6 @@ class Variant(object):
         return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
 
     def genotype_indices(self, index_or_id):
-        if index_or_id > len(self._record.samples):
-          print(self._record)
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
 

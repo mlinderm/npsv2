@@ -132,8 +132,8 @@ class ImageGenerator:
             image_tensor = image_tensor.numpy()
         # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
         # mapq as alpha)...
-        #channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
-        channels = 3*[ALLELE_CHANNEL]
+        channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
+        #channels = 3*[ALIGNED_CHANNEL]
         return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
 
 
@@ -624,7 +624,7 @@ def make_vcf_examples(
     **kwargs,
 ):
     # Create image generator based on current configuration
-    generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+    generator = hydra.utils.instantiate(cfg.generator, cfg)
     
     # Prepare random variant generator once (if specified)
     if cfg.simulation.sample_ref:
@@ -762,7 +762,7 @@ def _extract_metadata_from_first_example(filename):
 
 
 def features_to_image(cfg, features, out_path: str, with_simulations=False, margin=10, max_replicates=1):
-    generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+    generator = hydra.utils.instantiate(cfg.generator, cfg)
 
     image_tensor = features["image"]
     real_image = generator.render(image_tensor)

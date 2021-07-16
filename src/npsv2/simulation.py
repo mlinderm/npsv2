@@ -1,4 +1,4 @@
-import copy, logging, os, random, re, subprocess, tempfile
+import atexit, copy, logging, os, random, re, subprocess, tempfile
 import pysam
 import numpy as np
 from shlex import quote
@@ -73,11 +73,16 @@ class RandomVariants(object):
             assert False, "Unsupported variant type"
 
 
-def bwa_index_loaded(reference: str) -> str:
+def _bwa_index_unload():
+    subprocess.run(["bwa","shm","-d"], shell=True, check=True)
+
+
+def bwa_index_loaded(reference: str, load=False) -> str:
     """Check if bwa index is loaded in shared memory
 
     Args:
         reference (str): Path to reference file
+        load (bool, optional): Load index into shared memory if not present. Defaults to False.
 
     Returns:
         str: Shared reference name if index is loaded into shared memory, None otherwise
@@ -87,7 +92,13 @@ def bwa_index_loaded(reference: str) -> str:
     for index in indices.split("\n"):
         if index.startswith(shared_name):
             return shared_name
-    return None
+    if load:
+        logging.info("Loading BWA index for %s into shared memory", reference)
+        subprocess.run(f"bwa shm {reference}", shell=True, check=True)
+        atexit.register(_bwa_index_unload)  # Register handler to unload reference if needed
+        return shared_name
+    else:
+        return None
 
 
 def _art_read_length(read_length, profile):
