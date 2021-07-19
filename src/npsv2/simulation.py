@@ -74,7 +74,7 @@ class RandomVariants(object):
 
 
 def _bwa_index_unload():
-    subprocess.run(["bwa","shm","-d"], shell=True, check=True)
+    subprocess.run("bwa shm -d", shell=True, check=True)
 
 
 def bwa_index_loaded(reference: str, load=False) -> str:

@@ -199,9 +199,6 @@ def refine_vcf(
                 for i, call in enumerate(record.samples.itervalues()):
                     possible_calls = variant_table.get_group((id, i)).reset_index(drop=True)
 
-                    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-                    #     print(possible_calls)
-
                     if possible_calls.shape[0] == 1:
                         # No alternate record to update with
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
@@ -211,10 +208,12 @@ def refine_vcf(
                             max_prob_idx = possible_calls.PROBTRUE.idxmax()
                             alt_row = possible_calls.iloc[max_prob_idx, :]
                         else:
+                            # Only select an alternate row if the "closest" genotype is non-reference. Proposals distant from the true
+                            # SV may (should) be very similar to homozygous reference and so would not be good candidates for "switching"
                             min_dist_idx = np.unravel_index(np.argmin(possible_calls[["HOMO_REF_DIST","HET_DIST","HOMO_ALT_DIST"]]), (possible_calls.shape[0], 3))
-                            alt_row = possible_calls.iloc[min_dist_idx[0], :]
+                            alt_row = possible_calls.iloc[min_dist_idx[0], :] if min_dist_idx[1] > 0 else None
 
-                        if not pd.isna(alt_row.ORIGINAL):
+                        if alt_row is not None and not pd.isna(alt_row.ORIGINAL):
                             call.update(
                                 {
                                     "DS": [alt_row.HOMO_REF_DIST, alt_row.HET_DIST, alt_row.HOMO_ALT_DIST],
