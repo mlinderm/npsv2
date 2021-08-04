@@ -41,7 +41,7 @@ def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_b
         return (0., 0., region_length)
 
 
-def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=False,):
+def genotype_vcf(cfg, vcf_path: str, samples, model_paths: typing.Sequence[str], output_path: str, progress_bar=False,):
     assert cfg.simulation.replicates >= 1, "At least one replicate is required for genotyping"
     
     # We currently just use ray for the CPU-side work, specifically simulating the SVs
@@ -49,7 +49,7 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
 
     # Create image generator and genotyper model
     generator = hydra.utils.instantiate(cfg.generator, cfg)
-    model = hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], 1)
+    models = [hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], cfg.simulation.replicates, model_path=path) for path in model_paths]
 
     with tempfile.TemporaryDirectory() as output_dir, pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 
@@ -135,15 +135,17 @@ def genotype_vcf(cfg, vcf_path: str, samples, output_path: str, progress_bar=Fal
                     example_variant = images._example_variant(example)
                     assert example_variant.start == variant.start and example_variant.end == variant.end, "Mismatch VCF variant and result from threading"
                     
-                    # Convert example to features
+                    # Convert example to features (TODO: reuse function in images model)
                     features = {
                         "image": images._example_image(example),
                         "sim/images": images._example_sim_images(example)
                     }
 
-                    # Predict genotype
+                    # Predict genotype using one or more models (by taking the mean of the distances)
                     dataset = tf.data.Dataset.from_tensors((features, None))
-                    _, distances, *_  = model.predict(cfg, dataset)
+                    distances = tf.concat([model.predict(cfg, dataset)[1] for model in models], axis=0)
+                   
+                    #_, distances, *_  = model.predict(cfg, dataset)
                     #print(distances)
                     distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
                     genotypes = tf.nn.softmax(-distances)

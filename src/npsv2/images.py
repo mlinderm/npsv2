@@ -115,8 +115,8 @@ class ImageGenerator:
         if realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
             return 0
         else:
-            return (realignment.alt_quality - realignment.ref_quality) / 40 * 100 + 150
-        #return self._allele_to_pixel[realignment.allele]
+            return np.clip((realignment.alt_quality - realignment.ref_quality) / 40 * 100 + 150, 1, MAX_PIXEL_VALUE)
+            #return self._allele_to_pixel[realignment.allele]
 
     def _strand_pixel(self, read: pysam.AlignedSegment):
         return self._strand_to_pixel[Strand.NEGATIVE if read.is_reverse else Strand.POSITIVE]
@@ -127,14 +127,27 @@ class ImageGenerator:
         else:
             return np.minimum(np.array(qual) / max_qual, 1.0) * MAX_PIXEL_VALUE
 
-    def _flatten_image(self, image_tensor):
+    def _flatten_image(self, image_tensor, render_channels=False, margin=5):
         if tf.is_tensor(image_tensor):
             image_tensor = image_tensor.numpy()
-        # TODO: Combine all the channels into a single image, perhaps BASE, INSERT_SIZE, ALLELE (with
-        # mapq as alpha)...
+        
+        # TODO: Better combine all the channels into a single image, perhaps ALIGNED, REF_PAIRED_CHANNEL, ALLELE (with mapq as alpha)...
         channels = [ALIGNED_CHANNEL, REF_PAIRED_CHANNEL, ALLELE_CHANNEL]
-        #channels = 3*[ALIGNED_CHANNEL]
-        return Image.fromarray(image_tensor[:, :, channels], mode="RGB")    
+        combined_image = Image.fromarray(image_tensor[:, :, channels], mode="RGB")  
+
+        if render_channels:
+            height, width, num_channels = self._image_shape
+            image = Image.new(combined_image.mode,  (width + (num_channels - 1)*(width + margin), 2*height + margin))
+            image.paste(combined_image, ((image.width - width) // 2, 0))
+
+            for i in range(num_channels):
+                channel_image = Image.fromarray(image_tensor[:, :, [i]*len(channels)], mode=combined_image.mode)
+                coord = (i*(width + margin), height + margin)
+                image.paste(channel_image, coord)  
+            
+            return image
+        else:
+            return combined_image
 
 
 class SingleImageGenerator(ImageGenerator):
@@ -167,10 +180,10 @@ class SingleImageGenerator(ImageGenerator):
         for col_slice in pileup.region_columns(region, variant.reference_region):
             image_tensor[:self._cfg.pileup.variant_band_height, col_slice, :] = 0
 
-    def render(self, image_tensor) -> Image:
+    def render(self, image_tensor, **kwargs) -> Image:
         shape = image_tensor.shape
         assert len(shape) == 3
-        return self._flatten_image(image_tensor)
+        return self._flatten_image(image_tensor, **kwargs)
 
 
     def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, **kwargs):
@@ -338,9 +351,6 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[row_idxs[col_slice], col_idxs, STRAND_CHANNEL] = self._strand_to_pixel[read.strand]
                 image_tensor[row_idxs[col_slice], col_idxs, BASEQ_CHANNEL] = self._qual_pixel(read.baseq(read_slice), self._cfg.pileup.max_baseq)
                 
-                #image_tensor[row_idxs[col_slice], col_idxs, REF_ALLELE_CHANNEL] = self._qual_pixel(read.allele.ref_quality, self._cfg.pileup.max_alleleq)
-                #image_tensor[row_idxs[col_slice], col_idxs, ALT_ALLELE_CHANNEL] = self._qual_pixel(read.allele.alt_quality, self._cfg.pileup.max_alleleq)
-
                 # Increment the 'current' row for the bases we just added to the pileup, overwrite the last row if we exceed
                 # the maximum coverage
                 row_idxs[col_slice] = np.clip(row_idxs[col_slice] + 1, self._cfg.pileup.variant_band_height, image_height - 1) 
@@ -761,11 +771,11 @@ def _extract_metadata_from_first_example(filename):
     return image_shape, replicates
 
 
-def features_to_image(cfg, features, out_path: str, with_simulations=False, margin=10, max_replicates=1):
+def features_to_image(cfg, features, out_path: str, with_simulations=False, margin=10, max_replicates=1, render_channels=False):
     generator = hydra.utils.instantiate(cfg.generator, cfg)
 
     image_tensor = features["image"]
-    real_image = generator.render(image_tensor)
+    real_image = generator.render(image_tensor, render_channels=render_channels)
 
     _, replicates, *_ = features["sim/images"].shape if with_simulations and "sim/images" in features else (3, 0)
     if replicates > 0:
@@ -779,7 +789,7 @@ def features_to_image(cfg, features, out_path: str, with_simulations=False, marg
         for ac in range(3):
             for repl in range(replicates):
                 synth_image_tensor = synth_tensor[ac, repl]
-                synth_image = generator.render(synth_image_tensor)
+                synth_image = generator.render(synth_image_tensor, render_channels=render_channels)
 
                 coord = (ac * (width + margin), (repl + 1) * (height + margin))
                 image.paste(synth_image, coord)
@@ -789,7 +799,7 @@ def features_to_image(cfg, features, out_path: str, with_simulations=False, marg
     image.save(out_path)
 
 
-def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulations=False, margin=10, max_replicates=1):
+def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulations=False, **kwargs):
     features = {
         "image": _example_image(example),
     }
@@ -797,7 +807,7 @@ def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulat
     if with_simulations and replicates > 0:
         features["sim/images"] = _example_sim_images(example)
     
-    features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, margin=margin, max_replicates=max_replicates)
+    features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, **kwargs)
 
 
 def load_example_dataset(filenames, with_label=False, with_simulations=False, num_parallel_reads=None) -> tf.data.Dataset:

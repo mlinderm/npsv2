@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse, logging, os, subprocess, sys, tempfile
-from omegaconf import DictConfig, OmegaConf
+from collections.abc import Iterable
+from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
 from tqdm import tqdm
@@ -22,6 +23,7 @@ def _configure_gpu():
 
 
 def _check_shared_reference(cfg: DictConfig):
+    """Check if BWA shared index is loaded, loading it if specified configuration"""
     if cfg.simulation.replicates > 0:
         cfg.shared_reference = bwa_index_loaded(hydra.utils.to_absolute_path(cfg.reference), load=cfg.load_reference)
         if not cfg.shared_reference:
@@ -32,7 +34,17 @@ def _check_shared_reference(cfg: DictConfig):
 
 
 def _is_tfrecords_file(filename: str) -> bool:
+    """Return true if tfrecords file (has '.tfrecords[.gz]' extension)"""
     return filename.endswith((".tfrecords", "tfrecords.gz"))
+
+
+def _as_list(item_or_list):
+    """Convert scalar argument to list, or pass list through"""
+    return item_or_list if isinstance(item_or_list, (list, ListConfig)) else [item_or_list]
+
+
+# Resolvers for use with Hydra
+OmegaConf.register_new_resolver("len", lambda x: len(x))
 
 
 @hydra.main(config_path="conf", config_name="config")
@@ -72,7 +84,7 @@ def main(cfg: DictConfig) -> None:
                 example.ParseFromString(record.numpy())
 
                 image_path = os.path.join(os.getcwd(), f"variant{i}.png")
-                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates)
+                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates, render_channels=cfg.visualize.render_channels)
         else:  # Assume it is a VCF file
             _check_shared_reference(cfg)
             sample = Sample.from_json(hydra.utils.to_absolute_path(cfg.stats_path))
@@ -80,18 +92,21 @@ def main(cfg: DictConfig) -> None:
             examples = make_vcf_examples(cfg, input_path, hydra.utils.to_absolute_path(cfg.reads), sample, simulate=True)
             for i, example in enumerate(tqdm(examples, desc="Generating images for each variant")):
                 image_path = os.path.join(os.getcwd(), f"variant{i}.png")
-                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates)
+                example_to_image(cfg, example, image_path, with_simulations=True, max_replicates=cfg.simulation.replicates, render_channels=cfg.visualize.render_channels)
 
     elif cfg.command == "train":
         from .images import _extract_metadata_from_first_example, load_example_dataset
         
         _configure_gpu()
 
+        # Make sure paths are absolute
         tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
         tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
-        
+
+        cfg.model.model_path = cfg.model.model_path and hydra.utils.to_absolute_path(cfg.model.model_path)
+
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-        model = hydra.utils.instantiate(cfg.model, image_shape, replicates)
+        model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path)
 
         dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
         model.fit(cfg, dataset)
@@ -188,7 +203,7 @@ def main(cfg: DictConfig) -> None:
             samples[sample_name_from_bam(reads_path)].bam = reads_path
        
         # Make sure model path is absolute
-        cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
+        model_paths = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.model.model_path)]
 
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):
@@ -200,6 +215,7 @@ def main(cfg: DictConfig) -> None:
             cfg,
             hydra.utils.to_absolute_path(cfg.input),
             samples,
+            model_paths,
             output,
             progress_bar=True,
         )
@@ -212,9 +228,9 @@ def main(cfg: DictConfig) -> None:
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
         if cfg.refine.select_algo == "ml" and not OmegaConf.is_missing(cfg, "refine.classifier_path"):
-            classifier_path = hydra.utils.to_absolute_path(cfg.refine.classifier_path)
+            classifier_path = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.refine.classifier_path)]
         else:
-            classifier_path = None
+            classifier_path = []
         
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):

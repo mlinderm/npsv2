@@ -1,2 +1,4 @@
 # @package _global_
 command: visualize
+visualize:
+  render_channels: false

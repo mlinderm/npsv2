@@ -18,14 +18,9 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
     
     ref_quality, ref_break, ref_score, ref_max_score, alt_quality, alt_break, alt_score, alt_max_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
        
-    # The scores are log probabilities
-    normalized_ref_score = ref_score - ref_max_score
-    normalized_alt_score = alt_score - alt_max_score
-    
-    return AlleleRealignment(ref_quality, alt_quality)
-    # if alt_quality > (ref_quality + assign_delta): 
-    #     return AlleleRealignment(AlleleAssignment.ALT, alt_break, alt_quality, normalized_alt_score)
-    # elif ref_quality > (alt_quality + assign_delta):
-    #     return AlleleRealignment(AlleleAssignment.REF, ref_break, ref_quality, normalized_ref_score)
-    # else:
-    #     return AlleleRealignment(AlleleAssignment.AMB, ref_break or alt_break)
+    if alt_quality > (ref_quality + assign_delta): 
+        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.ALT)
+    elif ref_quality > (alt_quality + assign_delta):
+        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.REF)
+    else:
+        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.AMB)

@@ -61,6 +61,16 @@ def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str =
     return ref_seq
 
 
+def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int]={1}) -> int:
+    count = 0
+    for idx in indices:
+        if idx == -1:
+            return None
+        elif idx in alleles:
+            count += 1
+    return count
+
+
 class Variant(object):
     def __init__(self, record):
         self._record = record
@@ -106,9 +116,14 @@ class Variant(object):
     def end(self):
         return self._record.stop
 
+    @property
+    def num_alt(self):
+        # TODO: Exclude alleles?
+        return len(self._record.alts)
+
     def is_biallelic(self):
         # TODO: Exclude alleles
-        return len(self._record.alts) == 1
+        return self.num_alt == 1
 
     def length_change(self):
         svlen = self._record.info["SVLEN"]
@@ -152,6 +167,20 @@ class Variant(object):
     def genotype_indices(self, index_or_id):
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
+
+    def genotype_allele_count(self, index_or_id, alleles=None):
+        indices = self.genotype_indices(index_or_id)
+        if indices is None:
+            return None
+        if alleles is None:
+            alleles = frozenset(range(1,1+len(self.record._alts)))
+        count = 0
+        for idx in indices:
+            if gt == -1:
+                return None
+            elif idx in alleles:
+                count += 1
+        return count
 
     def _alt_seq(self, flank, ref_seq):
         raise NotImplementedError()  
@@ -198,7 +227,7 @@ class Variant(object):
         sv.contig = self.contig
         sv.start = self.start
         sv.end = self.end
-        sv.svlen = self._record.info["SVLEN"][0]
+        sv.svlen = self.length_change()
         return sv
 
 

@@ -18,8 +18,8 @@ insert_size_mean_pixel: 128
 insert_size_sd_pixel: 24
 
 weight_allele: false
-amb_allele_pixel: 50
-ref_allele_pixel: 150
+ref_allele_pixel: 50
+amb_allele_pixel: 150
 alt_allele_pixel: 250
 min_normalized_allele_score: -.inf
 max_alleleq: 40

@@ -7,11 +7,11 @@ from sklearn.ensemble import RandomForestClassifier
 from tqdm import tqdm
 
 from . import ORIGINAL_KEY
-from ..variant import Variant
+from ..variant import Variant, allele_indices_to_ac
 from ..range import Range, RangeTree
 from ..utilities.vcf import index_variant_file
 
-FEATURES = ["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "MIN", "DIFF", "BIG CONF", "SMALL CONF"]
+FEATURES = ["AC", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC"]
 KLASS = "MATCHGT"
 
 
@@ -20,33 +20,31 @@ def _variant_descriptor(record):
 
 
 def _record_to_rows(record, orig_min_dist):
+    alt_indices = set(range(1,1+len(record.alts)))
+    
     # Convert single VCF record into 1 or more table rows (one row for each sample)
     rows = []
     for i, call in enumerate(record.samples.itervalues()):
         distances = call["DS"]
         # There might be multiple original entries
-        originals = np.unique(np.atleast_1d(record.info.get(ORIGINAL_KEY, None)))
+        originals = np.unique(np.atleast_1d(record.info[ORIGINAL_KEY])) if ORIGINAL_KEY in record.info else [None]
         for original in originals:
-            rows.append(
-                pd.DataFrame(
-                    {
-                        "ID": record.id,
-                        "POS": int(record.pos),
-                        "END": record.stop,
-                        "ORIGINAL": original,
-                        "SV": original or record.id,
-                        "SAMPLE": i,
-                        "GT": "/".join(map(str, call.allele_indices)),
-                        "ORIGINAL_MIN": orig_min_dist[i],
-                        "HOMO_REF_DIST": distances[0],
-                        "HET_DIST": distances[1],
-                        "HOMO_ALT_DIST": distances[2],
-                        "DHFFC": call["DHFFC"],
-                    },
-                    index=[0],
-                )
-            )
-    return pd.concat(rows, ignore_index=True)
+            rows.append({
+                "ID": record.id,
+                "POS": int(record.pos),
+                "END": record.stop,
+                "ORIGINAL": original,
+                "SV": original or record.id,
+                "SAMPLE": i,
+                "GT": "/".join(map(str, call.allele_indices)),
+                "AC": allele_indices_to_ac(call.allele_indices, alt_indices),
+                "ORIGINAL_MIN": orig_min_dist[i],
+                "HOMO_REF_DIST": distances[0],
+                "HET_DIST": distances[1],
+                "HOMO_ALT_DIST": distances[2],
+                "DHFFC": call["DHFFC"],
+            })
+    return pd.DataFrame(rows)
 
 
 def _add_derived_features(table):
@@ -75,13 +73,15 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
     original_records = {}
     alternate_records = {}
 
-    for record in tqdm(src_vcf_file, desc="Reading variants into table", disable=not progress_bar, mininterval=1):
+    for i, record in enumerate(src_vcf_file):
         if ORIGINAL_KEY not in record.info:
-            if not record.id or record.id in original_records:
+            if record.id is None:
+                record.id = str(i)
+            if record.id in original_records:
                 continue
-            assert record.id and record.id not in original_records, "Duplicate original variants"
             original_records[record.id] = record
         else:
+            assert not record.id
             originals = record.info[ORIGINAL_KEY]
             for original in originals:
                 if original in alternate_records:
@@ -90,7 +90,7 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
                     alternate_records[original] = [record]
 
     rows = []
-    for id, original_record in original_records.items():
+    for id, original_record in tqdm(original_records.items(), desc="Reading variants into table", disable=not progress_bar, mininterval=1):
         # Determine minimum "original" distance for each sample
         orig_min_dist = [np.min(call["DS"]) for call in original_record.samples.itervalues()]
 
@@ -108,19 +108,12 @@ def refine_vcf(
     cfg,
     vcf_path: str,
     output_path: str,
-    classifier_path: str = None,
+    classifier_path = [],
     progress_bar=False,
-    include_orig_ref=True,
-    merge_blocks=True,
-    include_orig_in_block=False,
-    
 ):
     if cfg.refine.select_algo not in { "original", "ml", "min_distance" }:
         raise ValueError(f"{cfg.refine.select_algo} is not a supported selection algorithm")
     
-    # Include reference genotype for original variant or not in minimum calculation
-    orig_start_idx = 0 if include_orig_ref else 1
-
     with pysam.VariantFile(vcf_path) as src_vcf_file:
         # Create header for destination file
         src_header = src_vcf_file.header
@@ -134,57 +127,41 @@ def refine_vcf(
             '##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">'
         )
 
-        table, original_records, _ = _vcf_to_table(src_vcf_file, progress_bar=progress_bar)
+        table, original_records, alternate_records = _vcf_to_table(src_vcf_file, progress_bar=progress_bar)
 
         if cfg.refine.select_algo == "ml":
-            # Load the "refine" classifier and predict best proposal
-            clf = joblib.load(classifier_path)
-            table["PROBTRUE"] = clf.predict_proba(table[FEATURES])[:, 1]
+            # Load the "refine" classifiers and predict best proposal
+            for i, path in enumerate(classifier_path):
+                clf = joblib.load(path)
+                table[f"ML{i}"] = clf.predict_proba(table[clf.feature_names])[:, 1]
          
-        # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-        #     print(table)
+        if cfg.refine.group_variants:
+            # Determine variant groups
+            variant_ranges = RangeTree()
+            for id, original_record in original_records.items():
+                total_range = Variant.from_pysam(original_record).reference_region.expand(cfg.refine.variant_group_flank)
+                for alternate_record in alternate_records.get(id, []):
+                    total_range = total_range.union(Variant.from_pysam(alternate_record).reference_region.expand(cfg.refine.variant_group_flank))
+                variant_ranges.add(total_range, [id])
 
-        # # Determine variant groups
-        # variant_ranges = RangeTree()
-        # for id, original_record in original_records.items():
-        #     total_range = Variant.from_pysam(original_record).reference_region
-        #     for alternate_record in alternate_records.get(id, []):
-        #         total_range = total_range.union(Variant.from_pysam(alternate_record).reference_region)
-        #     variant_ranges.add(total_range, [id])
+            # Merge overlapping blocks
+            variant_ranges.merge_overlaps(data_reducer=operator.add, data_initializer=[])
 
-        # # Optionally merged overlapping variant ranges into single blocks
-        # if merge_blocks:
-        #     variant_ranges.merge_overlaps(data_reducer=operator.add, data_initializer=[])
+            # Add additional block column to identify and query overlapping groups
+            variant_blocks = {}
+            for i, ids in enumerate(variant_ranges.values()):
+                for id in ids:
+                    variant_blocks[id] = i
+            table = table.merge(pd.DataFrame({ "SV": variant_blocks.keys(), "BLOCK": variant_blocks.values() }), how="left", on="SV")
+            
+            variant_table = table.groupby(["BLOCK", "SAMPLE"])
+            def _get_possible_calls(id, sample_index):
+                return variant_table.get_group((variant_blocks[id], sample_index)).reset_index(drop=True)
+        else:
+            variant_table = table.groupby(["SV", "SAMPLE"])
+            def _get_possible_calls(id, sample_index):
+                return variant_table.get_group((id, sample_index)).reset_index(drop=True)
 
-        # # Determine the best alternate representation(s) in each group
-        # closest_alts = {}
-        # for ids in variant_ranges.values():
-        #     best_alts = [(float("Inf"), None, None, False)] * num_samples
-        #     for id in ids:
-        #         possible_alternate_records = alternate_records.get(id, [])
-        #         if include_orig_in_block:
-        #             possible_alternate_records.append(original_records[id])
-        #         for alternate_record in possible_alternate_records:
-        #             for i, alternate_call in enumerate(alternate_record.samples.itervalues()):
-        #                 best_dist, *_ = best_alts[i]
-
-        #                 alt_dist = alternate_call["DS"]
-        #                 min_idx = np.argmin(alt_dist)
-        #                 alt_ratio = alternate_call["DHFFC"]
-        #                 if min_idx != 0 and alt_dist[min_idx] < best_dist:
-        #                     best_alts[i] = (alt_dist[min_idx], id, alternate_record, False)
-        #                     if alt_dist[min_idx]/alt_dist[0] < 0.125:
-        #                         if min_idx == 1:
-        #                             if (alt_dist[min_idx]/alt_dist[2] < 0.125 and 0.4 <= alt_ratio <= 0.6):
-        #                                 best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
-        #                         else:
-        #                             if (alt_dist[min_idx]/alt_dist[1] < 0.125 and alt_ratio <= 0.2):
-        #                                 best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
-
-        #     for id in ids:
-        #         closest_alts[id] = best_alts
-
-        variant_table = table.groupby(["SV", "SAMPLE"])
 
         with pysam.VariantFile(output_path, mode="w", header=dst_header) as dst_vcf_file:
             # Since Python dictionaries iterate in insertion order, if original dictionary was sorted, so is the output
@@ -195,25 +172,57 @@ def refine_vcf(
                     dst_vcf_file.write(record)  # Just use original SV genotype without trying to refine
                     continue
 
-
                 for i, call in enumerate(record.samples.itervalues()):
-                    possible_calls = variant_table.get_group((id, i)).reset_index(drop=True)
-
+                    possible_calls = _get_possible_calls(id, i)
                     if possible_calls.shape[0] == 1:
                         # No alternate record to update with
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
                         continue
                     else:
                         if cfg.refine.select_algo == "ml":
-                            max_prob_idx = possible_calls.PROBTRUE.idxmax()
-                            alt_row = possible_calls.iloc[max_prob_idx, :]
-                        else:
-                            # Only select an alternate row if the "closest" genotype is non-reference. Proposals distant from the true
-                            # SV may (should) be very similar to homozygous reference and so would not be good candidates for "switching"
-                            min_dist_idx = np.unravel_index(np.argmin(possible_calls[["HOMO_REF_DIST","HET_DIST","HOMO_ALT_DIST"]]), (possible_calls.shape[0], 3))
-                            alt_row = possible_calls.iloc[min_dist_idx[0], :] if min_dist_idx[1] > 0 else None
+                            # Select the row with the largest probability of being a true update if
+                            # 1) the SV has a non-reference genotype, and 
+                            # 2) ...
+                            orig = possible_calls[possible_calls.ID == id].squeeze()
+                            assert len(orig.shape) == 1
+                            
+                            nonref_possible_calls = possible_calls[possible_calls.GT != "0/0"]
+                            if nonref_possible_calls.shape[0] == 0:
+                                continue
 
-                        if alt_row is not None and not pd.isna(alt_row.ORIGINAL):
+                            # Find the most likely SV for each model
+                            alt_probs = nonref_possible_calls[[f"ML{i}" for i in range(len(classifier_path))]]
+                            nonref_possible_calls = nonref_possible_calls.loc[alt_probs.idxmax(axis=0).unique()]
+                            
+                            # Pick the minimum distance among the most likely SVs
+                            min_dist_idx = nonref_possible_calls.MIN.idxmin()
+                            alt_row = nonref_possible_calls.loc[min_dist_idx]
+                            
+                             # Only update if probability for alternate SV is better than the original for the model we used
+                            alt_row_model = alt_probs.loc[min_dist_idx].idxmax()
+                            if alt_row[alt_row_model] < orig[alt_row_model]:
+                                continue
+                                                      
+                            # nonref_possible_calls = possible_calls[(possible_calls.GT != "0/0") & (possible_calls.PROBTRUE > orig.PROBTRUE)]
+                            # if nonref_possible_calls.shape[0] == 0:
+                            #     continue
+
+                            # max_prob_idx = nonref_possible_calls.PROBTRUE.idxmax()
+                            # alt_row = nonref_possible_calls.loc[max_prob_idx, :]
+                        else:
+                            # Select the row with smallest non-reference distance, if that distance is
+                            # 1) less than the hom. ref. distance for that SV, and
+                            # 2) less than (or equal?) the minimum distance for the original SV. (or equal used for updating when using all originals...)
+                            alt_dists = possible_calls[["HET_DIST","HOMO_ALT_DIST"]].min(axis=1)
+                            nonref_possible_calls = possible_calls.loc[(alt_dists <= possible_calls.HOMO_REF_DIST) & (alt_dists <= possible_calls.ORIGINAL_MIN),:]
+                            if nonref_possible_calls.shape[0] == 0:
+                                continue
+                            
+                            min_dist_idx = np.unravel_index(np.argmin(nonref_possible_calls[["HET_DIST","HOMO_ALT_DIST"]]), (nonref_possible_calls.shape[0], 2))
+                            alt_row = nonref_possible_calls.iloc[min_dist_idx[0], :]
+
+                        # Only update if there is a best row and it is not the same as the original record
+                        if alt_row is not None and alt_row.ID != id:
                             call.update(
                                 {
                                     "DS": [alt_row.HOMO_REF_DIST, alt_row.HET_DIST, alt_row.HOMO_ALT_DIST],
@@ -221,56 +230,8 @@ def refine_vcf(
                                     "CL": f"{alt_row.POS}_{alt_row.END}",
                                 }
                             )
-                            call.allele_indices = _gt_to_alleles(alt_row.GT)
-
-                # if id not in closest_alts:
-                #     # No alternate records present for this variant, or any blocks this variant overlaps
-                #     pass
-                # else:
-                #     # Identify best alternate representation and genotype for each sample
-                #     closest_alt = closest_alts[id]
-                #     for i, call in enumerate(record.samples.itervalues()):
-                #         alt_dist, alt_id, alt_record, alt_better = closest_alt[i]
-                #         if alt_record is None or alt_record is record:
-                #             # No alternate record to update with, or we are tying to update with ourselves (same original record)
-                #             continue
-
-                #         orig_dist = min(call["DS"][orig_start_idx:])
-                #         diff = alt_dist - orig_dist
-                #         if diff <= 0.1 and alt_better == True and alt_id == id:
-                #             #One of our alternate representations is best, based on coverage criteria
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "var",
-                #                 "DS": alt_call["DS"],
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call["DS"],
-                #             })
-                #             call.allele_indices = alt_call.allele_indices
-
-                #         elif alt_dist < orig_dist and alt_id == id:
-                #             # One of our alternate representations is best, use that alternate genotype
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "var",
-                #                 "DS": alt_call["DS"],
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call["DS"],
-                #             })
-                #             call.allele_indices = alt_call.allele_indices
-
-                #         elif alt_dist < orig_dist and alt_id != id:
-                #             # A different variant's alternate representation is best, set our genotype to 0/0
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "blk",
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call.pop("DS"),
-                #             })
-                #             call.allele_indices = [0, 0]
+                            # If another SV in block is the best, set this GT to homozygous reference (TODO: Handle haploid calls)
+                            call.allele_indices = _gt_to_alleles(alt_row.GT) if alt_row.SV == id else (0,0)
 
                 dst_vcf_file.write(record)
 
@@ -355,6 +316,7 @@ def train_model(vcf_path: str, pbsv_file: str, output_path: str):
     # Train again using "hard" falses
     logging.info("Training model using 'hard negatives' on %d observations", matched_training.shape[0])
     clf.fit(matched_training[FEATURES], matched_training[KLASS])
+    clf.feature_names = FEATURES
 
     logging.info("Saving model in: %s", output_path)
     joblib.dump(clf, output_path, compress=3)

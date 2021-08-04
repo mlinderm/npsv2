@@ -5,10 +5,11 @@ import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
+from google.protobuf import descriptor_pb2
 from deeplab2.model.encoder import axial_resnet_instances
 
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
-
+from . import npsv2_pb2
 
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
@@ -97,48 +98,6 @@ class AxialWrapperLayer(layers.Layer):
 
     def compute_output_shape(self, input_shape):
         return (None, 2048)
-
-    # base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
-   
-    # # imagenet weights require a 3-channel input image. To enable us to use more channels, we need to construct a ../
-    # src_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
-     
-    # # Only the first convolution layer needs to have different weights
-    # for i, (src_layer, dst_layer) in enumerate(zip(src_model.layers, base_model.layers)):
-    #     if i == 1:
-    #         kernels, *other_weights = src_layer.get_weights()
-            
-    #         # Replicate mean of exAssumes "channels_last"
-    #         new_kernels = tf.repeat(tf.reduce_mean(kernels, axis=-2, keepdims=True) * (3/input_shape[-1]), input_shape[-1], axis=-2)
-    #         dst_layer.set_weights([new_kernels] + other_weights)
-    #     else:
-    #         dst_layer.set_weights(src_layer.get_weights())
-
-
-    # #base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
-    # base_model.trainable = True
-    
-    # encoder = tf.keras.models.Sequential([
-    #     layers.InputLayer(input_shape),
-    #     #layers.Conv2D(3, (1,1), activation='tanh'),  # Make multi-channel input compatible with Inception (input [-1, 1])
-    #     base_model,
-    #     layers.Dense(512),
-    #     layers.BatchNormalization(),
-    # ], name="encoder")
-    # if normalize:
-    #     encoder.add(layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))) # L2 normalize embeddings
-    # return encoder
-
-    # image = layers.Input(input_shape)
-    # x = layers.Conv2D(3, (1,1), activation='tanh')(image)
-    # x = base_model(x, training=False)
-    # x = layers.Dense(512)(x)
-    # x = layers.BatchNormalization()(x)
-    # if normalize:
-    #     x = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(x)
-    # return tf.keras.Model(inputs=image, outputs=x, name="encoder")
-    
-
    
 
 # Adapted from:
@@ -414,11 +373,25 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
 
     
     def _train_input(self, cfg, dataset):
+        file_descriptor_set = descriptor_pb2.FileDescriptorSet()
+        npsv2_pb2.DESCRIPTOR.CopyToProto(file_descriptor_set.file.add())
+        descriptor_source = b'bytes://' + file_descriptor_set.SerializeToString()
+                
         def _variant_to_training(features, original_label):
             support_shape = tf.shape(features["sim/images"])
             support_replicates = support_shape[1]
             tf.debugging.assert_greater(support_replicates, 0)
-
+            
+            # TODO: Actually obtain reference size (since that determines the image size)
+            _, variant_size = tf.io.decode_proto(
+                features["variant/encoded"],
+                "npsv2.StructuralVariant",
+                ["svlen"],
+                [tf.int64],
+                descriptor_source=descriptor_source
+            )
+            variant_size = tf.squeeze(variant_size)
+            
             queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
             queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
 
@@ -429,6 +402,7 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             return tf.data.Dataset.from_tensor_slices(({ 
                 "query": queries,
                 "support": support,
+                "variant_size": tf.repeat(variant_size, support_replicates),
             }, {
                 "distances": tf.tile(tf.one_hot([original_label], depth=3, dtype=tf.float32), (support_replicates, 1)),
                 "genotypes": tf.repeat(original_label, support_replicates),
@@ -436,9 +410,11 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
         
         # Interleave SVs into the batch
         return (
-            dataset.filter(lambda _, original_label: original_label is not None)
+            dataset
+            .filter(lambda _, original_label: original_label is not None)
             .shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
-            .interleave(self._variant_to_training, cycle_length=cfg.training.variants_per_batch, num_parallel_calls=cfg.threads)
+            .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch, num_parallel_calls=cfg.threads)
+            #.filter(lambda inputs, _: inputs["variant_size"] > -300)
             .batch(cfg.training.variants_per_batch)
             .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )

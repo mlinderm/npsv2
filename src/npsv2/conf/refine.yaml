@@ -7,3 +7,5 @@ min_consensus_length: 4
 peak_finding_flank: 5
 all_alignments: false
 max_proposals: 10
+group_variants: true
+variant_group_flank: 0

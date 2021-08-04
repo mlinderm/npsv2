@@ -8,7 +8,7 @@ from hydra.experimental import compose, initialize
 from npsv2 import models
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
 from npsv2.sample import Sample
-from .images_test import _mock_chunk_genome, _mock_reference_sequence, _mock_simulate_variant_sequencing
+from .images_test import _mock_reference_sequence, _mock_simulate_variant_sequencing
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -24,13 +24,12 @@ class EncoderTest(unittest.TestCase):
         encoder = models._contrastive_encoder(
             (100, 300, 5),
             normalize_embedding=False,
-            stop_gradient_before_projection=False,
             projection_size=[512],
             normalize_projection=True,
             batch_normalize_projection=True
         )
         self.assertEqual(encoder.name, "encoder")
-
+        encoder.summary()
         embeddings, normalized_embeddings, projections = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
         self.assertEqual(projections, (None, 512))
@@ -74,18 +73,6 @@ class EncoderTest(unittest.TestCase):
 
         embeddings, *_ = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
-
-    def test_mimic_original_encoder(self):
-        encoder = models._contrastive_encoder(
-            (100, 300, 5),
-            normalize_embedding=False,
-            projection_size=[512],
-            batch_normalize_projection=True,
-            normalize_projection=True,
-        )
-        self.assertEqual(encoder.name, "encoder")
-        _, _, projections = encoder.output_shape
-        self.assertEqual(projections, (None, 512))
 
 
 @unittest.skip("Development only")

@@ -106,7 +106,7 @@ def _refine_base_alignment(base: str, ref: str):
 class AlleleRealignment:
     ref_quality: int = None
     alt_quality: int = None
-    # allele: AlleleAssignment
+    allele: AlleleAssignment = AlleleAssignment.AMB
     # breakpoint: bool
     # quality: float = 0
     # normalized_score: float = 0
