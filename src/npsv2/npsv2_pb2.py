@@ -19,7 +19,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   name='src/npsv2/npsv2.proto',
   package='npsv2',
   syntax='proto3',
-  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2\"N\n\x11StructuralVariant\x12\x0e\n\x06\x63ontig\x18\x01 \x01(\t\x12\r\n\x05start\x18\x02 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x03 \x01(\x03\x12\r\n\x05svlen\x18\x04 \x01(\x03\x62\x06proto3')
+  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2\"N\n\x11StructuralVariant\x12\x0e\n\x06\x63ontig\x18\x01 \x01(\t\x12\r\n\x05start\x18\x02 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x03 \x01(\x03\x12\r\n\x05svlen\x18\x04 \x03(\x03\x62\x06proto3')
 )
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
@@ -56,8 +56,8 @@ _STRUCTURALVARIANT = _descriptor.Descriptor(
       options=None),
     _descriptor.FieldDescriptor(
       name='svlen', full_name='npsv2.StructuralVariant.svlen', index=3,
-      number=4, type=3, cpp_type=2, label=1,
-      has_default_value=False, default_value=0,
+      number=4, type=3, cpp_type=2, label=3,
+      has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       options=None),

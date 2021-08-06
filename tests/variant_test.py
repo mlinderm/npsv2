@@ -21,7 +21,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertTrue(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 71)
-        self.assertEqual(self.variant.alt_length, 1)
+        self.assertEqual(self.variant.alt_length(), 1)
 
         # Range is 0-indexed half-open...
         self.assertTrue(self.variant.is_biallelic())
@@ -35,7 +35,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
     def test_consensus_fasta(self, mock_ref):
             fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
-            self.assertEqual(alt_contig, "1_899922_899993_alt")
+            self.assertEqual(alt_contig, "1_899922_899993_1_alt")
             mock_ref.assert_called_once_with(None, Range("1",899921,899993), snv_vcf_path=None)
 
             with open(fasta_path, "r") as fasta:
@@ -46,7 +46,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
                 lines[1],
                 "GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
             )
-            self.assertEqual(lines[2], ">1_899922_899993_alt")
+            self.assertEqual(lines[2], ">1_899922_899993_1_alt")
             self.assertEqual(lines[3], "GG")
 
     def test_construct_proto(self):
@@ -123,14 +123,14 @@ class SymbolicDELVariantTestSuite(unittest.TestCase):
         self.assertFalse(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 71)
-        self.assertEqual(self.variant.alt_length, 1)
+        self.assertEqual(self.variant.alt_length(), 1)
 
 
     @patch("npsv2.variant._reference_sequence", return_value="GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG")
     def test_consensus_fasta(self, mock_ref):
             fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
             self.assertEqual(ref_contig, "1_899922_899993")
-            self.assertEqual(alt_contig, "1_899922_899993_alt")
+            self.assertEqual(alt_contig, "1_899922_899993_1_alt")
             mock_ref.assert_called_once_with(None, Range("1",899921,899993), snv_vcf_path=None)
 
             with open(fasta_path, "r") as fasta:
@@ -141,7 +141,7 @@ class SymbolicDELVariantTestSuite(unittest.TestCase):
                 lines[1],
                 "GGCTGCGGGGAGGGGGGCGCGGGTCCGCAGTGGGGCTGTGGGAGGGGTCCGCGCGTCCGCAGTGGGGATGTG",
             )
-            self.assertEqual(lines[2], ">1_899922_899993_alt")
+            self.assertEqual(lines[2], ">1_899922_899993_1_alt")
             self.assertEqual(lines[3], "GG")
 
     def test_breakpoints(self):
@@ -179,7 +179,7 @@ class ComplexDELVariantTestSuite(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.variant.alt_length,
+            self.variant.alt_length(),
             len(
                 "ATATATATAGATATATCTATATATATCTATATAGATATATCTATATCTATATAGATATATCTATATATATATAGATATATCTATATCTATATAGATATATATCTATATATATATCTATATAGATATATCTATATAGATATAGATATATATCTATATATAGATATAGATATATCTATATAGATATATATCTATAGATATCTATATATATAGATATATAGATATCTATATCTATAT"
             ),
@@ -205,7 +205,7 @@ class ComplexDELVariantTestSuite(unittest.TestCase):
             lines[1],
             "GTATATATATATAGATCTATATATCTATATATAGATCTATATATAGATATATATCTATATATATAGATATATAGATATATAGATCTATATATAGATATATATATCTATATATAGATCTATATATAGATATAGATATCTATATAGATATCTATATCTATATATATGTAGATATATAGATATAGATATCTATATATCTATATATATAGATATCTATAGATATATATCTATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATATCTATATATAGATAGATATATATCTATATATAGATATATCTATATCTATATATAGATATATATCTATATATAGATATATCTATATATAGATATATATCTATAGATATATCTATATATATCGATATATCTATATATATCGATATATAT",
         )
-        self.assertEqual(lines[2], ">4_20473845_20474270_alt")
+        self.assertEqual(lines[2], ">4_20473845_20474270_1_alt")
         self.assertEqual(lines[2], f">{alt_contig}")
         self.assertEqual(
             lines[3],
@@ -257,7 +257,7 @@ class SingleBaseComplexDELVariantTestSuite(unittest.TestCase):
             lines[1],
             "AAACCTCCCAACGCAATAGACATTGTGGTTTTCATTGCATATCATTCCTATTTCTCTCTCTCCATTATTTAGCAGTAATTTTTTTAATGAAA",
         )
-        self.assertEqual(lines[2], ">8_79683397_79683488_alt")
+        self.assertEqual(lines[2], ">8_79683397_79683488_1_alt")
         self.assertEqual(lines[2], f">{alt_contig}")
         self.assertEqual(
             lines[3],
@@ -293,7 +293,7 @@ class IncompleteSequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertTrue(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 165)
-        self.assertEqual(self.variant.alt_length, 1)
+        self.assertEqual(self.variant.alt_length(), 1)
         self.assertEqual(self.variant.end, 67808624) # 0-indexed, half-open
 
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta"), "Reference genome not available")
@@ -329,4 +329,79 @@ class FASTAWithIUPACCodesDELVariant(unittest.TestCase):
         ref_seq = lines[1]
         self.assertEqual(ref_seq[67808441 - 1 - region.start], "Y")  # Two SNVs (recall POS is 1-indexed) in region
         self.assertEqual(ref_seq[67808536 - 1 - region.start], "R")
+
+
+class MultiallelicSequenceResolvedDELVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+                """##fileformat=VCFv4.1
+##INFO=<ID=SVLEN,Number=A,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=18,length=78077248>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
+18	77499776	.	AGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCG	A,AGGACGGGTGGGACTCTCATACCCACGGCCG	30	.	SVTYPE=DEL;SVLEN=-360,-330	GT:AD	1|2:0,1,1
+"""
+            )
             
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+    
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_create_variant(self):
+        self.assertTrue(self.variant.is_deletion)
+        self.assertTrue(self.variant._sequence_resolved)
+        self.assertEqual(self.variant._padding, 1)
+        self.assertEqual(self.variant._right_padding, [0, 30])
+        self.assertEqual(self.variant.num_alt, 2)
+        self.assertFalse(self.variant.is_biallelic())
+        
+        self.assertEqual(self.variant.end, 77500136)
+        
+        self.assertEqual(self.variant.length_change(), (-360, -330))
+        self.assertEqual(self.variant.alt_length(1),1)
+        self.assertEqual(self.variant.alt_length(2),31)
+        
+        self.assertEqual(self.variant.genotype_allele_count("HG002"), 2)
+        self.assertEqual(self.variant.genotype_allele_count("HG002", {1}), 1)
+        self.assertEqual(self.variant.genotype_allele_count("HG002", {2}), 1)
+        
+        self.assertEqual(self.variant.ref_breakpoints(1, allele=1), (Range("18",0,2), Range("18",360,362)))
+        self.assertEqual(self.variant.ref_breakpoints(1, allele=2), (Range("18",0,2), Range("18",330,332)))
+        
+        self.assertEqual(self.variant.alt_breakpoints(1, allele=1), (Range("18",0,2), None))
+        self.assertEqual(self.variant.alt_breakpoints(1, allele=2), (Range("18",0,2), None))
+
+        self.assertEqual(self.variant.left_flank_region(1, allele=1), Range("18",77499775,77499776))
+        self.assertEqual(self.variant.left_flank_region(1, allele=2), Range("18",77499775,77499776))
+        
+        self.assertEqual(self.variant.right_flank_region(1, allele=1), Range("18",77500136,77500137))
+        self.assertEqual(self.variant.right_flank_region(1, allele=2), Range("18",77500106,77500107))
+
+    def test_protobuf_creation(self):
+        proto = self.variant.as_proto()
+        self.assertEqual(proto.svlen, [-360,-330])
+
+    @patch("npsv2.variant._reference_sequence", return_value="AGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGGGACGGGTGGGACTCTCATACCCACGGCCGG")
+    def test_consensus_fasta(self, mock_ref):
+            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(alleles=(1,2), reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
+            mock_ref.assert_called_once_with(None, Range("18",77499775,77500137), snv_vcf_path=None)
+            self.assertEqual(ref_contig, "18_77499776_77500137")
+            self.assertEqual(alt_contig, ["18_77499776_77500137_1_alt","18_77499776_77500137_2_alt"]) 
+            
+            with open(fasta_path, "r") as fasta:
+                lines = [line.strip() for line in fasta]
+            self.assertEqual(len(lines), 5)
+            self.assertEqual(lines[0], f">{ref_contig}")
+            self.assertEqual(lines[1], f">{alt_contig[0]}")
+            self.assertEqual(lines[2], "AG")
+            self.assertEqual(lines[3], f">{alt_contig[1]}")
+            self.assertEqual(lines[4], "AGGACGGGTGGGACTCTCATACCCACGGCCGG")

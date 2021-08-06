@@ -3,10 +3,10 @@ pandas
 pysam
 Pillow
 tqdm
+tensorflow==2.3
 tensorflow-addons
 ray>=1.2.0
 hydra-core>=1.1
-hydra-ray-launcher
 intervaltree
 dataclasses
 scipy>=1.2.0

@@ -118,10 +118,7 @@ def generate_proto(source: str):
             sys.stderr.write("Can't find required file: %s\n" % source)
             sys.exit(-1)
         if protoc == None:
-            sys.stderr.write(
-                "protoc is not installed nor found in ../src.  Please compile it "
-                "or install the binary package.\n"
-            )
+            sys.stderr.write("protoc is not installed .\n")
             sys.exit(-1)
         protoc_command = [protoc, "-I.", "--python_out=.", source]
         if subprocess.call(protoc_command) != 0:
@@ -168,7 +165,7 @@ setup(
     include_package_data=True,
     package_data={"": ["etc/*"]},
     ext_modules=[CMakeExtension("npsv2/npsv2r")],
-    cmdclass=dict(build_ext=SeqLibCMakeBuild, protbuf=BuildProtobuf),
+    cmdclass=dict(build_ext=SeqLibCMakeBuild, protobuf=BuildProtobuf),
     zip_safe=False,
     test_suite="tests",
     classifiers=[
@@ -177,6 +174,4 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Programming Language :: Python :: 3.6",
     ],
-    install_requires=["numpy", "pysam", "Pillow", "tqdm"],
-    extras_require={"tf": ["tensorflow>=2.2"], "tf_gpu": ["tensorflow-gpu>=2.2"],},
 )

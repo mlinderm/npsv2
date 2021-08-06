@@ -1,4 +1,5 @@
-import datetime, functools, math, logging, os, random, shutil, subprocess, sys, tempfile, typing
+import datetime, functools, itertools, math, logging, os, random, shutil, subprocess, sys, tempfile, typing
+from dataclasses import dataclass, field
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -35,18 +36,27 @@ def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
 
 
-def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str=None):
+def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str=None, alleles: typing.AbstractSet[int]={1}):
     with tempfile.TemporaryDirectory() as dir:
-        fasta_path, ref_contig, alt_contig = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank)
-        
+        # Generate index fasta with contigs filtered by alleles. The fasta should include the reference sequence and the 
+        # sequence of the alternate alleles specified in `alleles`
+        fasta_alleles = sorted({0}.union(alleles))
+        assert len(fasta_alleles) >= 2
+        fasta_path, ref_contig, alt_contig = variant.synth_fasta(reference_fasta=reference, alleles=fasta_alleles, dir=dir, flank=flank, index_mode=True)
+
         addl_args = {}
         if snv_vcf_path:
-            iupac_fasta_path, *_ = variant.synth_fasta(reference_fasta=reference, dir=dir, flank=flank, ref_contig=ref_contig, alt_contig=alt_contig, snv_vcf_path=snv_vcf_path)
+            iupac_fasta_path, *_ = variant.synth_fasta(reference_fasta=reference, alleles=fasta_alleles, dir=dir, flank=flank, ref_contig=ref_contig, alt_contig=alt_contig, snv_vcf_path=snv_vcf_path, index_mode=True)
             addl_args["iupac_fasta_path"] = iupac_fasta_path
-
-        # Convert breakpoints to list of strings to be passed into the C++ side
-        breakpoints = variant.ref_breakpoints(flank, contig=ref_contig) + variant.alt_breakpoints(flank, contig=alt_contig)
-        breakpoints = [tuple(map(lambda x: str(x) if x else "", breakpoints))]
+        
+        # Convert breakpoints to list of tuples (of strings) to be passed into the C++ side
+        ref_breakpoints = variant.ref_breakpoints(flank, contig=ref_contig)
+        if variant.num_alt == 1:
+            breakpoints = [ref_breakpoints + variant.alt_breakpoints(flank, contig=alt_contig)]
+        else:
+            # Convert index to VCF allele index
+            breakpoints = [ref_breakpoints + variant.alt_breakpoints(flank, allele=i, contig=alt_contig[i-1]) for i in sorted(alleles)]
+        breakpoints = [tuple(map(lambda x: str(x) if x else "", bps)) for bps in breakpoints]
 
         return FragmentRealigner(fasta_path, breakpoints, sample.mean_insert_size, sample.std_insert_size, **addl_args)
 
@@ -165,6 +175,7 @@ class SingleImageGenerator(ImageGenerator):
 
 
     def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, region: Range, image_tensor):
+        assert variant.num_alt == 1, "Variant strip doesn't support multi-allelic variants"
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALIGNED_CHANNEL] = self._align_pixel(BaseAlignment.MATCH)
         image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_mapq, self._cfg.pileup.max_mapq)
         
@@ -172,7 +183,7 @@ class SingleImageGenerator(ImageGenerator):
         image_tensor[:self._cfg.pileup.variant_band_height, :, REF_PAIRED_CHANNEL] = self._zscore_pixel(ref_zscore)
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALT_PAIRED_CHANNEL] = self._zscore_pixel(alt_zscore)
                         
-        image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250 #self._allele_pixel(read.allele)
+        image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250
         image_tensor[:self._cfg.pileup.variant_band_height, :, STRAND_CHANNEL] = self._strand_to_pixel[Strand.POSITIVE]
         image_tensor[:self._cfg.pileup.variant_band_height, :, BASEQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_baseq, self._cfg.pileup.max_baseq)
       
@@ -186,7 +197,7 @@ class SingleImageGenerator(ImageGenerator):
         return self._flatten_image(image_tensor, **kwargs)
 
 
-    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, **kwargs):
+    def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, alleles: typing.AbstractSet[int]={1}, **kwargs):
         if regions is None:
             regions = self.image_regions(variant)
         elif isinstance(regions, str):
@@ -196,9 +207,9 @@ class SingleImageGenerator(ImageGenerator):
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
         if realigner is None:
-            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank)
+            realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank, alleles=alleles)
 
-        image_tensor = self._generate(variant, read_path, sample, regions=regions, realigner=realigner, **kwargs)
+        image_tensor = self._generate(variant, read_path, sample, regions=regions, realigner=realigner, alleles=alleles, **kwargs)
 
         # Create consistent image size
         if image_tensor.shape != self.image_shape:
@@ -215,6 +226,7 @@ class SingleHybridImageGenerator(SingleImageGenerator):
         
 
     def _generate(self, variant, read_path, sample: Sample, regions, realigner, **kwargs):
+        assert variant.num_alt == 1
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
@@ -290,12 +302,24 @@ class SingleHybridImageGenerator(SingleImageGenerator):
         return image_tensor
 
 
+@dataclass
+class _StraddleRegions:
+    left_region: Range
+    right_region: Range
+    event_region: Range = field(init=False)
+
+    def __post_init__(self):
+        assert self.left_region.contig == self.right_region.contig
+        self.event_region = Range(self.left_region.contig, self.left_region.end, self.right_region.start)
+
+
 class SingleDepthImageGenerator(SingleImageGenerator):
     def __init__(self, cfg):
-        super().__init__(cfg, num_channels=7) #8)
+        super().__init__(cfg, num_channels=7)
         
 
-    def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, **kwargs):
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, alleles: typing.AbstractSet[int]={1}, **kwargs):
+        assert variant.is_deletion, "Currently only deletions supported"
         assert ref_seq is None or len(ref_seq) == regions.length
 
         image_height, _, num_channels = self.image_shape
@@ -306,27 +330,29 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
         pileup = ReadPileup(regions)
 
-
-        left_region = variant.left_flank_region(self._cfg.pileup.fetch_flank)  # TODO: Incorporate CIPOS and CIEND?
-        event_region = variant.reference_region
-        right_region = variant.right_flank_region(self._cfg.pileup.fetch_flank)
-
-
+        straddle_regions = []
+        for allele in variant.alt_allele_indices:
+            straddle_regions.append(_StraddleRegions(
+                variant.left_flank_region(self._cfg.pileup.fetch_flank, allele=allele),
+                variant.right_flank_region(self._cfg.pileup.fetch_flank, allele=allele),
+            ))
+        
         for fragment in fragments:
             # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
             # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
             if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
                 realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
                 
-                if fragment.fragment_straddles(left_region, right_region):
-                    ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                    alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=variant.length_change())
-                elif fragment.fragment_straddles(left_region, event_region) ^ fragment.fragment_straddles(event_region, right_region):
-                    ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                    alt_zscore = None
-                else:
-                    ref_zscore = None
-                    alt_zscore = None
+                # Prefer possible alternate alleles (i.e. the best "alt") vs. reference straddlers
+                ref_zscore, alt_zscore = None, None  # Best is defined as closest to zero
+                for length_change, straddle in zip(variant.length_change(allele=None), straddle_regions):
+                    allele_alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=length_change)
+                    if fragment.fragment_straddles(straddle.left_region, straddle.right_region) and (alt_zscore is None or abs(allele_alt_zscore) < abs(alt_zscore)):
+                        ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                        alt_zscore = allele_alt_zscore
+                    elif alt_zscore is None and (fragment.fragment_straddles(straddle.left_region, straddle.event_region) ^ fragment.fragment_straddles(straddle.event_region, straddle.right_region)):
+                        ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                    
 
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
                 # otherwise be represented)
@@ -365,6 +391,7 @@ class SingleFragmentImageGenerator(SingleImageGenerator):
         assert self._cfg.pileup.variant_band_height == 0, "Generator doesn't support a variant band"
     
     def _generate(self, variant, read_path, sample: Sample, regions, realigner, **kwargs):        
+        assert variant.num_alt == 1
         image_height, _, num_channels = self.image_shape
         image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
 
@@ -433,6 +460,7 @@ class WindowedImageGenerator(ImageGenerator):
         return composite_image
 
     def generate(self, variant, read_path, sample: Sample, regions=None, realigner=None, **kwargs):
+        assert variant.num_alt == 1
         if regions is None:
             regions = self.image_regions(variant)
         for region in regions[1:]:
@@ -494,7 +522,7 @@ class WindowedReadImageGenerator(WindowedImageGenerator):
 
 
 
-def _genotype_to_label(genotype, alleles={1}):
+def _genotype_to_label(genotype, alleles: typing.AbstractSet[int]={1}):
     # TODO: Handle no-calls
     count = 0
     for gt in genotype:
@@ -518,23 +546,25 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None):
+def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}):
+    assert 1 <= len(alleles) <= min(variant.num_alt, 2)
+
     if generator is None:
         generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
     if cfg.simulation.sample_ref and random_variants is None:
         random_variants = RandomVariants(cfg.reference, cfg.simulation.sample_exclude_bed)
 
     example_regions = generator.image_regions(variant)
-
+    
     # Construct realigner once for all images for this variant, and if rendering match/mismatch bases, 
     # obtain relevant reference sequence for this variant, including IUPAC bases if SNV data is provided
     if cfg.pileup.get("render_snv", False):
-        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, snv_vcf_path=cfg.pileup.snv_vcf_input)
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, snv_vcf_path=cfg.pileup.snv_vcf_input, alleles=alleles)
         ref_seq = _reference_sequence(cfg.reference, example_regions, snv_vcf_path=cfg.pileup.snv_vcf_input)
     else:
-        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank)
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, alleles=alleles)
         ref_seq = None
-    
+   
     # Construct image for "real" data
     image_tensor = generator.generate(
         variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
@@ -567,8 +597,17 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         for allele_count in range(3):
             with tempfile.TemporaryDirectory() as tempdir:
                 # Generate the FASTA file for this zygosity
+                if allele_count == 0:
+                    fasta_alleles = (0, 0)
+                elif allele_count == 1:
+                    # Use first allele in multi-allelic contexts (an ill-defined case)
+                    fasta_alleles = (0, next(iter(alleles)))
+                elif allele_count == 2:
+                    fasta_alleles = sorted(alleles) * (allele_count // len(alleles))
+                haplotypes = len(set(fasta_alleles)) # Number of distinct haplotypes
+
                 fasta_path, ref_contig, alt_contig = variant.synth_fasta(
-                    reference_fasta=cfg.reference, ac=allele_count, flank=cfg.pileup.realigner_flank, dir=tempdir
+                    reference_fasta=cfg.reference, alleles=fasta_alleles, flank=cfg.pileup.realigner_flank, dir=tempdir
                 )
 
                 if cfg.simulation.gnomad_norm_covg:
@@ -582,9 +621,10 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                 sim_replicates = replicates if allele_count != 0 or not cfg.simulation.sample_ref else 0         
                 for i in range(sim_replicates):
                     try:
+                        haplotype_coverage = sample.mean_coverage / haplotypes
                         replicate_bam_path = simulate_variant_sequencing(
                             fasta_path,
-                            allele_count,
+                            haplotype_coverage,
                             repl_samples[i],
                             reference=cfg.reference,
                             shared_reference=cfg.shared_reference,
@@ -854,8 +894,4 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False, nu
     compression = _filename_to_compression(filenames[0])
     num_parallel_calls = num_parallel_reads if num_parallel_reads is None or num_parallel_reads == tf.data.experimental.AUTOTUNE else min(len(filenames), num_parallel_reads)
     return tf.data.Dataset.from_tensor_slices(filenames).interleave(lambda filename: tf.data.TFRecordDataset(filename, compression_type=compression).map(_process_input, num_parallel_calls=1), cycle_length=len(filenames), num_parallel_calls=num_parallel_calls)
-    
-    # return tf.data.TFRecordDataset(filenames=filenames, compression_type=_filename_to_compression(filenames[0]), num_parallel_reads=num_parallel_reads).map(
-    #     map_func=_process_input
-    # )
 

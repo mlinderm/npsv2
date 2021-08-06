@@ -111,11 +111,10 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, gnomad_covg_path: str = None):
+def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, gnomad_covg_path: str = None):
     assert not (stats_path and gnomad_covg_path), "Only one of stats path or GnomAD coverage path can be provided"
     
     # TODO: Adjust haplotype coverage based on normalization strategy
-    hap_coverage =  sample.mean_coverage / 2
     shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
     stats_path_arg = f"-j {quote(stats_path)}" if stats_path else ""
     gnomad_covg_arg = f"-g {quote(gnomad_covg_path)}" if gnomad_covg_path else ""
@@ -129,13 +128,12 @@ def simulate_variant_sequencing(fasta_path, allele_count, sample: Sample, refere
         {shared_ref_arg} \
         {stats_path_arg} \
         {gnomad_covg_arg} \
-        -c {hap_coverage:0.1f} \
+        -c {hap_covg:0.1f} \
         -m {sample.mean_insert_size} \
         -s {sample.std_insert_size} \
         -l {_art_read_length(sample.read_length, sample.sequencer)} \
         -p {sample.sequencer} \
         -i 1 \
-        -z {allele_count} \
         {quote(fasta_path)} \
         {quote(replicate_bam.name)}"
 

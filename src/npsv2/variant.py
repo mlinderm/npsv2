@@ -2,6 +2,7 @@ import logging, math, os, re, tempfile, textwrap, typing
 import pysam
 from .range import Range
 from . import npsv2_pb2
+from .utilities.sequence import as_scalar
 
 _VALID_SNV_ALLELES = frozenset("ACGTNacgtn")
 _VALID_BASES_RE = re.compile(r"[ACGTN]+")
@@ -71,30 +72,46 @@ def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int]={1}) -> int:
     return count
 
 
+def _has_symbolic_allele(record):
+    for alt in record.alts:
+        if alt.startswith("<") or alt.endswith(">"):
+            return True
+    return False
+
+
 class Variant(object):
     def __init__(self, record):
         self._record = record
-        assert len(record.alts) == 1, "Multiple alternates are not supported"
         
-        ref_allele = record.ref
-        alt_allele = record.alts[0]
-        self._sequence_resolved = not alt_allele.startswith("<")
+        self._sequence_resolved = not _has_symbolic_allele(record)
         if self._sequence_resolved:
-            padding_string = os.path.commonprefix([ref_allele, alt_allele])
-            self._padding = len(padding_string)
+            self._padding = len(os.path.commonprefix(record.alleles))
+            self._right_padding = [len(os.path.commonprefix([record.ref[self._padding:][::-1], a[self._padding:][::-1]])) for a in record.alts]
         else:
+            assert len(record.alts) == 1, "Multiallelic symbolic variants not currently supported"
             self._padding = 1
+            self._right_padding = [0] * len(record.alts)
         if self._padding > 1:
-            logging.warning("Variant has more than expected number of padding bases, if VCF normalized?")
+            logging.warning("Variant has more than expected number of padding bases, is the VCF normalized?")
 
     @classmethod
     def from_pysam(cls, record):
-        # TODO: Actually detect SV kind
-        svtype = record.info["SVTYPE"]
-        if not isinstance(svtype, str):
-            svtype = svtype[0]
-        assert svtype == "DEL"
+        if "SVTYPE" in record.info:
+            svtype = as_scalar(record.info["SVTYPE"])
+        elif _has_symbolic_allele(record):
+            svtype = os.path.commonprefix([a.strip("<>") for a in record.alts])
+        else:
+            svlen = map(lambda a: len(a) - len(record.ref), record.alts)
+            if all(map(lambda l: l < 0, svlen)):
+                svtype = "DEL"
+            else:
+                raise ValueError("Inconsistent variant types")
+        assert svtype.startswith("DEL"), "Only deletions current supported"
         return DeletionVariant(record)
+
+    @property
+    def alt_allele_indices(self):
+        return range(1, 1+self.num_alt)
 
     @property
     def name(self):
@@ -125,20 +142,18 @@ class Variant(object):
         # TODO: Exclude alleles
         return self.num_alt == 1
 
-    def length_change(self):
+    def length_change(self, allele=1):
+        # TODO: Infer if SVLEN is not present
+        assert "SVLEN" in self._record.info, "Variants required to have SVLEN INFO field"
         svlen = self._record.info["SVLEN"]
-        if isinstance(svlen, int):
-            return svlen
-        else:
-            return svlen[0]
-
+        return svlen if allele is None else svlen[allele-1]
+        
     @property
     def ref_length(self):
         """Length of reference allele including any padding bases"""
         raise NotImplementedError()
 
-    @property
-    def alt_length(self):
+    def alt_length(self, allele=1):
         """Length of alternate allele including any padding bases"""
         raise NotImplementedError()
 
@@ -146,88 +161,105 @@ class Variant(object):
     def reference_region(self):
         return Range(self.contig, self.start + self._padding, self.end)
 
-    def left_flank_region(self, left_flank, right_flank=0):
-        return Range(self.contig, self.start + self._padding - left_flank, self.start + self._padding + right_flank)
+    def left_flank_region(self, left_flank, right_flank=0, allele=1):
+        start = self.start + self._padding
+        return Range(self.contig, start - left_flank, start + right_flank)
     
-    def right_flank_region(self, right_flank, left_flank=0):
-        return Range(self.contig, self.end - left_flank, self.end + right_flank)
+    def right_flank_region(self, right_flank, left_flank=0, allele=1):
+        end = self.end - self._right_padding[allele-1]
+        return Range(self.contig, end - left_flank, end + right_flank)
 
-    def ref_breakpoints(self, flank, contig=None):
+    def ref_breakpoints(self, flank, allele=1, contig=None):
         if contig is None:
             contig = self.contig
-        event_end = flank + self.ref_length - self._padding
+        event_end = flank + self.ref_length - self._padding - self._right_padding[allele-1]
         return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
 
-    def alt_breakpoints(self, flank, contig=None):
+    def alt_breakpoints(self, flank, allele=1, contig=None):
         if contig is None:
             contig = self.contig
-        event_end = flank + self.alt_length - self._padding
+        event_end = flank + self.alt_length(allele) - self._padding - self._right_padding[allele-1]
         return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
 
     def genotype_indices(self, index_or_id):
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
 
-    def genotype_allele_count(self, index_or_id, alleles=None):
+    def genotype_allele_count(self, index_or_id, alleles:typing.AbstractSet[int]=None):
         indices = self.genotype_indices(index_or_id)
         if indices is None:
             return None
         if alleles is None:
-            alleles = frozenset(range(1,1+len(self.record._alts)))
+            alleles = frozenset(self.alt_allele_indices)
         count = 0
         for idx in indices:
-            if gt == -1:
+            if idx == -1:
                 return None
             elif idx in alleles:
                 count += 1
-        return count
+        return count  
 
-    def _alt_seq(self, flank, ref_seq):
+    def _alt_seq(self, ref_seq, flank, allele=1):
         raise NotImplementedError()  
 
     def synth_fasta(
         self,
         reference_fasta,
-        ac=1,
+        alleles=(0,1),
         flank=1,
         ref_contig=None,
         alt_contig=None,
         line_width=60,
         dir=None,
         snv_vcf_path: str = None,
+        index_mode=False,
     ):
         region = self.reference_region.expand(flank)
         ref_seq = _reference_sequence(reference_fasta, region, snv_vcf_path=snv_vcf_path)
-        if ac != 0:
-            alt_seq = self._alt_seq(ref_seq, flank)
         
         if ref_contig is None:
             ref_contig = str(region).replace(":", "_").replace("-", "_")
-        if alt_contig is None:
-            alt_contig = ref_contig + "_alt"
         
+        if alt_contig is None:
+            alt_contig = [f"{ref_contig}_{i}_alt" for i in self.alt_allele_indices]
+        elif isinstance(alt_contig, str) and self.num_alt == 1:
+            alt_contig = [alt_contig]
+        if len(alt_contig) != self.num_alt:
+            raise ValueError("There must be one alt_contig name for each alternate allele")
+
         allele_fasta = tempfile.NamedTemporaryFile(
             mode="w", delete=False, suffix=".fasta", dir=dir
         )
 
         # Write out FASTA
+        unique_alleles = set(alleles)
+        
+        # Always write out REF header, but only write sequence if reference allele is present or we are generating sequences
+        # for the alignment index
         print(">", ref_contig, sep="", file=allele_fasta)
-        if ac == 0 or ac == 1:
+        if index_mode or 0 in unique_alleles:
             for line in textwrap.wrap(ref_seq, width=line_width):
                 print(line, file=allele_fasta)
-        print(">", alt_contig, sep="", file=allele_fasta)
-        if ac == 1 or ac == 2:
-            for line in textwrap.wrap(alt_seq, width=line_width):
-                print(line, file=allele_fasta)
+        
+        for allele_idx, contig in zip(self.alt_allele_indices, alt_contig):
+            if allele_idx in unique_alleles:
+                print(">", contig, sep="", file=allele_fasta)
+                alt_seq = self._alt_seq(ref_seq, flank, allele=allele_idx) 
+                for line in textwrap.wrap(alt_seq, width=line_width):
+                    print(line, file=allele_fasta)
+            elif not index_mode:
+                # Only write header without sequence if not in index mode (i.e. simulation mode)     
+                print(">", contig, sep="", file=allele_fasta)
 
-        return allele_fasta.name, ref_contig, alt_contig
+        # Flatten alt_contig if only a single alternate allele
+        return allele_fasta.name, ref_contig, (alt_contig[0] if self.num_alt == 1 else alt_contig)
 
     def as_proto(self):
         sv = npsv2_pb2.StructuralVariant()
         sv.contig = self.contig
         sv.start = self.start
         sv.end = self.end
-        sv.svlen = self.length_change()
+        sv.svlen.extend(self.length_change(allele=None))
         return sv
 
 
@@ -235,6 +267,7 @@ class Variant(object):
 class DeletionVariant(Variant):
     def __init__(self, record):
         Variant.__init__(self, record)
+        # TODO: Update right paddding when there are multiple symblic alleles
 
     @property
     def is_deletion(self):
@@ -244,20 +277,22 @@ class DeletionVariant(Variant):
     def ref_length(self):
         return self.end - self.start
 
-    @property
-    def alt_length(self):
+    def alt_length(self, allele=1):
+        assert allele >= 1
         if self._sequence_resolved:
-            alt_allele = self._record.alts[0]
+            alt_allele = self._record.alleles[allele]
             return len(alt_allele)
         else:
             return 1
 
-    def _alt_seq(self, ref_seq, flank):
+    def _alt_seq(self, ref_seq, flank, allele=1):
         if self._sequence_resolved:
-            alt_allele = self._record.alts[0].upper()
+            alt_allele = self._record.alleles[allele].upper()
             assert _VALID_BASES_RE.fullmatch(alt_allele), "Unexpected base in sequence resolved allele"
             return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
         else:
+            # TODO: This may not be valid for multi-allelic variants
+            assert self.num_alt == 1
             return ref_seq[: flank] + ref_seq[-flank :]
 
     def window_regions(self, window_size: int, flank_windows: int, window_interior=True):
@@ -291,6 +326,7 @@ class DeletionVariant(Variant):
         line_width=60,
         dir=None,
     ):
+        assert self.num_alt == 1, "Multiallelic variants not yet supported"
         region = self.reference_region.expand(flank)
         with pysam.TabixFile(gnomad_coverage) as gnomad_coverage_tabix:
             # Use a FASTQ-like +33 scheme for encoding depth

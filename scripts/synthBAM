@@ -13,7 +13,6 @@ FRAGMEAN=400
 FRAGSD=121
 LENGTH=150
 PROFILE=HS25
-ZYGOSITY=1
 SAMPLES=1
 
 usage()
@@ -27,13 +26,12 @@ Options:
   -h            Print this message
   -R FASTA      Path to reference file, default: $REFERENCE
   -S FASTA      Reference file already in shared memory, default: undefined
-  -c integer    Haploid coverage, default: $COVERAGE
+  -c integer    Coverage for every sequence in FASTA (i.e. for each haplotype present), default: $COVERAGE
   -m float      Mean fragment size, default: $FRAGMEAN
   -s float      Standard deviation of fragment size, default: $FRAGSD
   -t DIRECTORY  Root for temporary directory, default: /data/scratch/\$USER 
   -l integer    Read length, default: $LENGTH
   -p string     ART sequencer profile, default: $PROFILE
-  -z (0,1,2)    Alternate allele count (AC), default: $ZYGOSITY
   -i integer    Number of samples in output SAM/BAM, default: $SAMPLES
   -n string     Sample name, default: undefined
   -j FILE       NPSV stats file for GC normalized coverage, default: undefined
@@ -113,15 +111,7 @@ fi
 TMPDIR=$(mktemp -d --tmpdir="$TMPDIR_ROOT") || exit 1
 trap "rm -rf $TMPDIR" 0
 
-# Generate diploid FASTAs for input to synthetic read generator
-
-if [[ $ZYGOSITY -eq 0 ]]; then
-    COVERAGE=$(bc <<< "$COVERAGE * 2")
-elif [[ $ZYGOSITY -eq 2 ]]; then
-    COVERAGE=$(bc <<< "$COVERAGE * 2")
-fi
 cp "$FASTA" "${OUTBAM/%bam/synth.fasta}"
-
 
 # If shared memory reference is not defined, use reference files
 if [[ -z $SHAREDREF ]]; then

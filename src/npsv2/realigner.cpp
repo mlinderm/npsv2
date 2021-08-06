@@ -275,12 +275,16 @@ RealignedFragment::RealignedFragment(const sl::BamRecord& read1, const sl::BamRe
   }
 }
 
-IndexedSequence::IndexedSequence(const sl::UnalignedSequence& sequence) { Initialize(sequence); }
+IndexedSequence::IndexedSequence(const sl::UnalignedSequence& sequence) : sequence_(sequence) { }
+
+void IndexedSequence::Initialize() {
+  pyassert(!IsInitialized(), "BWA should not previously have been initialized");
+  bwa_.ConstructIndex({sequence_});
+}
 
 void IndexedSequence::Initialize(const sl::UnalignedSequence& sequence) {
-  pyassert(!IsInitialized(), "BWA should not previously have been initialized");
   sequence_ = sequence;
-  bwa_.ConstructIndex({sequence});
+  Initialize();
 }
 
 const std::string& IndexedSequence::IUPACSequence() const {
@@ -301,6 +305,7 @@ void IndexedSequence::AlignSequence(const sl::BamRecord& read, sl::BamRecordVect
 
 namespace {
   sl::GenomicRegion BreakpointToGenomicRegion(const std::string& region, const sl::BamHeader& header) {
+      return sl::GenomicRegion();
       return (region.empty()) ? sl::GenomicRegion() : sl::GenomicRegion(region, header);
   }
 }
@@ -316,10 +321,16 @@ FragmentRealigner::FragmentRealigner(const std::string& fasta_path, const Breakp
   ref_index_.Initialize(next_sequence);
 
   // The remaining sequences at the alternate sequences
+  alt_indexes_.reserve(breakpoints.size());  
   while (contigs.GetNextSequence(next_sequence)) {
     alt_indexes_.emplace_back(next_sequence);
   }
   
+  // Since the BWA wrappers are non-copyable, initialize after all sequences are loaded
+  for (int i=0; i<NumAltAlleles(); i++) {
+    alt_indexes_[i].Initialize();
+  }
+
   // Convert the list of breakpoint strings into GenomicRegions
   pyassert(NumAltAlleles() == breakpoints.size(), "Inconsistent number of alt sequences and breakpoints");
   for (int i=0; i<NumAltAlleles(); i++) {
@@ -377,7 +388,7 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
 
   // Realign the fragment to the reference allele
   RealignedFragment ref_realignment(read1, read2, ref_index_, insert_size_dist_);
-  auto total_log_prob = ref_realignment.TotalLogProb();
+  std::vector<RealignedFragment::score_type> total_log_prob(NumAltAlleles(), ref_realignment.TotalLogProb());
 
   // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:2:1111:14992:77166") {
   //   std::cerr << ref_realignment.BestPair() << std::endl;
@@ -387,17 +398,15 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
   for (int i = 0; i < NumAltAlleles(); i++) {
     // Realign the fragment to this alternate allele
     alt_realignments.emplace_back(read1, read2, alt_indexes_[i], insert_size_dist_);
-    total_log_prob = LogSumPow(total_log_prob, alt_realignments.back().TotalLogProb());
+    total_log_prob[i] = LogSumPow(total_log_prob[i], alt_realignments.back().TotalLogProb());
   }
 
-  RealignedFragment::score_type ref_score = 0, ref_quality = 0, ref_max_score = 0;
+  RealignedFragment::score_type ref_score = NAN, ref_quality = 0;
   bool ref_breakpoint_overlap = false;
   if (ref_realignment.HasBestPair()) {
     auto & best_pair = ref_realignment.BestPair();
     ref_score = best_pair.Score();
-    ref_max_score = best_pair.MaxPossibleScore();
-    ref_quality = LogProbToPhredQual(ref_score - total_log_prob, 40);
-    //std::cerr << "Ref: " << best_pair.Score() << " " << best_pair.MaxPossibleScore() << std::endl;
+    
     auto fragment_region = best_pair.FragmentRegion();
     for (int i = 0; i < NumAltAlleles(); i++) {
       ref_breakpoint_overlap |= fragment_region.GetOverlap(breakpoints_[i][0]) == GenomicRegionOverlap::ContainsArg;
@@ -405,36 +414,29 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
     }
   }
 
-  RealignedFragment::score_type max_alt_score = -std::numeric_limits<RealignedFragment::score_type>::infinity(), max_alt_quality = 0, max_alt_max_score = 0;
+  RealignedFragment::score_type max_alt_score = NAN, max_alt_quality = 0;
   bool max_alt_breakpoint_overlap = false;
   for (int i = 0; i < NumAltAlleles(); i++) {
     const auto& alt_realignment = alt_realignments[i];
     if (alt_realignment.HasBestPair()) {
       auto & best_pair = alt_realignment.BestPair();
       auto alt_score = best_pair.Score();
-      auto alt_quality = LogProbToPhredQual(alt_score - total_log_prob, 40);
-      if (alt_score >= max_alt_score) {
+      auto alt_quality = LogProbToPhredQual(alt_score - total_log_prob[i], 40);
+      if (isnan(max_alt_score) || alt_score >= max_alt_score) {
         max_alt_score = alt_score;
         max_alt_quality = alt_quality;
-        max_alt_max_score = best_pair.MaxPossibleScore();
+        ref_quality = LogProbToPhredQual(ref_score - total_log_prob[i], 40);
         
         auto fragment_region = best_pair.FragmentRegion();
         max_alt_breakpoint_overlap = 
           (fragment_region.GetOverlap(breakpoints_[i][2]) == GenomicRegionOverlap::ContainsArg) ||
           (fragment_region.GetOverlap(breakpoints_[i][3]) == GenomicRegionOverlap::ContainsArg);
       }
-      // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:2:1111:14992:77166") {
-      //   std::cerr << alt_realignment.BestPair() << std::endl;
-      // }
     }
   }
-  // if (ref_quality > (max_alt_quality + 1))
-  //   std::cerr << "Ref: " << total_log_prob << std::endl;
-  // else 
-  // if (max_alt_quality > (ref_quality + 1))
-  //   std::cerr << "Alt: " << read1.Qname() << std::endl;
-  return std::make_tuple(ref_quality, ref_breakpoint_overlap, ref_score, ref_max_score,
-                         max_alt_quality, max_alt_breakpoint_overlap, max_alt_score, max_alt_max_score);
+  
+  return std::make_tuple(ref_quality, ref_breakpoint_overlap, ref_score,
+                         max_alt_quality, max_alt_breakpoint_overlap, max_alt_score);
 }
 
 namespace test {

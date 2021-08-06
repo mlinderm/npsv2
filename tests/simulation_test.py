@@ -2,7 +2,6 @@ import argparse, io, os, sys, tempfile, unittest
 from unittest.mock import patch
 import pysam
 import hydra
-from hydra.experimental import compose, initialize
 from omegaconf import OmegaConf
 from npsv2.variant import Variant
 from npsv2.sample import Sample
@@ -12,7 +11,7 @@ FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
 def setUpModule():
-    initialize(config_path="../src/npsv2/conf")
+    hydra.initialize(config_path="../src/npsv2/conf")
 
 
 def tearDownModule():

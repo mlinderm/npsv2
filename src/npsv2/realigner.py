@@ -16,11 +16,13 @@ def realign_fragment(realigner: FragmentRealigner, fragment: Fragment, assign_de
         kw["read2_seq"] = fragment.read2.query_sequence
         kw["read2_qual"] = _quality_string(fragment.read2)
     
-    ref_quality, ref_break, ref_score, ref_max_score, alt_quality, alt_break, alt_score, alt_max_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
+    ref_quality, ref_break, ref_score, alt_quality, alt_break, alt_score = realigner.realign_read_pair(name, read1_seq, read1_qual, **kw)
        
-    if alt_quality > (ref_quality + assign_delta): 
-        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.ALT)
-    elif ref_quality > (alt_quality + assign_delta):
-        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.REF)
+    delta = alt_quality - ref_quality 
+    if delta > assign_delta: 
+        assign = AlleleAssignment.ALT
+    elif delta < -assign_delta:
+        assign = AlleleAssignment.REF
     else:
-        return AlleleRealignment(ref_quality, alt_quality, AlleleAssignment.AMB)
+        assign = AlleleAssignment.AMB
+    return AlleleRealignment(ref_quality, alt_quality, assign)

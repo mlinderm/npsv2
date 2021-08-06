@@ -97,6 +97,7 @@ class IndexedSequence {
   IndexedSequence(const sl::UnalignedSequence& sequence);
 
   bool IsInitialized() const { return !bwa_.IsEmpty(); }
+  void Initialize();
   void Initialize(const sl::UnalignedSequence& sequence);
 
   const std::string& Sequence() const { return sequence_.Seq; }
@@ -118,7 +119,7 @@ class FragmentRealigner {
   typedef std::vector<IndexedSequence> AltIndexesSequence;
  public:  
   typedef std::vector<std::tuple<std::string, std::string, std::string, std::string>> BreakpointList;
-  typedef std::tuple<double, bool, double, double, double, bool, double, double> RealignTuple;
+  typedef std::tuple<double, bool, double, double, bool, double> RealignTuple;
 
   FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std, py::kwargs kwargs);
 

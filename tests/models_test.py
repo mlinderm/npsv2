@@ -3,7 +3,6 @@ from unittest.mock import patch, call
 
 import numpy as np
 import hydra
-from hydra.experimental import compose, initialize
 
 from npsv2 import models
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
@@ -13,7 +12,7 @@ from .images_test import _mock_reference_sequence, _mock_simulate_variant_sequen
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 def setUpModule():
-    initialize(config_path="../src/npsv2/conf")
+    hydra.initialize(config_path="../src/npsv2/conf")
 
 def tearDownModule():
     hydra.core.global_hydra.GlobalHydra.instance().clear()
