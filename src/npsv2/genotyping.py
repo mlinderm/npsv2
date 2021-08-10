@@ -1,4 +1,4 @@
-import io, os, tempfile, typing
+import io, itertools, os, tempfile, typing
 from functools import partial
 import pysam
 import pysam.bcftools as bcftools
@@ -7,13 +7,13 @@ import tensorflow as tf
 import numpy as np
 from tqdm import tqdm
 import hydra
-from .sample import sample_name_from_bam
 from .variant import Variant
 from . import images
 from . import models
 from .range import Range
-from .utilities.vcf import index_variant_file, bcftools_format
+from .utilities.vcf import allele_indices_from_genotype_field_index, genotype_field_index, genotype_field_len, index_variant_file, bcftools_format
 
+PLOIDY=2
 VCF_HEADER_TYPES_TO_COPY = frozenset(["GENERIC", "STRUCTURED", "INFO", "FILTER", "CONTIG"])
 
 def ac_to_genotype(ac):
@@ -40,8 +40,12 @@ def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_b
     else:
         return (0., 0., region_length)
 
+def _allele_masks(variant: Variant):
+    alleles = variant.alt_allele_indices
+    return [set(a) for a in itertools.chain(itertools.combinations(alleles, 1), itertools.combinations(alleles, 2))]
 
-def genotype_vcf(cfg, vcf_path: str, samples, model_paths: typing.Sequence[str], output_path: str, progress_bar=False,):
+
+def genotype_vcf(cfg, vcf_path: str, samples, model_paths: typing.Sequence[str], output_path: str, progress_bar=False):
     assert cfg.simulation.replicates >= 1, "At least one replicate is required for genotyping"
     
     # We currently just use ray for the CPU-side work, specifically simulating the SVs
@@ -93,9 +97,16 @@ def genotype_vcf(cfg, vcf_path: str, samples, model_paths: typing.Sequence[str],
                     if i % num_shards == index:
                         if yield_example:
                             variant = Variant.from_pysam(record)
-                            examples = [images.make_variant_example(cfg, variant, sample.bam, sample, label=None, simulate=True, generator=generator) for sample in ordered_samples]
+
+                            # Examples is "2-D" list of lists, i.e. list of allele mask combinations for example sample
+                            allele_masks = _allele_masks(variant)
+                            examples = []
+                            for sample in ordered_samples:
+                                # TODO: Calculate sample-level alternate statistics here
+                                examples.append([images.make_variant_example(cfg, variant, sample.bam, sample, label=None, simulate=True, generator=generator, alleles=mask) for mask in allele_masks])
                             
-                            # Generate other features as well
+                            # TODO: Generate stats for multiple samples
+                            # TODO: Generate other features as well
                             left_region = variant.left_flank_region(cfg.pileup.fetch_flank)  # TODO: Incorporate CIPOS and CIEND?
                             event_region = variant.reference_region
                             right_region = variant.right_flank_region(cfg.pileup.fetch_flank)
@@ -124,37 +135,51 @@ def genotype_vcf(cfg, vcf_path: str, samples, model_paths: typing.Sequence[str],
             example_it = ray.util.iter.from_iterators([partial(_vcf_shard, num_shards, i) for i in range(num_shards)])
             record_its = [_vcf_shard(num_shards, i, yield_example=False) for i in range(num_shards)]
 
-            for index, examples, DHFFC in tqdm(example_it.gather_async(), desc="Genotyping variants", disable=not progress_bar):
+            for index, sample_examples, DHFFC in tqdm(example_it.gather_async(), desc="Genotyping variants", disable=not progress_bar):
                 # Obtain the corresponding VCF record
                 record_index, record = next(record_its[index % num_shards])
                 assert record_index == index, "Mismatch VCF variant and result from threading"
+                assert len(sample_examples) == len(ordered_samples), "Mismatch in expected number of samples"
+                
                 variant = Variant.from_pysam(record)
+                allele_masks = _allele_masks(variant)
+                distance_len = genotype_field_len(variant.num_alt, PLOIDY)
 
                 dst_samples = []
-                for example in examples:                    
-                    example_variant = images._example_variant(example)
-                    assert example_variant.start == variant.start and example_variant.end == variant.end, "Mismatch VCF variant and result from threading"
+                for mask_examples in sample_examples:                    
+                    assert len(mask_examples) == len(allele_masks), "Mismatch in expected number of allele combinations"
                     
-                    # Convert example to features (TODO: reuse function in images model)
-                    features = {
-                        "image": images._example_image(example),
-                        "sim/images": images._example_sim_images(example)
-                    }
+                    vcf_distances = np.ones(distance_len, dtype=np.float32)
+                    for mask, example in zip(allele_masks, mask_examples):
+                        example_variant = images._example_variant(example)
+                        assert example_variant.start == variant.start and example_variant.end == variant.end, "Mismatch VCF variant and result from threading"
+                        
+                        # Convert example to features (TODO: reuse function in images model)
+                        features = {
+                            "image": images._example_image(example),
+                            "sim/images": images._example_sim_images(example)
+                        }
 
-                    # Predict genotype using one or more models (by taking the mean of the distances)
-                    dataset = tf.data.Dataset.from_tensors((features, None))
-                    distances = tf.concat([model.predict(cfg, dataset)[1] for model in models], axis=0)
-                   
-                    #_, distances, *_  = model.predict(cfg, dataset)
-                    #print(distances)
-                    distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
-                    genotypes = tf.nn.softmax(-distances)
-                    #print(distances, tf.math.reduce_mean(distances, axis=0), tf.nn.softmax(-tf.math.reduce_mean(distances, axis=0)))
-                    
+                        # Predict genotype using one or more models (by taking the mean of the distances across models and replicates)
+                        dataset = tf.data.Dataset.from_tensors((features, None))
+                        distances = tf.concat([model.predict(cfg, dataset)[1] for model in models], axis=0)
+                        distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
+                        
+                        # Convert distances to "genotype likelihood" ordering expected by VCF (TODO: Average reference allele values?)
+                        if len(mask) == 1:
+                            # The mask contains just the alternate allele
+                            for i, gt in enumerate(itertools.combinations_with_replacement({0} | mask, PLOIDY)):
+                                 vcf_distances[genotype_field_index(gt)] = distances[i]
+                        elif len(mask) == 2:
+                            # For multiple alleles we only care about AC=2 (compound het. distance)
+                            vcf_distances[genotype_field_index(mask)] = distances[2] 
+                        else:
+                            raise NotImplementedError("Only ploidy <= 2 is currently supported")
+                        
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     dst_samples.append({
-                        "GT": ac_to_genotype(np.argmax(genotypes)),
-                        "DS": np.squeeze(distances).round(4).tolist(),
+                        "GT": allele_indices_from_genotype_field_index(np.argmin(vcf_distances), variant.num_alt, PLOIDY),
+                        "DS": vcf_distances.round(4).tolist(),
                         "DHFFC": DHFFC,
                     })
 

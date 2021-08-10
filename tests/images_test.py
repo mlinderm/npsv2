@@ -1,4 +1,4 @@
-import argparse, io, os, shutil, tempfile, unittest
+import os, tempfile, unittest
 from unittest.mock import patch, call
 import pysam
 import tensorflow as tf
@@ -11,8 +11,7 @@ from omegaconf import OmegaConf
 from npsv2.variant import Variant
 from npsv2.range import Range
 from npsv2 import images
-from npsv2 import npsv2_pb2
-from npsv2.simulation import RandomVariants, bwa_index_loaded
+from npsv2.simulation import bwa_index_loaded
 from npsv2.sample import Sample
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -464,7 +463,6 @@ class MultiallelicVCFExampleGenerateTest(unittest.TestCase):
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
             "generator=single_depth",
             "simulation.replicates=1",
-            "pileup.render_snv=false",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
 

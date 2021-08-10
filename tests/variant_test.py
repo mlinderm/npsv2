@@ -22,8 +22,8 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 71)
         self.assertEqual(self.variant.alt_length(), 1)
-
-        # Range is 0-indexed half-open...
+        self.assertEqual(set(self.variant.alt_allele_indices), {1})
+        self.assertEqual(self.variant.num_alt, 1)
         self.assertTrue(self.variant.is_biallelic())
 
     def test_region_strings(self):
@@ -361,12 +361,16 @@ class MultiallelicSequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertTrue(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant._right_padding, [0, 30])
+        
         self.assertEqual(self.variant.num_alt, 2)
         self.assertFalse(self.variant.is_biallelic())
-        
+        self.assertEqual(set(self.variant.alt_allele_indices), {1, 2})
+
         self.assertEqual(self.variant.end, 77500136)
         
-        self.assertEqual(self.variant.length_change(), (-360, -330))
+        self.assertEqual(self.variant.length_change(allele=None), (-360, -330))
+        self.assertEqual(self.variant.length_change(allele=1), -360)
+        self.assertEqual(self.variant.length_change(allele=2), -330)
         self.assertEqual(self.variant.alt_length(1),1)
         self.assertEqual(self.variant.alt_length(2),31)
         
