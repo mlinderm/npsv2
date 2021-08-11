@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 import argparse, logging, os, subprocess, sys, tempfile
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, ListConfig
 import hydra
 import tensorflow as tf
 from tqdm import tqdm
 from .simulation import bwa_index_loaded
+
+def _as_list(item_or_list):
+    """Convert scalar argument to list, or pass list through"""
+    return item_or_list if isinstance(item_or_list, (list, ListConfig)) else [item_or_list]
 
 def _configure_gpu():
     """
@@ -212,9 +216,9 @@ def main(cfg: DictConfig) -> None:
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf
         if cfg.refine.select_algo == "ml" and not OmegaConf.is_missing(cfg, "refine.classifier_path"):
-            classifier_path = hydra.utils.to_absolute_path(cfg.refine.classifier_path)
+            classifier_path = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.refine.classifier_path)]
         else:
-            classifier_path = None
+            classifier_path = []
         
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):

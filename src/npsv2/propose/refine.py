@@ -4,14 +4,20 @@ import pysam
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import cross_val_score, cross_val_predict, train_test_split
 from tqdm import tqdm
+import os
 
 from . import ORIGINAL_KEY
 from ..variant import Variant
 from ..range import Range, RangeTree
 from ..utilities.vcf import index_variant_file
+from scipy.special import softmax
 
-FEATURES = ["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "MIN", "DIFF", "BIG CONF", "SMALL CONF"]
+FEATURES = ["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC", "AC"]
+
 KLASS = "MATCHGT"
 
 
@@ -33,6 +39,7 @@ def _record_to_rows(record, orig_min_dist):
                         "ID": record.id,
                         "POS": int(record.pos),
                         "END": record.stop,
+                        "SVLEN": record.info["SVLEN"],
                         "ORIGINAL": original,
                         "SV": original or record.id,
                         "SAMPLE": i,
@@ -42,11 +49,19 @@ def _record_to_rows(record, orig_min_dist):
                         "HET_DIST": distances[1],
                         "HOMO_ALT_DIST": distances[2],
                         "DHFFC": call["DHFFC"],
+                        "AC": _count_alleles(call.allele_indices),
                     },
                     index=[0],
                 )
             )
     return pd.concat(rows, ignore_index=True)
+
+def _count_alleles(allele_indices):
+    ac = 0
+    for allele in allele_indices:
+        if allele > 0:
+            ac += 1
+    return ac
 
 
 def _add_derived_features(table):
@@ -56,6 +71,13 @@ def _add_derived_features(table):
     table["MIN_RATIO"] = np.divide(table.MIN, table.ORIGINAL_MIN)
     table["BIG CONF"] = table.MIN / table[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]].median(axis=1)
     table["SMALL CONF"] = table.MIN / table[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]].max(axis=1)
+    
+    # Compute softmax and GQ
+    softmax_array = softmax(-table[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]], axis=1)
+    table["SOFTMAX_HOMO_REF"] = softmax_array["HOMO_REF_DIST"]
+    table["SOFTMAX_HET"] = softmax_array["HET_DIST"]
+    table["SOFTMAX_HOMO_ALT"] = softmax_array["HOMO_ALT_DIST"]
+    table["GQ"] = table[["SOFTMAX_HOMO_REF", "SOFTMAX_HET", "SOFTMAX_HOMO_ALT"]].max(axis=1) - table[["SOFTMAX_HOMO_REF", "SOFTMAX_HET", "SOFTMAX_HOMO_ALT"]].median(axis=1)
 
 
 def _gt_to_alleles(gt):
@@ -108,12 +130,12 @@ def refine_vcf(
     cfg,
     vcf_path: str,
     output_path: str,
-    classifier_path: str = None,
+    classifier_path: str, 
     progress_bar=False,
     include_orig_ref=True,
     merge_blocks=True,
     include_orig_in_block=False,
-    
+
 ):
     if cfg.refine.select_algo not in { "original", "ml", "min_distance" }:
         raise ValueError(f"{cfg.refine.select_algo} is not a supported selection algorithm")
@@ -126,6 +148,7 @@ def refine_vcf(
         src_header = src_vcf_file.header
         dst_header = src_header.copy()
         dst_header.add_line('##FORMAT=<ID=CL,Number=1,Type=String,Description="Call location used for genotype">')
+        dst_header.add_line('##FORMAT=<ID=PCL,Number=1,Type=Float,Description="Probability that selected call is true.">')
         dst_header.add_line('##FORMAT=<ID=OGT,Number=1,Type=String,Description="Genotype for the original variant">')
         dst_header.add_line(
             '##FORMAT=<ID=ODS,Number=G,Type=Float,Description="Distance between real and simulated data for the original variant">'
@@ -133,56 +156,24 @@ def refine_vcf(
         dst_header.add_line(
             '##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">'
         )
+        dst_header.add_line(
+            '##FORMAT=<ID=PALT,Number=.,Type=Float,Description="Probabilities of other proposals">'
+        )
 
         table, original_records, _ = _vcf_to_table(src_vcf_file, progress_bar=progress_bar)
 
         if cfg.refine.select_algo == "ml":
-            # Load the "refine" classifier and predict best proposal
-            clf = joblib.load(classifier_path)
-            table["PROBTRUE"] = clf.predict_proba(table[FEATURES])[:, 1]
-         
-        # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-        #     print(table)
-
-        # # Determine variant groups
-        # variant_ranges = RangeTree()
-        # for id, original_record in original_records.items():
-        #     total_range = Variant.from_pysam(original_record).reference_region
-        #     for alternate_record in alternate_records.get(id, []):
-        #         total_range = total_range.union(Variant.from_pysam(alternate_record).reference_region)
-        #     variant_ranges.add(total_range, [id])
-
-        # # Optionally merged overlapping variant ranges into single blocks
-        # if merge_blocks:
-        #     variant_ranges.merge_overlaps(data_reducer=operator.add, data_initializer=[])
-
-        # # Determine the best alternate representation(s) in each group
-        # closest_alts = {}
-        # for ids in variant_ranges.values():
-        #     best_alts = [(float("Inf"), None, None, False)] * num_samples
-        #     for id in ids:
-        #         possible_alternate_records = alternate_records.get(id, [])
-        #         if include_orig_in_block:
-        #             possible_alternate_records.append(original_records[id])
-        #         for alternate_record in possible_alternate_records:
-        #             for i, alternate_call in enumerate(alternate_record.samples.itervalues()):
-        #                 best_dist, *_ = best_alts[i]
-
-        #                 alt_dist = alternate_call["DS"]
-        #                 min_idx = np.argmin(alt_dist)
-        #                 alt_ratio = alternate_call["DHFFC"]
-        #                 if min_idx != 0 and alt_dist[min_idx] < best_dist:
-        #                     best_alts[i] = (alt_dist[min_idx], id, alternate_record, False)
-        #                     if alt_dist[min_idx]/alt_dist[0] < 0.125:
-        #                         if min_idx == 1:
-        #                             if (alt_dist[min_idx]/alt_dist[2] < 0.125 and 0.4 <= alt_ratio <= 0.6):
-        #                                 best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
-        #                         else:
-        #                             if (alt_dist[min_idx]/alt_dist[1] < 0.125 and alt_ratio <= 0.2):
-        #                                 best_alts[i] = (alt_dist[min_idx], id, alternate_record, True)
-
-        #     for id in ids:
-        #         closest_alts[id] = best_alts
+            for i, path in enumerate(classifier_path):
+                clf = joblib.load(path)
+                table[f"PROBTRUE{i}"] = clf.predict_proba(table[clf.feature_names])[:, 1]
+            # base_dir = os.path.join(classifier_path, "base_models")
+            # for i, filename in enumerate(os.listdir(base_dir)):
+            #     path = os.path.join(base_dir, filename)
+            #     clf = joblib.load(path)
+            #     table[f"PROBTRUE{i}"] = clf.predict_proba(table[clf.feature_names])[:, 1]
+            
+            # blender = joblib.load(os.path.join(classifier_path, "blender.joblib"))
+            # table["BLEND_PROB"] = blender.predict_proba(table[blender.feature_names])[:, 1]
 
         variant_table = table.groupby(["SV", "SAMPLE"])
 
@@ -195,85 +186,61 @@ def refine_vcf(
                     dst_vcf_file.write(record)  # Just use original SV genotype without trying to refine
                     continue
 
-
                 for i, call in enumerate(record.samples.itervalues()):
-                    possible_calls = variant_table.get_group((id, i)).reset_index(drop=True)
-
-                    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-                    #     print(possible_calls)
+                    possible_calls = variant_table.get_group((id, i)).reset_index(drop=True).sort_values(by=["POS"])
+                    orig = possible_calls[pd.isna(possible_calls.ID) == False].iloc[0]
 
                     if possible_calls.shape[0] == 1:
                         # No alternate record to update with
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
+                        # rows1.append(possible_calls.iloc[0].to_frame())
                         continue
                     else:
+                        # if cfg.refine.select_algo == "ml":
+                        #     best_calls = possible_calls[possible_calls.GT != "0/0"]
+                        #     if best_calls.shape[0] > 0:
+                        #         max_prob_idx = best_calls.BLEND_PROB.idxmax()
+                        #         alt_row = best_calls.loc[max_prob_idx, :]
+                        #         if alt_row.BLEND_PROB < orig.BLEND_PROB:
+                        #             alt_row = orig
+                        #     else:
+                        #         alt_row = orig                        
                         if cfg.refine.select_algo == "ml":
-                            max_prob_idx = possible_calls.PROBTRUE.idxmax()
-                            alt_row = possible_calls.iloc[max_prob_idx, :]
+                            best_calls = possible_calls[possible_calls.GT != "0/0"]
+                            if best_calls.shape[0] > 0:
+                                max_prob_idx = best_calls.PROBTRUE0.idxmax()
+                                alt_row = best_calls.loc[max_prob_idx, :]
+                                alt_probtrue = alt_row.PROBTRUE0
+                                orig_probtrue = orig.PROBTRUE0
+                                for i in range(len(classifier_path)):
+                                    max_prob_idx2 = best_calls[f"PROBTRUE{i}"].idxmax()
+                                    if max_prob_idx != max_prob_idx2 and best_calls.loc[max_prob_idx2, :].MIN < alt_row.MIN:
+                                        max_prob_idx = max_prob_idx2
+                                        alt_row = best_calls.loc[max_prob_idx2, :]
+                                        alt_probtrue = alt_row[f"PROBTRUE{i}"]
+                                        orig_probtrue = orig[f"PROBTRUE{i}"]
+                                if alt_probtrue < orig_probtrue:
+                                    alt_row = orig
+                            else:
+                                alt_row = orig
                         else:
                             min_dist_idx = np.unravel_index(np.argmin(possible_calls[["HOMO_REF_DIST","HET_DIST","HOMO_ALT_DIST"]]), (possible_calls.shape[0], 3))
-                            alt_row = possible_calls.iloc[min_dist_idx[0], :]
+                            alt_row = possible_calls.iloc[min_dist_idx[0], :] if min_dist_idx[1] > 0 else None
 
-                        if not pd.isna(alt_row.ORIGINAL):
+                        if alt_row is not None and not pd.isna(alt_row.ORIGINAL):
+                            #TODO: print out probtrue corresponding to chosen model for given SV (currently always prints probtrue corresponding to first model)
                             call.update(
                                 {
                                     "DS": [alt_row.HOMO_REF_DIST, alt_row.HET_DIST, alt_row.HOMO_ALT_DIST],
                                     "DHFFC": alt_row.DHFFC,
-                                    "CL": f"{alt_row.POS}_{alt_row.END}",
+                                    "PCL": alt_row.PROBTRUE0, 
+                                    "CL": f"{alt_row.POS}__{alt_row.END}",
+                                    "PALT": possible_calls.PROBTRUE0.tolist(),
                                 }
                             )
                             call.allele_indices = _gt_to_alleles(alt_row.GT)
 
-                # if id not in closest_alts:
-                #     # No alternate records present for this variant, or any blocks this variant overlaps
-                #     pass
-                # else:
-                #     # Identify best alternate representation and genotype for each sample
-                #     closest_alt = closest_alts[id]
-                #     for i, call in enumerate(record.samples.itervalues()):
-                #         alt_dist, alt_id, alt_record, alt_better = closest_alt[i]
-                #         if alt_record is None or alt_record is record:
-                #             # No alternate record to update with, or we are tying to update with ourselves (same original record)
-                #             continue
-
-                #         orig_dist = min(call["DS"][orig_start_idx:])
-                #         diff = alt_dist - orig_dist
-                #         if diff <= 0.1 and alt_better == True and alt_id == id:
-                #             #One of our alternate representations is best, based on coverage criteria
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "var",
-                #                 "DS": alt_call["DS"],
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call["DS"],
-                #             })
-                #             call.allele_indices = alt_call.allele_indices
-
-                #         elif alt_dist < orig_dist and alt_id == id:
-                #             # One of our alternate representations is best, use that alternate genotype
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "var",
-                #                 "DS": alt_call["DS"],
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call["DS"],
-                #             })
-                #             call.allele_indices = alt_call.allele_indices
-
-                #         elif alt_dist < orig_dist and alt_id != id:
-                #             # A different variant's alternate representation is best, set our genotype to 0/0
-                #             alt_call = alt_record.samples[i]
-                #             call.update({
-                #                 "SRC": "blk",
-                #                 "CL": _variant_descriptor(alt_record),
-                #                 "OGT": "/".join(map(str, call.allele_indices)),
-                #                 "ODS": call.pop("DS"),
-                #             })
-                #             call.allele_indices = [0, 0]
-
-                dst_vcf_file.write(record)
+                dst_vcf_file.write(record)                
 
         # Write index if file if compressed variant file
         index_variant_file(output_path)
@@ -342,8 +309,11 @@ def train_model(vcf_path: str, pbsv_file: str, output_path: str):
 
     # First train on randomly-sampled balanced training data
     logging.info("Training initial model on %d observations", matched_training.shape[0])
-    clf = RandomForestClassifier(n_estimators=100, class_weight="balanced")
+
+    #create model to select "hard" falses
+    clf = KNeighborsClassifier()
     clf.fit(matched_training[FEATURES], matched_training[KLASS])
+    clf.feature_names = FEATURES
     assert np.array_equal(clf.classes_, [False, True])
 
     # Select "hard" falses (since there is only one TRUE per SV, it should always be the max)
@@ -356,7 +326,106 @@ def train_model(vcf_path: str, pbsv_file: str, output_path: str):
     # Train again using "hard" falses
     logging.info("Training model using 'hard negatives' on %d observations", matched_training.shape[0])
     clf.fit(matched_training[FEATURES], matched_training[KLASS])
+    clf.feature_names = FEATURES
 
     logging.info("Saving model in: %s", output_path)
     joblib.dump(clf, output_path, compress=3)
 
+def ensemble_train(vcf_path: str, pbsv_file: str, output_path: str):
+    """Train ensemble of models for selecting among proposed SVs
+
+    Args:
+        vcf_path (str): Path to VCF file of proposed SVs
+        pbsv_file (str): Path to TSV file of SVs that matched long-read derived calls
+        output_path (str): Directory to save the models in. Base models saved in subdirectory called base_models, blender saved in directory listed as output_path.
+    """
+    # Load NSPV2 VCF into Pandas table
+    with pysam.VariantFile(vcf_path) as src_vcf_file:
+        table, *_ = _vcf_to_table(src_vcf_file)
+
+    # Load table of proposals that matched long-read derived calls and join with proposals
+    longread_table = pd.read_csv(
+        pbsv_file, sep="\t", na_values=["."], header=0, names=["ID", "ORIGINAL", "POS", "END", KLASS]
+    )
+    merge_table = pd.merge(table, longread_table, on=["ID", "ORIGINAL", "POS", "END"], how="left")
+
+    avail_data = merge_table.value_counts(KLASS)
+    logging.info(
+        "Training with %d SVs, %d/%d matched long-read calls with correct/incorrect genotypes",
+        merge_table.shape[0],
+        avail_data.get(True, 0),
+        avail_data.get(False, 0),
+    )
+
+    # Any missing MATCHGT values are by definition False since those were not the best proposal
+    # TODO: Exclude SVs we couldn't match to any PBSV call?
+    merge_table.fillna({"MATCHGT": False}, inplace=True)
+
+    # Perform matched downsampling, i.e. selecting "FALSE" for every SV with "TRUE" or matching proposal
+    matched_training = merge_table.groupby("SV").filter(lambda x: x.MATCHGT.any()).groupby(["SV", KLASS]).sample(n=1)
+    matched_training = _supplement_false_training_examples(merge_table, matched_training, method="random")
+
+    # First train on randomly-sampled balanced training data
+    logging.info("Training initial model on %d observations", matched_training.shape[0])
+    clfs = []
+    clf0 = KNeighborsClassifier()
+    clf1 = RandomForestClassifier(n_estimators=100, class_weight="balanced")
+    clf2 = LogisticRegression(random_state=0)
+    clfs.append(clf0)
+    clfs.append(clf1)
+    clfs.append(clf2)
+
+    #create initial model to select "hard" falses
+    clf0.fit(matched_training[FEATURES], matched_training[KLASS])
+    clf0.feature_names = FEATURES
+    assert np.array_equal(clf0.classes_, [False, True])
+
+    # Select "hard" falses (since there is only one TRUE per SV, it should always be the max)
+    merge_table["PROBTRUE0"] = clf0.predict_proba(merge_table[FEATURES])[:, 1]
+    matched_training = merge_table.loc[
+        merge_table.groupby("SV").filter(lambda x: x.MATCHGT.any()).groupby(["SV", KLASS]).PROBTRUE0.idxmax()
+    ]
+    matched_training = _supplement_false_training_examples(merge_table, matched_training, method="hard")
+
+    #split data in attempt to avoid overfitting - model still overfit
+    x_train, x_test, y_train, y_test = train_test_split(matched_training[FEATURES + ["PROBTRUE0"]], matched_training[KLASS], test_size=0.15, random_state=42)
+
+    BLENDER_FEATURES = ["PROBTRUE0"]
+
+    # Train again using "hard" falses
+    logging.info("Training model using 'hard negatives' on %d observations", matched_training.shape[0])
+
+    #Create additional models
+    for i, clf in enumerate(clfs[1:]):
+        clf.fit(x_train[FEATURES], y_train)
+        clf.feature_names = FEATURES
+        matched_training[f"PROBTRUE{i+1}"] = clf.predict_proba(matched_training[FEATURES])[:, 1]
+        x_train[f"PROBTRUE{i+1}"] = clf.predict_proba(x_train[FEATURES])[:, 1]
+        x_test[f"PROBTRUE{i+1}"] = clf.predict_proba(x_test[FEATURES])[:, 1]
+        assert np.array_equal(clf.classes_, [False, True])
+        BLENDER_FEATURES.append(f"PROBTRUE{i+1}")
+
+    #create blender
+    blender = LogisticRegression(random_state=0)
+    blender.feature_names = BLENDER_FEATURES
+    blender.fit(matched_training[BLENDER_FEATURES], matched_training[KLASS])
+    blender.fit(x_test[BLENDER_FEATURES], y_test)
+    df = pd.DataFrame()
+    df['MATCHGT'] = y_train
+    df['PREDICTIONS'] = blender.predict(x_train[BLENDER_FEATURES])
+    correct_predictions = df[df['PREDICTIONS'] == df['MATCHGT']]
+    print(correct_predictions.shape[0]/df.shape[0])
+    # y_pred = cross_val_predict(blender, x_train[BLENDER_FEATURES], y_train, cv = 5)
+    # y_pred_score = cross_val_score(blender, x_train[BLENDER_FEATURES], y_train, cv = 5)
+    # y_pred = cross_val_predict(blender, x_test[BLENDER_FEATURES], y_test, cv = 5)
+    # y_pred_score = cross_val_score(blender, x_test[BLENDER_FEATURES], y_test, cv = 5)
+
+    os.mkdir(output_path)
+    joblib.dump(blender, os.path.join(output_path, "blender.joblib"), compress=3)
+
+    base_path = os.path.join(output_path, "base_models")
+    os.makedirs(base_path)
+
+    for i, clf in enumerate(clfs):
+        path = os.path.join(base_path, f"model{i}.joblib")
+        joblib.dump(clf, path, compress=3)

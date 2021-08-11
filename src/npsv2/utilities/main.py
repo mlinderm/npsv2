@@ -67,7 +67,7 @@ def main():
         "-i", "--input", help="Input VCF file.", type=str, required=True
     )
     parser_refinetrain.add_argument(
-        "-o", "--output", help="Specify output file", type=str, required=True
+        "-o", "--output", help="Specify directory to store output files", type=str, required=True
     )
     parser_refinetrain.add_argument(
         "-p", "--pbsv", help="Input PBSV file.", type=str, required=True
