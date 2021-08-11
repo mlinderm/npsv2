@@ -5,7 +5,7 @@ import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
-from deeplab2.model.encoder import axial_resnet_instances
+#from deeplab2.model.encoder import axial_resnet_instances
 
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 
@@ -77,26 +77,26 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
     
     return base_model
 
-def _get_backbone(name, input_shape):
-    backbone = axial_resnet_instances.get_model("resnet50", backbone_layer_multiplier=1, bn_layer=tf.keras.layers.BatchNormalization, conv_kernel_weight_decay=0.0001)
+# def _get_backbone(name, input_shape):
+#     backbone = axial_resnet_instances.get_model("resnet50", backbone_layer_multiplier=1, bn_layer=tf.keras.layers.BatchNormalization, conv_kernel_weight_decay=0.0001)
      
-    image = layers.Input(input_shape) 
-    output = backbone(image)
-    embedding = layers.GlobalAveragePooling2D()(output["res5"])
-    model = tf.keras.Model(inputs=image, outputs=embedding)
-    return model
+#     image = layers.Input(input_shape) 
+#     output = backbone(image)
+#     embedding = layers.GlobalAveragePooling2D()(output["res5"])
+#     model = tf.keras.Model(inputs=image, outputs=embedding)
+#     return model
 
 
-class AxialWrapperLayer(layers.Layer):
-    def __init__(self, encoder):
-        super(AxialWrapperLayer, self).__init__()
-        self.encoder = encoder
+# class AxialWrapperLayer(layers.Layer):
+#     def __init__(self, encoder):
+#         super(AxialWrapperLayer, self).__init__()
+#         self.encoder = encoder
 
-    def call(self, inputs):
-        return self.encoder(inputs)
+#     def call(self, inputs):
+#         return self.encoder(inputs)
 
-    def compute_output_shape(self, input_shape):
-        return (None, 2048)
+#     def compute_output_shape(self, input_shape):
+#         return (None, 2048)
 
     # base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
    
