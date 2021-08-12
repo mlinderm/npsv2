@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-import argparse, logging, os, subprocess, sys, tempfile
-from collections.abc import Iterable
+import argparse, logging, os, subprocess, sys, tempfile, typing
 from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
@@ -43,6 +42,13 @@ def _as_list(item_or_list):
     return item_or_list if isinstance(item_or_list, (list, ListConfig)) else [item_or_list]
 
 
+def _make_paths_absolute(cfg: DictConfig, keys: typing.Iterable[str]):
+    """Make list of hydra configuration keys, e.g. 'pileup.snv_vcf_input' absolute paths"""
+    for key in keys:
+        if not OmegaConf.is_missing(cfg, key) and OmegaConf.select(cfg, key) is not None:
+            OmegaConf.update(cfg, key, hydra.utils.to_absolute_path(OmegaConf.select(cfg, key)))
+
+
 # Resolvers for use with Hydra
 OmegaConf.register_new_resolver("len", lambda x: len(x))
 
@@ -51,7 +57,6 @@ OmegaConf.register_new_resolver("len", lambda x: len(x))
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg), file=sys.stderr)
     if cfg.command == "images":
-        import ray
         from .images import vcf_to_tfrecords
         from .sample import Sample, sample_name_from_bam
 
@@ -202,8 +207,9 @@ def main(cfg: DictConfig) -> None:
             reads_path = hydra.utils.to_absolute_path(reads_path)
             samples[sample_name_from_bam(reads_path)].bam = reads_path
        
-        # Make sure model path is absolute
+        # Make sure model path (and other paths) are absolute
         model_paths = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.model.model_path)]
+        _make_paths_absolute(cfg, ["pileup.snv_vcf_input"])
 
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):
@@ -218,6 +224,7 @@ def main(cfg: DictConfig) -> None:
             model_paths,
             output,
             progress_bar=True,
+            evaluate=cfg.concordance,
         )
     
     elif cfg.command == "propose":

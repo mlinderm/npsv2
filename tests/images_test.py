@@ -1,5 +1,6 @@
 import os, tempfile, unittest
 from unittest.mock import patch, call
+from parameterized import parameterized, parameterized_class
 import pysam
 import tensorflow as tf
 import numpy as np
@@ -15,6 +16,7 @@ from npsv2.simulation import bwa_index_loaded
 from npsv2.sample import Sample
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
+RESULT_DIR = os.path.join(os.path.dirname(__file__), "results")
 
 def setUpModule():
     # Ignore resource warnings within Ray
@@ -203,9 +205,18 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
 
-@unittest.skip("Development only")
-@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"), "Reference genome not available")
+
+#@unittest.skip("Development only")
+@unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta") and os.path.exists("/data/HG002-ready.bam"), "Reference genome not available")
+@parameterized_class([
+#    { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
+#    { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
+#    { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
+   { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
+])
 class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
+    """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
+  
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = hydra.compose(config_name="config", overrides=[
@@ -216,23 +227,21 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
             "simulation.sample_ref=false",
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
-
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
-        self.vcf_path = os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz")
-        self.bam_path = os.path.join(FILE_DIR, "12_22127565_22132387.bam")
-
+        self.bam_path = "/data/HG002-ready.bam"
+    
     def tearDown(self):
         self.tempdir.cleanup()
 
     def test_example_single_image(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
-        png_path = os.path.join(self.tempdir.name, "test.png")
+        png_path = os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=2)
 
     def test_example_channel_image(self):
-        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False))
-        png_path = os.path.join(self.tempdir.name, "test.png")
-        images.example_to_image(self.cfg, example, png_path, with_simulations=False, render_channels=True)
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
+        png_path = os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".channel.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True)
 
 @unittest.skip("Currently not in use")
 class SingleFragmentImageGeneratorClassTest(unittest.TestCase):

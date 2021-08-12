@@ -39,6 +39,8 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
             observed_variants = {}
             for i, record in enumerate(tqdm(src_vcf_file, desc="Generating proposed SV representations", disable=not progress_bar)):
                 # Clean up and create unique variant ID to prevent downstream errors
+                if record.id is None:
+                    record.id = f"var{i}" # TODO: Create more informative unique name
                 multiple_ids = record.id.find(";")
                 if multiple_ids != -1:
                     record.id = record.id[:multiple_ids]
@@ -51,6 +53,10 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
 
                 if not variant.is_deletion:
                     # Only deletions currently supported
+                    continue
+
+                if not variant.is_biallelic():
+                    # We currently only generate proposals for biallelic SVs
                     continue
 
                 length_change = abs(variant.length_change())

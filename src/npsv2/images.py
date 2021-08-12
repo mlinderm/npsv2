@@ -546,7 +546,12 @@ def _int_feature(list_of_ints):
     return tf.train.Feature(int64_list=tf.train.Int64List(value=list_of_ints))
 
 
-def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}):
+def _float_feature(list_of_floats):
+    """Returns a float_list from a list of int / bool."""
+    return tf.train.Feature(float_list=tf.train.FloatList(value=list_of_floats))
+
+
+def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}, addl_features={}):
     assert 1 <= len(alleles) <= min(variant.num_alt, 2)
 
     if generator is None:
@@ -600,7 +605,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                 if allele_count == 0:
                     fasta_alleles = (0, 0)
                 elif allele_count == 1:
-                    # Use first allele in multi-allelic contexts (an ill-defined case)
+                    # Use first allele in multi-allelic contexts (where heterozygous is ill-defined)
                     fasta_alleles = (0, next(iter(alleles)))
                 elif allele_count == 2:
                     fasta_alleles = sorted(alleles) * (allele_count // len(alleles))
@@ -658,6 +663,9 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into tensor
         sim_image_tensor = np.stack(ac_encoded_images)
         feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
+
+        # Add any additional (extension) features
+        feature.update(addl_features)
 
     return tf.train.Example(features=tf.train.Features(feature=feature))
 

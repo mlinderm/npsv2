@@ -83,4 +83,4 @@ class MultiallelicVCFGenotypeTest(unittest.TestCase):
         self.assertEqual(record.samples["HG002"].allele_indices, (1, 2))
         # Distances follow VCF genotype likelihood ordering
         np.testing.assert_array_almost_equal(record.samples["HG002"]["DS"], (0.51, 0.5, 0.9, 0.51, 0.12, 0.92))
-
+        np.testing.assert_array_almost_equal(record.samples["HG002"]["DHFFC"], (0.27937498688697815, 0.3624579906463623))

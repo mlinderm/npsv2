@@ -18,6 +18,9 @@ KLASS = "MATCHGT"
 def _variant_descriptor(record):
     return f"{record.contig}_{record.start}_{record.stop}"
 
+def _is_biallelic(record: pysam.VariantRecord) -> bool:
+    return len(record.alts) == 1
+
 
 def _record_to_rows(record, orig_min_dist):
     alt_indices = set(range(1,1+len(record.alts)))
@@ -42,7 +45,7 @@ def _record_to_rows(record, orig_min_dist):
                 "HOMO_REF_DIST": distances[0],
                 "HET_DIST": distances[1],
                 "HOMO_ALT_DIST": distances[2],
-                "DHFFC": call["DHFFC"],
+                "DHFFC": call["DHFFC"][0],
             })
     return pd.DataFrame(rows)
 
@@ -91,6 +94,10 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
 
     rows = []
     for id, original_record in tqdm(original_records.items(), desc="Reading variants into table", disable=not progress_bar, mininterval=1):
+        # We currently skip multi-allelic variants
+        if not _is_biallelic(record):
+            continue
+
         # Determine minimum "original" distance for each sample
         orig_min_dist = [np.min(call["DS"]) for call in original_record.samples.itervalues()]
 
@@ -170,6 +177,10 @@ def refine_vcf(
 
                 if cfg.refine.select_algo == "original":
                     dst_vcf_file.write(record)  # Just use original SV genotype without trying to refine
+                    continue
+
+                if not _is_biallelic(record):
+                    dst_vcf_file.write(record)  # We currently don't refine multi-allelic variants
                     continue
 
                 for i, call in enumerate(record.samples.itervalues()):
