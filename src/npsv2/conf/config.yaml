@@ -5,8 +5,8 @@ defaults:
   - model: joint_embeddings
   - training
   - optional model_training: ${model}
-  - command: genotype
   - refine
+  - command: genotype
   - override hydra/job_logging: custom
 
 threads: 1

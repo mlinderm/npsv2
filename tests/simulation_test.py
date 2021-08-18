@@ -39,7 +39,7 @@ class GenerateRandomDeletions(unittest.TestCase):
 class NormalizeCoverage(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.cfg = compose(
+        self.cfg = hydra.compose(
             config_name="config",
             overrides=[
                 "generator=single_depth",
@@ -58,7 +58,7 @@ class NormalizeCoverage(unittest.TestCase):
 
     def test_gc_normalized_coverage(self):
         fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(
-            reference_fasta=self.cfg.reference, ac=2, flank=self.cfg.pileup.realigner_flank, dir=self.tempdir.name,
+            reference_fasta=self.cfg.reference, alleles=(1,1), flank=self.cfg.pileup.realigner_flank, dir=self.tempdir.name,
         )
 
         replicate_bam_path = simulate_variant_sequencing(
@@ -74,7 +74,7 @@ class NormalizeCoverage(unittest.TestCase):
 
     def test_gnomad_normalized_coverage(self):
         fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(
-            reference_fasta=self.cfg.reference, ac=2, flank=self.cfg.pileup.realigner_flank, dir=self.tempdir.name,
+            reference_fasta=self.cfg.reference, alleles=(1,1), flank=self.cfg.pileup.realigner_flank, dir=self.tempdir.name,
         )
         covg_path, *_ = self.variant.gnomad_coverage_profile(
             os.path.join(FILE_DIR, "1_896922_903086.gnomad.genomes.coverage.summary.tsv.gz"),

@@ -71,7 +71,7 @@
 ##FORMAT=<ID=BNG_LEN_INS,Number=1,Type=Integer,Description="Length of an insertion predicted by BioNano in a region overlapping this variant">
 ##FORMAT=<ID=nabsys_svm,Number=1,Type=Float,Description="Nabsys SVM score for this variant if it was evaluated">
 ##FORMAT=<ID=DS,Number=G,Type=Float,Description="Distance between real and simulated data">
-##FORMAT=<ID=DHFFC,Number=1,Type=Float,Description="Ratio between mean coverage in the event and the flanks">
+##FORMAT=<ID=DHFFC,Number=A,Type=Float,Description="Ratio between mean coverage in the event and the flanks">
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##FILTER=<ID=NoConsensusGT,Description="No individual had genotypes from svviz agree across all datasets with confident genotypes">
 ##FILTER=<ID=LongReadHomRef,Description="Long reads supported homozygous reference for all individuals">

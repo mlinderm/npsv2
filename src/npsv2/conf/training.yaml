@@ -4,3 +4,5 @@ learning_rate: 0.004
 log_dir: null
 shuffle: 1000
 variants_per_batch: 16
+checkpoint_dir: null
+restart_from_checkpoint: false

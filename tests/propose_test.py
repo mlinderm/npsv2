@@ -60,7 +60,7 @@ class RefineTestSuite(unittest.TestCase):
             cfg,
             os.path.join(FILE_DIR, "refine_input.vcf"),
             output_path,
-            classifier_path=os.path.join(FILE_DIR, "refineML_model.joblib"),
+            classifier_path=[os.path.join(FILE_DIR, "refineML_model.joblib")],
         )
         self.assertTrue(os.path.exists(output_path))
 

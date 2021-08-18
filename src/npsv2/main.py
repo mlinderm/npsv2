@@ -64,11 +64,17 @@ def main(cfg: DictConfig) -> None:
 
         sample = Sample.from_json(hydra.utils.to_absolute_path(cfg.stats_path))
 
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "images.tfrecords.gz"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+
         vcf_to_tfrecords(
             cfg,
             hydra.utils.to_absolute_path(cfg.input),
             hydra.utils.to_absolute_path(cfg.reads),
-            hydra.utils.to_absolute_path(cfg.output),
+            output,
             sample,
             sample_or_label=cfg.sample,
             simulate=cfg.simulation.replicates > 0,
@@ -108,7 +114,7 @@ def main(cfg: DictConfig) -> None:
         tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
         tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
 
-        cfg.model.model_path = cfg.model.model_path and hydra.utils.to_absolute_path(cfg.model.model_path)
+        _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])
 
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
         model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path)

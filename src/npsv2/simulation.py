@@ -49,7 +49,7 @@ class RandomVariants(object):
         variant_header = pysam.VariantHeader()
         variant_header.info.add("END", 1, "Integer", "End coordinate of this variant") 
         variant_header.info.add("SVTYPE", 1, "String", "Type of structural variant")
-        variant_header.info.add("SVLEN", 1, "Integer", "Difference in length between REF and ALT alleles")
+        variant_header.info.add("SVLEN", "A", "Integer", "Difference in length between REF and ALT alleles")
         variant_header.info.add("IMPRECISE", 0, "Flag", "Imprecise structural variation")
         variant_header.info.add("CIEND", 2, "Integer", "Confidence interval around END for imprecise variants")
         variant_header.info.add("CIPOS", 2, "Integer", "Confidence interval around POS for imprecise variants")

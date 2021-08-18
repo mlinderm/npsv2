@@ -77,7 +77,7 @@ class EncoderTest(unittest.TestCase):
 @unittest.skip("Development only")
 class SupervisedBaselineModelTest(unittest.TestCase):
     def setUp(self):
-        self.cfg = compose(config_name="config", overrides=[
+        self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
             "model=supervised_baseline"
         ])
@@ -146,7 +146,7 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
 #@unittest.skip("Development only")
 class JointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
-        self.cfg = compose(config_name="config", overrides=[
+        self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
             "model=joint_embeddings"
         ])
@@ -178,7 +178,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
 @unittest.skip("Development only")
 class ProjectionJointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
-        self.cfg = compose(config_name="config", overrides=[
+        self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
             "model=projection_joint_embeddings"
         ])

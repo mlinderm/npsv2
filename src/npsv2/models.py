@@ -1,4 +1,4 @@
-import datetime, logging, os, tempfile
+import datetime, logging, os, re, tempfile
 from omegaconf import OmegaConf
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -130,13 +130,27 @@ class GenotypingModel:
         encoder.save_weights(model_path)
 
     def _fit(self, cfg, training_dataset, validation_dataset=None):
-        checkpoint_filepath = os.path.join(tempfile.gettempdir(), "checkpoints")
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            filepath=checkpoint_filepath, save_weights_only=True, monitor="loss", mode="min", save_best_only=True
-        )
-        #early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=3)
+        callbacks = []
 
-        callbacks=[checkpoint_callback] #,early_stopping]
+        initial_epoch = 0
+        # Load most recent checkpoint, extracting epoch number to restart training at specific epoch
+        if cfg.training.restart_from_checkpoint and cfg.training.checkpoint_dir:
+            latest = tf.train.latest_checkpoint(cfg.training.checkpoint_dir)
+            if latest:
+                epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
+                if epoch:
+                    initial_epoch = int(epoch.group(1))
+                logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
+                self._model.load_weights(latest)
+        
+        if cfg.training.checkpoint_dir:
+            logging.info("Saving checkpoints to %s", cfg.training.checkpoint_dir)
+            checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(cfg.training.checkpoint_dir, "{epoch:04d}.ckpt"),
+                save_weights_only=True,
+                verbose=1,
+            )
+            callbacks.append(checkpoint_callback)
     
         if cfg.training.log_dir:
             log_dir = os.path.join(cfg.training.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -147,12 +161,10 @@ class GenotypingModel:
         self._model.fit(
             training_dataset,
             validation_data=validation_dataset,
+            initial_epoch=initial_epoch,
             epochs=cfg.training.epochs,
             callbacks=callbacks,
         )
-    
-        # Reload best checkpoint
-        self._model.load_weights(checkpoint_filepath)
 
 class SupervisedBaselineModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
@@ -338,7 +350,7 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
                 
         def _variant_to_training(features, original_label):
             support_shape = tf.shape(features["sim/images"])
-            support_replicates = support_shape[1]
+            support_replicates = tf.math.minimum(support_shape[1], cfg.simulation.replicates)
             tf.debugging.assert_greater(support_replicates, 0)
             
             # TODO: Actually obtain reference size (since that determines the image size)
@@ -354,8 +366,9 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
             queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
 
-            # Swap AC and replicates dimensions, so we can pass triples of all genotypes to the model
-            support = tf.image.convert_image_dtype(features["sim/images"], dtype=tf.float32)
+            # Swap AC and replicates dimensions, so we can pass triples of all genotypes to the model. Slice to control
+            # the number of replicates used per variant in training
+            support = tf.image.convert_image_dtype(features["sim/images"][:,:support_replicates], dtype=tf.float32)
             support = tf.transpose(support, perm=(1, 0) + tuple(range(2, 2+len(self.image_shape))))
 
             return tf.data.Dataset.from_tensor_slices(({ 
@@ -367,13 +380,15 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
                 "genotypes": tf.repeat(original_label, support_replicates),
             }))
         
+        def _filter_missing_labels(features, original_label):
+            return original_label is not None
+
         # Interleave SVs into the batch
         return (
             dataset
-            .filter(lambda _, original_label: original_label is not None)
+            .filter(_filter_missing_labels)
             .shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
             .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch, num_parallel_calls=cfg.threads)
-            #.filter(lambda inputs, _: inputs["variant_size"] > -300)
             .batch(cfg.training.variants_per_batch)
             .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )

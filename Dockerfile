@@ -1,4 +1,4 @@
-FROM ubuntu:18.04
+FROM tensorflow/tensorflow:2.3.4-gpu
 
 RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   art-nextgen-simulation-tools \
