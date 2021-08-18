@@ -9,6 +9,7 @@ from google.protobuf import descriptor_pb2
 
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 from . import npsv2_pb2
+from .utilities.callbacks import NModelCheckpoint
 
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
@@ -133,20 +134,26 @@ class GenotypingModel:
         callbacks = []
 
         initial_epoch = 0
-        # Load most recent checkpoint, extracting epoch number to restart training at specific epoch
-        if cfg.training.restart_from_checkpoint and cfg.training.checkpoint_dir:
-            latest = tf.train.latest_checkpoint(cfg.training.checkpoint_dir)
-            if latest:
-                epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
-                if epoch:
-                    initial_epoch = int(epoch.group(1))
-                logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
-                self._model.load_weights(latest)
         
+        # Load most recent checkpoint, extracting epoch number to restart training at specific epoch
         if cfg.training.checkpoint_dir:
             logging.info("Saving checkpoints to %s", cfg.training.checkpoint_dir)
-            checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+
+            existing_checkpoints = []
+            if cfg.training.restart_from_checkpoint:
+                latest = tf.train.latest_checkpoint(cfg.training.checkpoint_dir)
+                if latest:
+                    existing_checkpoints.append(latest) # Ensure existing checkpoints are deleted if no longer needed
+                    epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
+                    if epoch:
+                        initial_epoch = int(epoch.group(1))
+                    logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
+                    self._model.load_weights(latest)
+            
+            checkpoint_callback = NModelCheckpoint(
                 filepath=os.path.join(cfg.training.checkpoint_dir, "{epoch:04d}.ckpt"),
+                max_to_keep=1, # Only keep the most recent checkpoint
+                existing_checkpoints=existing_checkpoints,
                 save_weights_only=True,
                 verbose=1,
             )
