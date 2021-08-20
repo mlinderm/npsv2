@@ -7,7 +7,6 @@ defaults:
   - optional model_training: ${model}
   - refine
   - command: genotype
-  - override hydra/job_logging: custom
 
 threads: 1
 
