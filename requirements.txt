@@ -13,3 +13,4 @@ scipy>=1.2.0
 parameterized
 joblib
 sklearn
+portalocker

@@ -1,11 +1,11 @@
-import argparse, io, os, sys, tempfile, unittest
+import argparse, io, json, os, sys, tempfile, unittest
 from unittest.mock import patch
 import pysam
 import hydra
 from omegaconf import OmegaConf
 from npsv2.variant import Variant
 from npsv2.sample import Sample
-from npsv2.simulation import RandomVariants, simulate_variant_sequencing, bwa_index_loaded
+from npsv2.simulation import RandomVariants, simulate_variant_sequencing, bwa_index_loaded, _bwa_index_load, _bwa_index_unload
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -96,3 +96,39 @@ class NormalizeCoverage(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(replicate_bam_path))
 
+class ManageBWAIndex(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.lock_file = os.path.join(self.tempdir.name, "bwa.lock")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+    
+    @patch("atexit.register")
+    @patch("subprocess.run")
+    def test_loading_and_unloading_bwa_index(self, mock_run, mock_reg):
+        self.assertEqual(_bwa_index_load("/data/test.fasta", lock_file=self.lock_file), "test.fasta")
+        
+        mock_run.assert_called_with("bwa shm /data/test.fasta", shell=True, check=True)
+        self.assertTrue(os.path.exists(self.lock_file))
+        with open(self.lock_file) as file:
+            self.assertEqual(json.load(file), { "test.fasta": 1 })
+        mock_reg.assert_called_once_with(_bwa_index_unload, "test.fasta", self.lock_file)
+
+        mock_run.reset_mock()
+        with patch("npsv2.simulation._is_bwa_index_loaded", return_value=True):
+            _bwa_index_load("/data/test.fasta", lock_file=self.lock_file)
+        mock_run.assert_not_called()
+        self.assertTrue(os.path.exists(self.lock_file))
+        with open(self.lock_file) as file:
+            self.assertEqual(json.load(file), { "test.fasta": 2 })
+
+        mock_run.reset_mock()
+        _bwa_index_unload("test.fasta", self.lock_file)
+        mock_run.assert_not_called()
+        with open(self.lock_file) as file:
+            self.assertEqual(json.load(file), { "test.fasta": 1 })
+
+        _bwa_index_unload("test.fasta", self.lock_file)
+        mock_run.assert_called_with("bwa shm -d", shell=True, check=True)
+        self.assertFalse(os.path.exists(self.lock_file))

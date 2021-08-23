@@ -1,7 +1,8 @@
-import atexit, copy, logging, os, random, re, subprocess, tempfile
+import atexit, copy, json, logging, os, random, re, subprocess, tempfile, typing
 import pysam
 import numpy as np
 from shlex import quote
+import portalocker
 from .range import Range
 from .variant import Variant
 from .sample import Sample
@@ -10,6 +11,8 @@ from . import _native
 CHROM_REGEX_AUTO = r"^(chr)?([1-9][0-9]?)$"
 CHROM_REGEX_AUTO_NOY = r"^(chr)?([1-9][0-9]?|[X])$"
 CHROM_REGEX_SEX = r"^(chr)?[XY]"
+
+LOCK_CHECK_INTERVAL = 1
 
 class RandomVariants(object):
     def __init__(self, ref_path: str, exclude_path: str):
@@ -73,12 +76,83 @@ class RandomVariants(object):
             assert False, "Unsupported variant type"
 
 
-def _bwa_index_unload():
-    subprocess.run("bwa shm -d", shell=True, check=True)
+def _is_bwa_index_loaded(shared_name):
+    indices = subprocess.check_output("bwa shm -l", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
+    for index in indices.split("\n"):
+        if index.startswith(shared_name):
+            return True
+    return False
+
+
+def _write_lock_file(file, counts: dict):
+    file.seek(0)
+    file.truncate(0)
+    json.dump(counts, file)
+    # Docs suggest flushing and syncing the file: https://portalocker.readthedocs.io/en/latest/#tips
+    file.flush()
+    os.fsync(file.fileno())
+
+
+def _bwa_index_unload(shared_name: str, lock_file: str):
+    while True:
+        try:
+            with portalocker.Lock(lock_file, mode="r+", check_interval=LOCK_CHECK_INTERVAL) as lock:
+                current_counts = json.load(lock)
+                assert current_counts[shared_name] > 0, "BWA index is already unloaded"
+                current_counts[shared_name] -= 1
+                
+                for count in current_counts.values():
+                    if count > 0:
+                        # There is still an index file in use. Don't delete any indices, just write an updated lock file.
+                        _write_lock_file(lock, current_counts)
+                        return
+                
+                # No shared references in use, we can delete the references (bwa deletes all shared references)
+                logging.info("Unloading all BWA indices in shared memory")
+                subprocess.run("bwa shm -d", shell=True, check=True)
+                os.unlink(lock_file)
+            return
+        except portalocker.LockException:
+            continue
+        
+            
+
+def _bwa_index_load(reference, lock_file = "/var/lock/npsv2/bwa.lock") -> typing.Optional[str]:
+    # Create lock directory if it doesn't exist
+    os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+    
+    shared_name = os.path.basename(reference)
+    while True:
+        try:
+            with portalocker.Lock(lock_file, mode="a+", check_interval=LOCK_CHECK_INTERVAL, timeout=120) as lock:
+                lock.seek(0)
+                current_counts = json.loads(lock.read() or '{}')
+                if current_counts.get(shared_name, 0) > 0:
+                    assert _is_bwa_index_loaded(shared_name)
+                    logging.info("Incrementing reference count for %s", shared_name)
+                    current_counts[shared_name] += 1
+                else:
+                    assert not _is_bwa_index_loaded(shared_name)
+                    logging.info("Loading BWA index for %s into shared memory", reference)
+                    subprocess.run(f"bwa shm {reference}", shell=True, check=True)
+                    current_counts[shared_name] =1
+
+                # Write reference counts to lock file    
+                _write_lock_file(lock, current_counts)
+                # Register handler to unload reference when no longer needed
+                atexit.register(_bwa_index_unload, shared_name, lock_file)
+            return shared_name
+        except portalocker.LockException:
+            continue
+
 
 
 def bwa_index_loaded(reference: str, load=False) -> str:
     """Check if bwa index is loaded in shared memory
+
+    If BWA index is loaded into shared memory, this function implements reference counting with a lock file to enable
+    multiple instances of npsv2 to run on the same node. However, since indices loaded into shared memory are global, this
+    management might conflict with other users who have loaded bwa indices into shared memory.
 
     Args:
         reference (str): Path to reference file
@@ -88,15 +162,11 @@ def bwa_index_loaded(reference: str, load=False) -> str:
         str: Shared reference name if index is loaded into shared memory, None otherwise
     """
     shared_name = os.path.basename(reference)
-    indices = subprocess.check_output("bwa shm -l", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
-    for index in indices.split("\n"):
-        if index.startswith(shared_name):
-            return shared_name
-    if load:
-        logging.info("Loading BWA index for %s into shared memory", reference)
-        subprocess.run(f"bwa shm {reference}", shell=True, check=True)
-        atexit.register(_bwa_index_unload)  # Register handler to unload reference if needed
+    if _is_bwa_index_loaded(shared_name):
         return shared_name
+    
+    if load:
+        return _bwa_index_load(reference)
     else:
         return None
 
