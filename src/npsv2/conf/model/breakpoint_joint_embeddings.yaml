@@ -1,3 +1,0 @@
-# @package _group_
-_target_: npsv2.models.BreakpointJointEmbeddingsModel
-model_path: null

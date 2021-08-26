@@ -6,3 +6,5 @@ shuffle: 1000
 variants_per_batch: 16
 checkpoint_dir: null
 restart_from_checkpoint: false
+validation_freq: ${training.epochs}
+validation_input: null

@@ -114,13 +114,14 @@ def main(cfg: DictConfig) -> None:
         tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
         tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
 
-        _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])
+        _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir", "training.validation_input"])
 
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
         model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path)
 
         dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
-        model.fit(cfg, dataset)
+        validation_dataset = cfg.training.validation_input and load_example_dataset(cfg.training.validation_input, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
+        model.fit(cfg, dataset, validation_dataset=validation_dataset)
     
         model_path = os.path.join(os.getcwd(), "model.h5")
         logging.info("Saving model in: %s", model_path)
@@ -137,13 +138,15 @@ def main(cfg: DictConfig) -> None:
         tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
         tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
 
+        _make_paths_absolute(cfg, ["model.model_path"])
+
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-        cfg.model.model_path = hydra.utils.to_absolute_path(cfg.model.model_path)
         model = hydra.utils.instantiate(cfg.model, image_shape, 1)
 
         errors = 0
         rows = []
         for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
+            #print(features)
             if original_label is None:
                 continue  # Skip invalid genotypes
                 
