@@ -280,11 +280,11 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         self.image_shape = image_shape
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
-    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+    def _create_model(self, image_shape, model_path: str=None, projection_size=[512],**kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
         
         # In this context, we only care about the projection output
-        encoder =_contrastive_encoder(image_shape, weights=None, base_trainable=True, normalize_embedding=False, projection_size=[512], batch_normalize_projection=True, normalize_projection=True)
+        encoder =_contrastive_encoder(image_shape, weights=None, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
         _, _, projection = encoder.output
         encoder = tf.keras.Model(encoder.input, projection, name="encoder")
         
@@ -344,7 +344,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
             y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
             y_pred = tf.reshape(y_pred, (-1,))
             weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
-            return tfa.losses.contrastive_loss(y_true, y_pred) * weights
+            return tfa.losses.contrastive_loss(y_true, y_pred, margin=cfg.training.contrastive_margin) * weights
 
         # TODO: Add precision/recall
         self._model.compile(
@@ -381,7 +381,6 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
 class JointEmbeddingsModel(SimulatedEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
-        print("Model path:", model_path)
         super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
 
     def _train_input(self, cfg, dataset):
@@ -443,9 +442,9 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )
 
-    def _test_input(self, cfg, dataset, **kwargs):
+    def _test_input(self, cfg, dataset, max_replicates=sys.maxsize):
         def _variant_to_test(features, original_label):
-            return self._variant_to_dataset(cfg, features, original_label, **kwargs)
+            return self._variant_to_dataset(cfg, features, original_label, max_replicates=max_replicates)
 
         return (
             dataset

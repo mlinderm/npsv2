@@ -1,2 +1,3 @@
 _target_: npsv2.models.JointEmbeddingsModel
 model_path: null
+projection_size: [512]

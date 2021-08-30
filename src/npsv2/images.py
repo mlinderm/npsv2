@@ -744,28 +744,30 @@ def vcf_to_tfrecords(
     simulate=False,
     progress_bar=False,
 ):
+    with tempfile.TemporaryDirectory() as ray_dir:
+        # We currently just use ray for the CPU-side work, specifically simulating the SVs. We use a private temporary directory
+        # to avoid conflicts between clusters running on the same node.
+        logging.info("Initializing ray with %d threads", cfg.threads)
+        ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=ray_dir, ignore_reinit_error=True, include_dashboard=False)
 
-    # We currently just use ray for the CPU-side work, specifically simulating the SVs
-    ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=tempfile.gettempdir(), ignore_reinit_error=True, include_dashboard=False)
+        def _vcf_shard(num_shards: int, index: int) -> typing.Iterator[tf.train.Example]:
+            try:
+                # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
+                tf.config.threading.set_inter_op_parallelism_threads(1)
+                tf.config.threading.set_intra_op_parallelism_threads(1)
+            except RuntimeError:
+                pass
+            
+            yield from make_vcf_examples(cfg, vcf_path, read_path, sample, sample_or_label=sample_or_label, simulate=simulate, num_shards=num_shards, index=index)
 
-    def _vcf_shard(num_shards: int, index: int) -> typing.Iterator[tf.train.Example]:
-        try:
-            # Try to reduce the number of threads TF creates since we are running multiple instances of TF via Ray
-            tf.config.threading.set_inter_op_parallelism_threads(1)
-            tf.config.threading.set_intra_op_parallelism_threads(1)
-        except RuntimeError:
-            pass
+        # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
+        # There is a warning due to an internal exception bubbling up that seems to have to do with changes
+        # to Python generator handling. Not clear how to fix that warning...
+        it = ray.util.iter.from_iterators([functools.partial(_vcf_shard, cfg.threads, i) for i in range(cfg.threads)])
         
-        yield from make_vcf_examples(cfg, vcf_path, read_path, sample, sample_or_label=sample_or_label, simulate=simulate, num_shards=num_shards, index=index)
-
-    # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
-    # There is a warning due to an internal exception bubbling up that seems to have to do with changes
-    # to Python generator handling. Not clear how to fix that warning...
-    it = ray.util.iter.from_iterators([functools.partial(_vcf_shard, cfg.threads, i) for i in range(cfg.threads)])
-    
-    with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
-        for example in tqdm(it.gather_async(), desc="Generating variant images", disable=not progress_bar):
-            file_writer.write(example.SerializeToString()) 
+        with tf.io.TFRecordWriter(output_path, _filename_to_compression(output_path)) as file_writer:
+            for example in tqdm(it.gather_async(), desc="Generating variant images", disable=not progress_bar):
+                file_writer.write(example.SerializeToString()) 
 
 
 def _features_variant(features):

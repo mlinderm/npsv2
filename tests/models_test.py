@@ -115,9 +115,6 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
             "model=simulated_embeddings"
         ])
 
-    def test_configuration_overrides(self):
-        self.assertEqual(self.cfg.training.variants_per_batch, 8)
-
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
@@ -148,7 +145,8 @@ class JointEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
-            "model=joint_embeddings"
+            "model=joint_embeddings",
+            "training.contrastive_margin=0.5",
         ])
     
     def test_construct_model(self):

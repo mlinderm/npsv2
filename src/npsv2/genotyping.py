@@ -84,9 +84,6 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
     """
     assert cfg.simulation.replicates >= 1, "At least one replicate is required for genotyping"
     
-    # We currently just use ray for the CPU-side work, specifically simulating the SVs
-    ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=tempfile.gettempdir(), ignore_reinit_error=True, include_dashboard=False)
-
     # Create image generator and genotyper model
     generator = hydra.utils.instantiate(cfg.generator, cfg)
     models = [hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], cfg.simulation.replicates, model_path=path) for path in model_paths]
@@ -165,6 +162,12 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                     yield (i, record)
 
     with tempfile.TemporaryDirectory() as output_dir:
+        # We currently just use ray for the CPU-side work, specifically simulating the SVs. We use a private temporary directory
+        # to avoid conflicts between clusters running on the same node.
+        logging.info("Initializing ray with %d threads", cfg.threads)
+        # TODO: Seem to run into memory issues starting multiple clusters. Set memory based on allocation?
+        print(ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=output_dir, ignore_reinit_error=True, include_dashboard=False, object_store_memory=16*1024*1024*1024, _redis_max_memory=1024*1024*1024))
+
         unsorted_output_path = os.path.join(output_dir, "genotypes.vcf.gz")
         with pysam.VariantFile(unsorted_output_path, mode="wz", header=dst_header) as dst_vcf_file:
             # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.

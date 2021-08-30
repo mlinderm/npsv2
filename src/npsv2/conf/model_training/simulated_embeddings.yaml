@@ -1,3 +1,0 @@
-# @package _global_
-training:
-  variants_per_batch: 8

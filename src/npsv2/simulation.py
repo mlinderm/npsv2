@@ -111,13 +111,13 @@ def _bwa_index_unload(shared_name: str, lock_file: str):
                 logging.info("Unloading all BWA indices in shared memory")
                 subprocess.run("bwa shm -d", shell=True, check=True)
                 os.unlink(lock_file)
-            return
+                return
         except portalocker.LockException:
             continue
         
             
 
-def _bwa_index_load(reference, lock_file = "/var/lock/npsv2/bwa.lock") -> typing.Optional[str]:
+def _bwa_index_load(reference, lock_file = "/var/tmp/npsv2/bwa.lock") -> typing.Optional[str]:
     # Create lock directory if it doesn't exist
     os.makedirs(os.path.dirname(lock_file), exist_ok=True)
     
@@ -125,6 +125,7 @@ def _bwa_index_load(reference, lock_file = "/var/lock/npsv2/bwa.lock") -> typing
     while True:
         try:
             with portalocker.Lock(lock_file, mode="a+", check_interval=LOCK_CHECK_INTERVAL, timeout=120) as lock:
+                logging.info("Holding lock on %s", lock_file)
                 lock.seek(0)
                 current_counts = json.loads(lock.read() or '{}')
                 if current_counts.get(shared_name, 0) > 0:
@@ -141,8 +142,10 @@ def _bwa_index_load(reference, lock_file = "/var/lock/npsv2/bwa.lock") -> typing
                 _write_lock_file(lock, current_counts)
                 # Register handler to unload reference when no longer needed
                 atexit.register(_bwa_index_unload, shared_name, lock_file)
+            logging.info("Released lock on %s", lock_file)
             return shared_name
         except portalocker.LockException:
+            logging.info("Unable to obtain lock on %s", lock_file)
             continue
 
 
