@@ -74,7 +74,7 @@ class EncoderTest(unittest.TestCase):
         self.assertEqual(embeddings, (None, 2048))
 
 
-@unittest.skip("Development only")
+#@unittest.skip("Development only")
 class SupervisedBaselineModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[
@@ -110,7 +110,7 @@ class SupervisedBaselineModelTest(unittest.TestCase):
 @unittest.skip("Development only")
 class SimulatedEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
-        self.cfg = compose(config_name="config", overrides=[
+        self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
             "model=simulated_embeddings"
         ])
@@ -160,7 +160,6 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")
         image_shape, replicates = _extract_metadata_from_first_example(dataset_path)
         self.assertGreater(replicates, 0)
-        print(replicates)
         model = hydra.utils.instantiate(self.cfg.model, image_shape, replicates)
         dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)
         validation_dataset = load_example_dataset(dataset_path, with_simulations=True, with_label=True)

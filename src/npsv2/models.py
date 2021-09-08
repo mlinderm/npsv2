@@ -234,31 +234,39 @@ class SupervisedBaselineModel(GenotypingModel):
         def _variant_to_training(features, original_label):
             queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
     
-            return ({ 
+            return tf.data.Dataset.from_tensors(({ 
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
             }, {
                 "genotypes_logits": original_label,
                 "genotypes": original_label,
-            })
+            }))
         
+        def _filter_missing_labels(features, original_label):
+            return original_label is not None
+
         # Interleave SVs into the batch
         return (
             dataset
+            .filter(_filter_missing_labels)
             .shuffle(cfg.training.shuffle, reshuffle_each_iteration=True)
-            .map(_variant_to_training)
+            .interleave(_variant_to_training, cycle_length=cfg.training.variants_per_batch, num_parallel_calls=cfg.threads)
             .batch(cfg.training.variants_per_batch)
+            .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )
 
     def fit(self, cfg, training_dataset, validation_dataset=None):
         optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
-        # TODO: Two stage learning for transfer learning?
         self._model.compile(
             optimizer=optimizer,
             loss={ "genotypes_logits": tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True) },
-            metrics={ "genotypes": ["sparse_categorical_accuracy"] },
+            metrics={ "genotypes": ["sparse_categorical_accuracy", sparse_nonref_genotype_concordance] },
         )
                 
-        self._fit(cfg, self._train_input(cfg, training_dataset))
+        self._fit(
+            cfg,
+            self._train_input(cfg, training_dataset),
+            validation_dataset=validation_dataset and self._test_input(cfg, validation_dataset)
+        )
 
     def _test_input(self, cfg, dataset, batch_size):
         def _variant_to_test(features, original_label):
@@ -363,12 +371,12 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
     def _test_input(self, cfg, dataset, batch_size):
         def _variant_to_test(features, original_label):
-            one_hot_label = original_label if original_label is not None else -1
+            #one_hot_label = original_label if original_label is not None else -1
             return ({
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
                 "support": tf.image.convert_image_dtype(features["sim/images"][:,0], dtype=tf.float32),
             }, {
-                "distances": tf.one_hot(one_hot_label, depth=3, dtype=tf.float32),
+                "distances": tf.one_hot(original_label, depth=3, dtype=tf.float32),
                 "genotypes": original_label,
             })
 
