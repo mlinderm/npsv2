@@ -268,7 +268,7 @@ class SupervisedBaselineModel(GenotypingModel):
             validation_dataset=validation_dataset and self._test_input(cfg, validation_dataset)
         )
 
-    def _test_input(self, cfg, dataset, batch_size):
+    def _test_input(self, cfg, dataset, max_replicates=sys.maxsize):
         def _variant_to_test(features, original_label):
             return ({
                 "query": tf.image.convert_image_dtype(features["image"], dtype=tf.float32),
@@ -277,10 +277,15 @@ class SupervisedBaselineModel(GenotypingModel):
                 "genotypes": original_label,
             })
 
-        return dataset.map(_variant_to_test).batch(batch_size)
+        return (
+            dataset
+            .map(_variant_to_test)
+            .batch(cfg.training.variants_per_batch)
+            .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
+        )
 
-    def predict(self, cfg, dataset, batch_size=1):
-        return self._model.predict(self._test_input(cfg, dataset, batch_size=batch_size))
+    def predict(self, cfg, dataset):
+        return self._model.predict(self._test_input(cfg, dataset))
 
 
 class SimulatedEmbeddingsModel(GenotypingModel):
@@ -391,7 +396,6 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
         super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
 
-    def _train_input(self, cfg, dataset):
         file_descriptor_set = descriptor_pb2.FileDescriptorSet()
         npsv2_pb2.DESCRIPTOR.CopyToProto(file_descriptor_set.file.add())
         self._descriptor_source = b'bytes://' + file_descriptor_set.SerializeToString()

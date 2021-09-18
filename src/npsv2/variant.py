@@ -146,6 +146,8 @@ class Variant(object):
         # TODO: Infer if SVLEN is not present
         assert "SVLEN" in self._record.info, "Variants required to have SVLEN INFO field"
         svlen = self._record.info["SVLEN"]
+        if isinstance(svlen, int):
+            svlen = (svlen,) # If SVLEN is Number=1, convert to sequence
         return svlen if allele is None else svlen[allele-1]
         
     @property

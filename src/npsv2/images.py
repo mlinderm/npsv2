@@ -748,7 +748,7 @@ def vcf_to_tfrecords(
         # We currently just use ray for the CPU-side work, specifically simulating the SVs. We use a private temporary directory
         # to avoid conflicts between clusters running on the same node.
         logging.info("Initializing ray with %d threads", cfg.threads)
-        ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=ray_dir, ignore_reinit_error=True, include_dashboard=False)
+        ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=ray_dir, ignore_reinit_error=True, include_dashboard=False, object_store_memory=8*1024*1024*1024, _redis_max_memory=1024*1024*1024)
 
         def _vcf_shard(num_shards: int, index: int) -> typing.Iterator[tf.train.Example]:
             try:

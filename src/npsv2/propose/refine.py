@@ -64,7 +64,7 @@ def _gt_to_alleles(gt):
     return list(map(int, gt.split("/")))
 
 
-def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
+def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False, include_orig_ref=True):
     """Generate Pandas table from pysam.VariantFile
 
     Args:
@@ -73,6 +73,7 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
     Returns:
         Tuple of table, original records and alternate records
     """
+    orig_start_idx = 0 if include_orig_ref else 1  # Include hom. ref. in minimum original score
     original_records = {}
     alternate_records = {}
 
@@ -183,6 +184,8 @@ def refine_vcf(
                     dst_vcf_file.write(record)  # We currently don't refine multi-allelic variants
                     continue
 
+                original_region = Variant.from_pysam(original_record).reference_region.expand(cfg.refine.variant_group_flank)
+
                 for i, call in enumerate(record.samples.itervalues()):
                     possible_calls = _get_possible_calls(id, i)
                     if possible_calls.shape[0] == 1:
@@ -225,12 +228,22 @@ def refine_vcf(
                             # 1) less than the hom. ref. distance for that SV, and
                             # 2) less than (or equal?) the minimum distance for the original SV. (or equal used for updating when using all originals...)
                             alt_dists = possible_calls[["HET_DIST","HOMO_ALT_DIST"]].min(axis=1)
-                            nonref_possible_calls = possible_calls.loc[(alt_dists <= possible_calls.HOMO_REF_DIST) & (alt_dists <= possible_calls.ORIGINAL_MIN),:]
+                            nonref_possible_calls = possible_calls.loc[(alt_dists <= possible_calls.HOMO_REF_DIST),:]
                             if nonref_possible_calls.shape[0] == 0:
                                 continue
                             
                             min_dist_idx = np.unravel_index(np.argmin(nonref_possible_calls[["HET_DIST","HOMO_ALT_DIST"]]), (nonref_possible_calls.shape[0], 2))
                             alt_row = nonref_possible_calls.iloc[min_dist_idx[0], :]
+                            
+                            # Does this alternate record overlap the original record?
+                            alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
+                            if original_region.get_overlap(alt_region) > 0 or cfg.refine.include_orig_ref:
+                                orig_min = np.min(call["DS"])
+                            else:
+                                orig_min = np.min(call["DS"][1:])
+
+                            if alt_row.MIN > orig_min:
+                                continue                           
 
                         # Only update if there is a best row and it is not the same as the original record
                         if alt_row is not None and alt_row.ID != id:
