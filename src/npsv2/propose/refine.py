@@ -64,7 +64,7 @@ def _gt_to_alleles(gt):
     return list(map(int, gt.split("/")))
 
 
-def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False, include_orig_ref=True):
+def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False):
     """Generate Pandas table from pysam.VariantFile
 
     Args:
@@ -73,7 +73,6 @@ def _vcf_to_table(src_vcf_file: pysam.VariantFile, progress_bar=False, include_o
     Returns:
         Tuple of table, original records and alternate records
     """
-    orig_start_idx = 0 if include_orig_ref else 1  # Include hom. ref. in minimum original score
     original_records = {}
     alternate_records = {}
 
@@ -184,7 +183,7 @@ def refine_vcf(
                     dst_vcf_file.write(record)  # We currently don't refine multi-allelic variants
                     continue
 
-                original_region = Variant.from_pysam(original_record).reference_region.expand(cfg.refine.variant_group_flank)
+                original_region = Variant.from_pysam(record).reference_region.expand(cfg.refine.variant_group_flank)
 
                 for i, call in enumerate(record.samples.itervalues()):
                     possible_calls = _get_possible_calls(id, i)

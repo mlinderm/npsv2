@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, logging, os, subprocess, sys, tempfile, typing
+import argparse, logging, os, re, subprocess, sys, tempfile, typing
 from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
@@ -51,7 +51,7 @@ def _make_paths_absolute(cfg: DictConfig, keys: typing.Iterable[str]):
 
 # Resolvers for use with Hydra
 OmegaConf.register_new_resolver("len", lambda x: len(x))
-
+OmegaConf.register_new_resolver("swap_ext", lambda path, old_ext, new_ext: re.sub(old_ext + "$", new_ext, path))
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
