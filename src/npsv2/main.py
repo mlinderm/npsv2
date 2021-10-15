@@ -52,6 +52,7 @@ def _make_paths_absolute(cfg: DictConfig, keys: typing.Iterable[str]):
 # Resolvers for use with Hydra
 OmegaConf.register_new_resolver("len", lambda x: len(x))
 OmegaConf.register_new_resolver("swap_ext", lambda path, old_ext, new_ext: re.sub(old_ext + "$", new_ext, path))
+OmegaConf.register_new_resolver("strip_ext", lambda path: os.path.splitext(path)[0])
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -117,7 +118,7 @@ def main(cfg: DictConfig) -> None:
         _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir", "training.validation_input"])
 
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-        model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path)
+        model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path, weights=cfg.training.initial_weights)
 
         dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
         validation_dataset = cfg.training.validation_input and load_example_dataset(cfg.training.validation_input, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)

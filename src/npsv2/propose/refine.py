@@ -234,7 +234,8 @@ def refine_vcf(
                             min_dist_idx = np.unravel_index(np.argmin(nonref_possible_calls[["HET_DIST","HOMO_ALT_DIST"]]), (nonref_possible_calls.shape[0], 2))
                             alt_row = nonref_possible_calls.iloc[min_dist_idx[0], :]
                             
-                            # Does this alternate record overlap the original record?
+                            # Does this alternate record overlap the original record? If so include hom. ref. distance for original record,
+                            # if not, optionally don't since large offsets (which don't overlap the SV) should look like hom. ref.
                             alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
                             if original_region.get_overlap(alt_region) > 0 or cfg.refine.include_orig_ref:
                                 orig_min = np.min(call["DS"])

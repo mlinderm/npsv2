@@ -61,7 +61,7 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
         base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
 
         # Only the first convolution layer needs to have different weights
-        src_model = tf.keras.applications.InceptionV3(include_top=False, weights="imagenet", input_shape=input_shape[:-1] + (3,), pooling="avg")
+        src_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape[:-1] + (3,), pooling="avg")
         for i, (src_layer, dst_layer) in enumerate(zip(src_model.layers, base_model.layers)):
             if i == 1:
                 # Replicate mean of existing first convolutional layer (assumes "channels_last"). Motivated by
@@ -293,11 +293,11 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         self.image_shape = image_shape
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
-    def _create_model(self, image_shape, model_path: str=None, projection_size=[512],**kwargs):
+    def _create_model(self, image_shape, model_path: str=None, projection_size=[512], weights=None, **kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
         
         # In this context, we only care about the projection output
-        encoder =_contrastive_encoder(image_shape, weights=None, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
+        encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
         _, _, projection = encoder.output
         encoder = tf.keras.Model(encoder.input, projection, name="encoder")
         

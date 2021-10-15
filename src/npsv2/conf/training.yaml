@@ -9,3 +9,4 @@ restart_from_checkpoint: false
 validation_freq: ${training.epochs}
 validation_input: null
 contrastive_margin: 1.0
+initial_weights: null

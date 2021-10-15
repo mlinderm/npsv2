@@ -128,12 +128,15 @@ def _bwa_index_load(reference, lock_file = "/var/tmp/npsv2/bwa.lock") -> typing.
                 logging.info("Holding lock on %s", lock_file)
                 lock.seek(0)
                 current_counts = json.loads(lock.read() or '{}')
-                if current_counts.get(shared_name, 0) > 0:
-                    assert _is_bwa_index_loaded(shared_name)
+                # Since we can't unload indices until none are needed, an index with reference count of 0 could still be loaded
+                # if other references are in use
+                if current_counts.get(shared_name, 0) > 0 or _is_bwa_index_loaded(shared_name):
                     logging.info("Incrementing reference count for %s", shared_name)
+                    #logging.info("Count: %d", current_counts.get(shared_name, 0))
+                    #logging.info("Loaded: %d", _is_bwa_index_loaded(shared_name))
+                    assert _is_bwa_index_loaded(shared_name)
                     current_counts[shared_name] += 1
                 else:
-                    assert not _is_bwa_index_loaded(shared_name)
                     logging.info("Loading BWA index for %s into shared memory", reference)
                     subprocess.run(f"bwa shm {reference}", shell=True, check=True)
                     current_counts[shared_name] =1
@@ -163,15 +166,12 @@ def bwa_index_loaded(reference: str, load=False) -> str:
 
     Returns:
         str: Shared reference name if index is loaded into shared memory, None otherwise
-    """
-    shared_name = os.path.basename(reference)
-    if _is_bwa_index_loaded(shared_name):
-        return shared_name
-    
+    """  
     if load:
         return _bwa_index_load(reference)
     else:
-        return None
+        shared_name = os.path.basename(reference)
+        return shared_name if _is_bwa_index_loaded(shared_name) else None
 
 
 def _art_read_length(read_length, profile):
