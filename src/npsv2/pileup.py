@@ -1,4 +1,4 @@
-import itertools, random
+import itertools, logging, random, sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -174,6 +174,8 @@ class Fragment(object):
 
     def fragment_straddles(self, left_region: Range, right_region: Range, min_aligned=3):
         assert left_region.contig == right_region.contig
+        if left_region.length <= min_aligned or right_region.length <= min_aligned:
+            print(left_region, right_region, file=sys.stderr)
         assert left_region.length > min_aligned and right_region.length > min_aligned
 
         # TODO: Allow fragments with just one read

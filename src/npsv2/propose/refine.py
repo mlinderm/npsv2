@@ -4,6 +4,7 @@ import pysam
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from scipy.special import softmax
 from tqdm import tqdm
 
 from . import ORIGINAL_KEY
@@ -52,6 +53,7 @@ def _record_to_rows(record, orig_min_dist):
 
 def _add_derived_features(table):
     # Compute additional features used to select among possible variants
+    table[["HOMO_REF_PROB", "HET_PROB", "HOMO_ALT_PROB"]] = softmax(-table[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]], axis=1)
     table["MIN"] = table[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]].min(axis=1)
     table["DIFF"] = np.subtract(table.MIN, table.ORIGINAL_MIN)
     table["MIN_RATIO"] = np.divide(table.MIN, table.ORIGINAL_MIN)
@@ -118,7 +120,7 @@ def refine_vcf(
     classifier_path = [],
     progress_bar=False,
 ):
-    if cfg.refine.select_algo not in { "original", "ml", "min_distance" }:
+    if cfg.refine.select_algo not in { "original", "ml", "min_distance", "max_prob" }:
         raise ValueError(f"{cfg.refine.select_algo} is not a supported selection algorithm")
     
     with pysam.VariantFile(vcf_path) as src_vcf_file:
@@ -222,7 +224,7 @@ def refine_vcf(
 
                             # max_prob_idx = nonref_possible_calls.PROBTRUE.idxmax()
                             # alt_row = nonref_possible_calls.loc[max_prob_idx, :]
-                        else:
+                        elif cfg.refine.select_algo == "min_distance":
                             # Select the row with smallest non-reference distance, if that distance is
                             # 1) less than the hom. ref. distance for that SV, and
                             # 2) less than (or equal?) the minimum distance for the original SV. (or equal used for updating when using all originals...)
@@ -244,6 +246,29 @@ def refine_vcf(
 
                             if alt_row.MIN > orig_min:
                                 continue                           
+                        elif cfg.refine.select_algo == "max_prob":
+                            # Select the row with largest non-reference probability, if that probability is
+                            # 1) greater than the hom. ref. prob for that SV, and
+                            # 2) greater than (or equal?) the maximum probability for the original SV. (or equal used for updating when using all originals...)
+                            alt_probs = possible_calls[["HET_PROB","HOMO_ALT_PROB"]].max(axis=1)
+                            nonref_possible_calls = possible_calls.loc[(alt_probs >= possible_calls.HOMO_REF_PROB),:]
+                            if nonref_possible_calls.shape[0] == 0:
+                                continue
+
+                            max_prob_idx = np.unravel_index(np.argmax(nonref_possible_calls[["HET_PROB","HOMO_ALT_PROB"]]), (nonref_possible_calls.shape[0], 2))
+                            alt_row = nonref_possible_calls.iloc[max_prob_idx[0], :]
+                            
+                            # Does this alternate record overlap the original record? If so include hom. ref. probability for original record,
+                            # if not, optionally don't since large offsets (which don't overlap the SV) should look like hom. ref.
+                            alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
+                            orig_probs = softmax(-np.array(call["DS"]))
+                            if original_region.get_overlap(alt_region) > 0 or cfg.refine.include_orig_ref:
+                                orig_prob = np.max(orig_probs)
+                            else:
+                                orig_prob = np.min(orig_probs[1:])
+
+                            if np.max(alt_row[["HOMO_REF_PROB","HET_PROB","HOMO_ALT_PROB"]]) < orig_prob:
+                                continue         
 
                         # Only update if there is a best row and it is not the same as the original record
                         if alt_row is not None and alt_row.ID != id:

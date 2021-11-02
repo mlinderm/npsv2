@@ -240,7 +240,13 @@ def main(cfg: DictConfig) -> None:
     elif cfg.command == "propose":
         from .propose.propose import propose_vcf
 
-        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), hydra.utils.to_absolute_path(cfg.output), hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path), progress_bar=True)
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "propose.vcf.gz"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+
+        propose_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), output, hydra.utils.to_absolute_path(cfg.refine.simple_repeats_path), progress_bar=True)
     
     elif cfg.command == "refine":
         from .propose.refine import refine_vcf

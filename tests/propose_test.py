@@ -52,7 +52,7 @@ class RefineTestSuite(unittest.TestCase):
         table = refine._record_to_rows(record, [0.1])
         self.assertEqual(table.shape[0], 1)  # VCF has only one sample (thus one row)
     
-    @parameterized.expand([("original",), ("ml",), ("min_distance",)])
+    @parameterized.expand([("original",), ("ml",), ("min_distance",), ("max_prob",)])
     def test_refine(self, select_algo):
         cfg = OmegaConf.merge(self.cfg, { "refine": { "select_algo": select_algo }})
         output_path = os.path.join(self.tempdir.name, "test.vcf")
