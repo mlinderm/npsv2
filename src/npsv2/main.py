@@ -53,6 +53,7 @@ def _make_paths_absolute(cfg: DictConfig, keys: typing.Iterable[str]):
 OmegaConf.register_new_resolver("len", lambda x: len(x))
 OmegaConf.register_new_resolver("swap_ext", lambda path, old_ext, new_ext: re.sub(old_ext + "$", new_ext, path))
 OmegaConf.register_new_resolver("strip_ext", lambda path: os.path.splitext(path)[0])
+OmegaConf.register_new_resolver("escape", lambda path: str(path).replace("[","").replace("]","").replace(", ","_")) 
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:

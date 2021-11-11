@@ -155,6 +155,12 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
         model.summary()
 
+    @unittest.skipUnless(os.path.exists(os.path.join(os.path.dirname(__file__), "results", "model.h5")), "No model weights available")
+    def test_construct_ensemble_model(self):
+        model_path = os.path.join(os.path.dirname(__file__), "results", "model.h5")
+        model = hydra.utils.instantiate(self.cfg.model, (100, 300, 7), 5, model_path=[model_path]*2)
+        model.summary()
+
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_fit_model(self):
         dataset_path = os.path.join(FILE_DIR, "test.tfrecords.gz")

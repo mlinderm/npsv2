@@ -1,4 +1,5 @@
-import datetime, logging, os, re, sys, tempfile
+import datetime, logging, os, re, sys, tempfile, typing
+import collections.abc
 from omegaconf import OmegaConf
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -10,6 +11,7 @@ from google.protobuf import descriptor_pb2
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 from . import npsv2_pb2
 from .utilities.callbacks import NModelCheckpoint
+from.utilities.sequence import as_scalar
 
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
@@ -289,29 +291,38 @@ class SupervisedBaselineModel(GenotypingModel):
 
 
 class SimulatedEmbeddingsModel(GenotypingModel):
-    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+    def __init__(self, image_shape, replicates, model_path: typing.Union[str, typing.List[str]]=None, **kwargs):
         self.image_shape = image_shape
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
-    def _create_model(self, image_shape, model_path: str=None, projection_size=[512], weights=None, **kwargs):
+    def _create_model(self, image_shape, model_path: typing.Union[str, typing.List[str]]=None, projection_size=[512], weights=None, **kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
         
-        # In this context, we only care about the projection output
-        encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
-        _, _, projection = encoder.output
-        encoder = tf.keras.Model(encoder.input, projection, name="encoder")
-        
-        if model_path:
-            encoder.load_weights(model_path)
-        
         support = layers.Input((3,) + image_shape, name="support")
-        support_embeddings = layers.TimeDistributed(encoder, name="support_embeddings")(support)
-        
         query = layers.Input(image_shape, name="query")
-        query_embeddings = encoder(query)
+        
+        def siamese_network(model_path, index=""):
+             # In this context, we only care about the projection output
+            encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
+            _, _, projection = encoder.output
+            encoder = tf.keras.Model(encoder.input, projection, name=f"encoder{index}")
+            if model_path:
+                encoder.load_weights(model_path)
 
-        distances = layers.Lambda(_query_distances, name="distances")([query_embeddings, support_embeddings])
-       
+            support_embeddings = layers.TimeDistributed(encoder, name=f"support_embeddings{index}")(support)
+            query_embeddings = encoder(query)
+            distances = layers.Lambda(_query_distances, name=f"distances{index}")([query_embeddings, support_embeddings])
+            return distances
+
+        if isinstance(model_path, collections.abc.Sized) and len(model_path) > 1:
+            # Average the distance outputs of the ensemble members together
+            distance_layers = []
+            for i, path in enumerate(model_path):
+                distance_layers.append(siamese_network(path, index=i))
+            distances = layers.Average(name="distances")(distance_layers)
+        else:
+            distances = siamese_network(as_scalar(model_path))
+
         # Convert distance to probability
         genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
 
@@ -393,7 +404,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
 
 class JointEmbeddingsModel(SimulatedEmbeddingsModel):
-    def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
+    def __init__(self, image_shape, replicates, model_path: typing.Union[str, typing.List[str]]=None, **kwargs):
         super().__init__(image_shape, replicates, model_path=model_path, **kwargs)
 
         file_descriptor_set = descriptor_pb2.FileDescriptorSet()

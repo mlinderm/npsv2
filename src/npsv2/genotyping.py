@@ -86,8 +86,8 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
     
     # Create image generator and genotyper model
     generator = hydra.utils.instantiate(cfg.generator, cfg)
-    models = [hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], cfg.simulation.replicates, model_path=path) for path in model_paths]
-
+    model = hydra.utils.instantiate(cfg.model, generator.image_shape[-3:], cfg.simulation.replicates, model_path=model_paths)
+    
     with pysam.VariantFile(vcf_path, drop_samples=True) as src_vcf_file:
 
         # Create header for destination file
@@ -205,7 +205,8 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
 
                         # Predict genotype using one or more models (by taking the mean of the distances across models and replicates)
                         dataset = tf.data.Dataset.from_tensors((features, None))
-                        distances = tf.concat([model.predict(cfg, dataset)[1] for model in models], axis=0)
+                        _, distances = model.predict(cfg, dataset)
+                        print(distances.shape)
                         distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
                         
                         # Convert distances to "genotype likelihood" ordering expected by VCF (TODO: Average reference allele values?)
