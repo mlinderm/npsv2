@@ -166,7 +166,7 @@ class Fragment(object):
     def add_read(self, read):
         assert Fragment.is_primary(read)
         assert read.is_paired and read.query_name == self.read1.query_name
-        assert read.__hash__() != self.read1.__hash__()
+        assert read != self.read1
 
         self.read2 = read
         if self.read2.reference_start < self.read1.reference_start:

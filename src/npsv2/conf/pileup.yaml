@@ -17,7 +17,7 @@ insert_base_pixel: 64
 insert_size_mean_pixel: 128
 insert_size_sd_pixel: 24
 
-weight_allele: false
+binary_allele: false
 ref_allele_pixel: 50
 amb_allele_pixel: 150
 alt_allele_pixel: 250

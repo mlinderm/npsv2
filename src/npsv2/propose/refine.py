@@ -11,6 +11,7 @@ from . import ORIGINAL_KEY
 from ..variant import Variant, allele_indices_to_ac
 from ..range import Range, RangeTree
 from ..utilities.vcf import index_variant_file
+from ..images import image_region
 
 FEATURES = ["AC", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC"]
 KLASS = "MATCHGT"
@@ -185,7 +186,8 @@ def refine_vcf(
                     dst_vcf_file.write(record)  # We currently don't refine multi-allelic variants
                     continue
 
-                original_region = Variant.from_pysam(record).reference_region.expand(cfg.refine.variant_group_flank)
+                #original_region = image_region(cfg, Variant.from_pysam(record).reference_region)
+                original_region = Variant.from_pysam(record).reference_region
 
                 for i, call in enumerate(record.samples.itervalues()):
                     possible_calls = _get_possible_calls(id, i)
@@ -218,12 +220,6 @@ def refine_vcf(
                             if alt_row[alt_row_model] < orig[alt_row_model]:
                                 continue
                                                       
-                            # nonref_possible_calls = possible_calls[(possible_calls.GT != "0/0") & (possible_calls.PROBTRUE > orig.PROBTRUE)]
-                            # if nonref_possible_calls.shape[0] == 0:
-                            #     continue
-
-                            # max_prob_idx = nonref_possible_calls.PROBTRUE.idxmax()
-                            # alt_row = nonref_possible_calls.loc[max_prob_idx, :]
                         elif cfg.refine.select_algo == "min_distance":
                             # Select the row with smallest non-reference distance, if that distance is
                             # 1) less than the hom. ref. distance for that SV, and
@@ -238,8 +234,9 @@ def refine_vcf(
                             
                             # Does this alternate record overlap the original record? If so include hom. ref. distance for original record,
                             # if not, optionally don't since large offsets (which don't overlap the SV) should look like hom. ref.
+                            #alt_region = image_region(cfg, Range(original_region.contig, alt_row.POS, alt_row.END))
                             alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
-                            if original_region.get_overlap(alt_region) > 0 or cfg.refine.include_orig_ref:
+                            if original_region.get_overlap(alt_region) >= cfg.refine.include_orig_ref_min_overlap or cfg.refine.include_orig_ref:
                                 orig_min = np.min(call["DS"])
                             else:
                                 orig_min = np.min(call["DS"][1:])
@@ -260,9 +257,10 @@ def refine_vcf(
                             
                             # Does this alternate record overlap the original record? If so include hom. ref. probability for original record,
                             # if not, optionally don't since large offsets (which don't overlap the SV) should look like hom. ref.
+                            #alt_region = image_region(cfg, Range(original_region.contig, alt_row.POS, alt_row.END))
                             alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
                             orig_probs = softmax(-np.array(call["DS"]))
-                            if original_region.get_overlap(alt_region) > 0 or cfg.refine.include_orig_ref:
+                            if original_region.get_overlap(alt_region) >= cfg.refine.include_orig_ref_min_overlap or cfg.refine.include_orig_ref:
                                 orig_prob = np.max(orig_probs)
                             else:
                                 orig_prob = np.min(orig_probs[1:])
@@ -270,8 +268,10 @@ def refine_vcf(
                             if np.max(alt_row[["HOMO_REF_PROB","HET_PROB","HOMO_ALT_PROB"]]) < orig_prob:
                                 continue         
 
-                        # Only update if there is a best row and it is not the same as the original record
-                        if alt_row is not None and alt_row.ID != id:
+                        # Only update if there is a best row and it is not the same as the original record and one of the following is true:
+                        # 1) The original is hom. ref., or we will update non-reference calls
+                        # 2) Another variant in the block is best
+                        if alt_row is not None and alt_row.ID != id and (cfg.refine.refine_nonref_orig or np.argmin(call["DS"]) == 0 or alt_row.SV != id):
                             call.update(
                                 {
                                     "DS": [alt_row.HOMO_REF_DIST, alt_row.HET_DIST, alt_row.HOMO_ALT_DIST],

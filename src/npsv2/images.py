@@ -122,11 +122,13 @@ class ImageGenerator:
             )
 
     def _allele_pixel(self, realignment: AlleleRealignment):
-        if realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
+        if self._cfg.pileup.binary_allele:
+            return self._allele_to_pixel[realignment.allele]
+        elif realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
             return 0
         else:
             return np.clip((realignment.alt_quality - realignment.ref_quality) / 40 * 100 + 150, 1, MAX_PIXEL_VALUE)
-            #return self._allele_to_pixel[realignment.allele]
+            
 
     def _strand_pixel(self, read: pysam.AlignedSegment):
         return self._strand_to_pixel[Strand.NEGATIVE if read.is_reverse else Strand.POSITIVE]
@@ -159,6 +161,10 @@ class ImageGenerator:
         else:
             return combined_image
 
+def image_region(cfg, variant_region: Range) -> Range:
+    # TODO: Handle odd-sized variants
+    padding = max((cfg.pileup.image_width - variant_region.length + 1) // 2, cfg.pileup.variant_padding)
+    return variant_region.expand(padding)
 
 class SingleImageGenerator(ImageGenerator):
     def __init__(self, cfg, num_channels):
@@ -166,12 +172,7 @@ class SingleImageGenerator(ImageGenerator):
         
 
     def image_regions(self, variant) -> Range:
-        # TODO: Handle odd-sized variants
-        # Construct a single "padded" region to render as the pileup image
-        variant_region = variant.reference_region
-        #variant_region = Range("chr2",197462,198527)
-        padding = max((self._cfg.pileup.image_width - variant_region.length + 1) // 2, self._cfg.pileup.variant_padding)
-        return variant_region.expand(padding)
+        return image_region(self._cfg, variant.reference_region)
 
 
     def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, region: Range, image_tensor):

@@ -9,4 +9,6 @@ all_alignments: false
 max_proposals: 10
 group_variants: true
 variant_group_flank: 0
+include_orig_ref_min_overlap: 1
 include_orig_ref: false
+refine_nonref_orig: true

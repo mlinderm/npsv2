@@ -206,7 +206,6 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                         # Predict genotype using one or more models (by taking the mean of the distances across models and replicates)
                         dataset = tf.data.Dataset.from_tensors((features, None))
                         _, distances = model.predict(cfg, dataset)
-                        print(distances.shape)
                         distances = tf.math.reduce_mean(distances, axis=0) # Reduce multiple replicates for an SV
                         
                         # Convert distances to "genotype likelihood" ordering expected by VCF (TODO: Average reference allele values?)
