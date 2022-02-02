@@ -11,6 +11,7 @@ from . import ORIGINAL_KEY
 from ..variant import Variant, allele_indices_to_ac
 from ..range import Range, RangeTree
 from ..utilities.vcf import index_variant_file
+from ..utilities.sequence import as_scalar
 from ..images import image_region
 
 FEATURES = ["AC", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST", "DHFFC"]
@@ -38,6 +39,7 @@ def _record_to_rows(record, orig_min_dist):
                 "ID": record.id,
                 "POS": int(record.pos),
                 "END": record.stop,
+                "SVLEN": as_scalar(record.info.get("SVLEN", int(record.pos) - record.stop)),
                 "ORIGINAL": original,
                 "SV": original or record.id,
                 "SAMPLE": i,
@@ -121,7 +123,7 @@ def refine_vcf(
     classifier_path = [],
     progress_bar=False,
 ):
-    if cfg.refine.select_algo not in { "original", "ml", "min_distance", "max_prob" }:
+    if cfg.refine.select_algo not in { "original", "ml", "min_distance", "max_prob", "metric" }:
         raise ValueError(f"{cfg.refine.select_algo} is not a supported selection algorithm")
     
     with pysam.VariantFile(vcf_path) as src_vcf_file:
@@ -134,6 +136,9 @@ def refine_vcf(
             '##FORMAT=<ID=ODS,Number=G,Type=Float,Description="Distance between real and simulated data for the original variant">'
         )
         dst_header.add_line(
+            '##FORMAT=<ID=ALTS,Number=1,Type=Integer,Description="Number of alternate variants considered">'
+        )
+        dst_header.add_line(
             '##FORMAT=<ID=SRC,Number=1,Type=String,Description="Selected other variant in overlapping block">'
         )
 
@@ -144,7 +149,7 @@ def refine_vcf(
             for i, path in enumerate(classifier_path):
                 clf = joblib.load(path)
                 table[f"ML{i}"] = clf.predict_proba(table[clf.feature_names])[:, 1]
-         
+
         if cfg.refine.group_variants:
             # Determine variant groups
             variant_ranges = RangeTree()
@@ -196,6 +201,24 @@ def refine_vcf(
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
                         continue
                     else:
+                        # Record the number the alternates considered, even we don't pick a different SV
+                        call["ALTS"] = possible_calls.shape[0] - 1
+                        
+                        # Smooth distances (and recalculate Softmax probabilities)
+                        if cfg.refine.smooth_distances:
+                            # Smooth by ID and SVLEN, so only the same putative SV are smoothed when the are multiple proposed lengths for the same
+                            # original SV
+                            smoothed_calls = possible_calls.drop(["SV", "SVLEN", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"], axis=1).join(
+                                possible_calls
+                                    .sort_values(by=["POS"])
+                                    .groupby(["SV", "SVLEN"])[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]]
+                                    .apply(lambda x: x.ewm(span=max(x.shape[0] // 10, 10), axis=0).mean())
+                                    .reset_index(level=[0, 1])
+                            )
+                            smoothed_calls[["HOMO_REF_PROB", "HET_PROB", "HOMO_ALT_PROB"]] = softmax(-smoothed_calls[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]], axis=1)
+                            possible_calls = smoothed_calls
+                            # TODO: Update GT based on smoothed distances?
+
                         if cfg.refine.select_algo == "ml":
                             # Select the row with the largest probability of being a true update if
                             # 1) the SV has a non-reference genotype, and 
@@ -242,7 +265,8 @@ def refine_vcf(
                                 orig_min = np.min(call["DS"][1:])
 
                             if alt_row.MIN > orig_min:
-                                continue                           
+                                continue
+
                         elif cfg.refine.select_algo == "max_prob":
                             # Select the row with largest non-reference probability, if that probability is
                             # 1) greater than the hom. ref. prob for that SV, and
@@ -268,6 +292,29 @@ def refine_vcf(
                             if np.max(alt_row[["HOMO_REF_PROB","HET_PROB","HOMO_ALT_PROB"]]) < orig_prob:
                                 continue         
 
+                        elif cfg.refine.select_algo == "metric":
+                            # Select the row with smallest non-reference distance, if that distance is
+                            # 1) less than the hom. ref. distance for that SV, and
+                            # 2) less than (or equal?) the minimum distance for the original SV. (or equal used for updating when using all originals...)
+                            alt_dists = possible_calls[["HET_DIST","HOMO_ALT_DIST"]].min(axis=1)
+                            nonref_possible_calls = possible_calls.loc[(alt_dists <= possible_calls.HOMO_REF_DIST),:]
+                            if nonref_possible_calls.shape[0] == 0:
+                                continue
+                            
+                            metric = np.sqrt(np.square(nonref_possible_calls[["HET_DIST","HOMO_ALT_DIST"]].min(axis=1)) + np.square(1-nonref_possible_calls.HOMO_REF_DIST))
+                            alt_row = nonref_possible_calls.iloc[np.argmin(metric), :]
+                            
+                            # Does this alternate record overlap the original record? If so include hom. ref. distance for original record,
+                            # if not, optionally don't since large offsets (which don't overlap the SV) should look like hom. ref.
+                            alt_region = Range(original_region.contig, alt_row.POS, alt_row.END)
+                            if original_region.get_overlap(alt_region) >= cfg.refine.include_orig_ref_min_overlap or cfg.refine.include_orig_ref:
+                                orig_min = np.min(call["DS"])
+                            else:
+                                orig_min = np.min(call["DS"][1:])
+
+                            if alt_row.MIN > orig_min:
+                                continue
+
                         # Only update if there is a best row and it is not the same as the original record and one of the following is true:
                         # 1) The original is hom. ref., or we will update non-reference calls
                         # 2) Another variant in the block is best
@@ -276,10 +323,13 @@ def refine_vcf(
                                 {
                                     "DS": [alt_row.HOMO_REF_DIST, alt_row.HET_DIST, alt_row.HOMO_ALT_DIST],
                                     "DHFFC": alt_row.DHFFC,
+                                    "OGT": "/".join(map(str, call.allele_indices)),
+                                    "ODS": call["DS"],
+                                    "ALTS": possible_calls.shape[0] - 1,
                                     "CL": f"{alt_row.POS}_{alt_row.END}",
                                 }
                             )
-                            # If another SV in block is the best, set this GT to homozygous reference (TODO: Handle haploid calls)
+                            # If another SV in block is the best, set this GT to homozygous reference (TODO: Handle other ploidy)
                             call.allele_indices = _gt_to_alleles(alt_row.GT) if alt_row.SV == id else (0,0)
 
                 dst_vcf_file.write(record)

@@ -625,13 +625,13 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                 repl_encoded_images = []
                 
                 sim_replicates = replicates if allele_count != 0 or not cfg.simulation.sample_ref else 0         
-                for i in range(sim_replicates):
+                for i, repl_sample in enumerate(repl_samples[:sim_replicates]):
                     try:
-                        haplotype_coverage = sample.mean_coverage / haplotypes
+                        sample_coverage = repl_sample.chrom_mean_coverage(variant.contig) if cfg.simulation.chrom_norm_covg else repl_sample.mean_coverage
                         replicate_bam_path = simulate_variant_sequencing(
                             fasta_path,
-                            haplotype_coverage,
-                            repl_samples[i],
+                            sample_coverage / haplotypes,
+                            repl_sample,
                             reference=cfg.reference,
                             shared_reference=cfg.shared_reference,
                             dir=tempdir,
@@ -642,7 +642,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
                         raise
 
-                    synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_samples[i], realigner=realigner, regions=example_regions, ref_seq=ref_seq)
+                    synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq)
                     repl_encoded_images.append(synth_image_tensor)
 
                     if not OmegaConf.is_missing(cfg.simulation, "save_sim_bam_dir"):

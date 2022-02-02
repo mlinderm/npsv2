@@ -62,9 +62,21 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
                 length_change = abs(variant.length_change())
                 if length_change > cfg.refine.max_propose_length:
                     continue
-
+                
                 # TODO: Require certain overlap?
-                repeats = simple_repeats_bed.fetch(region=str(variant.reference_region), parser=pysam.asTuple())
+                repeats = list(simple_repeats_bed.fetch(region=str(variant.reference_region), parser=pysam.asTuple()))
+                if cfg.refine.use_refwidened and "REFWIDENED" in record.info:
+                    # Use REFWIDENED field in GIAB VCF as though it were a repeat (and the variant the consensus sequence)
+                    widened_region = Range.parse_literal(record.info["REFWIDENED"])
+                    repeat = (
+                        widened_region.contig,
+                        widened_region.start,
+                        widened_region.end,
+                        length_change,
+                        widened_region.length / length_change,
+                        _reference_sequence(cfg.reference, variant.reference_region),
+                    )
+                    repeats.append(repeat)
 
                 if not repeats:
                     continue
@@ -76,8 +88,9 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
                         continue
 
                     # Only propose variants if original variant is smaller than repeat region
+                    # TODO: Get rid of second term?
                     repeat_length = consensus_length * float(repeat[4])
-                    if length_change > repeat_length or (repeat_length - length_change) / consensus_length < 1:
+                    if length_change > repeat_length: # or (repeat_length - length_change) / consensus_length < 1:
                         continue
 
                     event_repeat_count = round(length_change / consensus_length)

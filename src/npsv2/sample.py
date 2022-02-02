@@ -24,11 +24,23 @@ class Sample:
         for k in _SAMPLE_STATS_FIELDS:
             setattr(self, k, kwargs.get(k, None))
 
+        self._chrom_normalized_coverage = kwargs.get("chrom_normalized_coverage", {})
         self._gc_normalized_coverage = kwargs.get("gc_normalized_coverage", {})
         
 
     def gc_normalized_coverage(self, gc_fraction: int) -> float:
         return self._gc_normalized_coverage.get(gc_fraction, 1.0)
+
+    def chrom_mean_coverage(self, chrom: str) -> float:
+        """Return mean coverage for specific chromosome
+        
+        Args:
+            chrom (str): Chromosome
+        
+        Returns:
+            float: Mean coverage
+        """
+        return self._chrom_normalized_coverage.get(chrom, 1.0) * self.mean_coverage
 
     @classmethod
     def from_json(cls, json_path: str, min_gc_bin=100, max_gc_error=0.01) -> "Sample":
@@ -39,7 +51,8 @@ class Sample:
 
             # Optional fields
             fields["bam"] = sample_info.get("bam", None)
-
+            fields["chrom_normalized_coverage"] = sample_info.get("chrom_normalized_coverage", {})
+            
             # Filter GC entries with limited data
             gc_normalized_coverage = {}
             for gc, norm_covg in sample_info["gc_normalized_coverage"].items():

@@ -9,3 +9,4 @@ class SampleLoadTestSuite(unittest.TestCase):
         sample = Sample.from_json(json_path)
 
         self.assertEqual(sample.read_length, 148)
+        self.assertAlmostEqual(sample.chrom_mean_coverage("1"), 1.0230288573642952*sample.mean_coverage, places=4)

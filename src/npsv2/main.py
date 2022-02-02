@@ -236,6 +236,7 @@ def main(cfg: DictConfig) -> None:
             output,
             progress_bar=True,
             evaluate=cfg.concordance,
+            region=cfg.region,
         )
     
     elif cfg.command == "propose":

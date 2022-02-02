@@ -172,7 +172,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")))
         self.variant = Variant.from_pysam(record)
         self.bam_path = os.path.join(FILE_DIR, "1_896922_902998.bam")
-        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, read_length=148)
+        self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, read_length=148, chrom_normalized_coverage={ "1": 1.5})
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -205,8 +205,31 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))
 
+    # Since _reference_sequence is imported into images we mock there too
+    @patch("npsv2.images._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_simulate_chrom_coverage(self, mock_sim, mock_var_ref, mock_images_ref):
+        self.assertAlmostEqual(self.sample.chrom_mean_coverage("1"), 1.5*self.sample.mean_coverage, places=2)
+        
+        # Reconfigure chrom_norm_covg
+        cfg = OmegaConf.merge(self.cfg, { "simulation": { "chrom_norm_covg": True }})
+        print(self.sample.chrom_mean_coverage("1"))
+        images.make_variant_example(
+            cfg,
+            self.variant,
+            self.bam_path,
+            self.sample,
+            simulate=True,
+            generator=self.generator,
+        )
+        self.assertEqual(mock_sim.call_count, 3, msg="Should be called for each genotype")
+        hap_coverages = [call[0][1] for call in mock_sim.call_args_list]
+        np.testing.assert_allclose(hap_coverages, np.array([1., 0.5, 1.0])*1.5*self.sample.mean_coverage)
+        
+    
 
-#@unittest.skip("Development only")
+@unittest.skip("Development only")
 @unittest.skipUnless(os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta") and os.path.exists("/data/HG002-ready.bam"), "Reference genome not available")
 @parameterized_class([
 #    { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example

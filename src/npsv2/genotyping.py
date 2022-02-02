@@ -67,7 +67,7 @@ def _allele_masks(variant: Variant) -> typing.List[typing.AbstractSet[int]]:
     return [set(a) for a in itertools.chain(itertools.combinations(alleles, 1), itertools.combinations(alleles, 2))]
 
 
-def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample], model_paths: typing.Sequence[str], output_path: str, progress_bar=False, evaluate=False):
+def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample], model_paths: typing.Sequence[str], output_path: str, progress_bar=False, evaluate=False, region: str=None):
     """Genotype VCF in samples using provided model(s) and other configuration parameters
 
     Args:
@@ -112,7 +112,13 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
 
         if evaluate:
             eval_samples = set(src_header.samples) & set(dst_header.samples)
-            eval_table = pd.DataFrame.from_records(itertools.product(["HG002"],[False,True],[0]), columns=["SAMPLE","CONCORDANT","COUNT"], index=["SAMPLE","CONCORDANT"])
+            eval_table = pd.DataFrame.from_records(itertools.product(list(eval_samples),[False,True],[0]), columns=["SAMPLE","CONCORDANT","COUNT"], index=["SAMPLE","CONCORDANT"])
+
+    if region:
+        logging.info("Genotyping variants in region %s", region)
+        region_args = Range.parse_literal(region).pysam_fetch
+    else:
+        region_args = {}
 
 
     def _vcf_shard(num_shards: int, index: int, yield_example: bool = True):
@@ -132,7 +138,7 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
         with pysam.VariantFile(vcf_path, drop_samples=yield_example or not evaluate) as vcf_file:
             if not yield_example and evaluate:
                 vcf_file.subset_samples(samples.keys())
-            for i, record in enumerate(vcf_file):
+            for i, record in enumerate(vcf_file.fetch(**region_args)):
                 if i % num_shards != index:
                     continue
                 if yield_example:
