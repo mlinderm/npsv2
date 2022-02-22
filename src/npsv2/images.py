@@ -354,7 +354,9 @@ class SingleDepthImageGenerator(SingleImageGenerator):
             # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
             if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
                 realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
-                
+                if realignment.allele == AlleleAssignment.ALT:
+                    print(fragment.query_name, realignment)
+
                 # Prefer possible alternate alleles (i.e. the best "alt") vs. reference straddlers
                 ref_zscore, alt_zscore = None, None  # Best is defined as closest to zero
                 for length_change, straddle in zip(variant.length_change(allele=None), straddle_regions):

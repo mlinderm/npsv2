@@ -15,6 +15,19 @@ LENGTH=150
 PROFILE=HS25
 SAMPLES=1
 
+function add_HP_tag() {
+    python3 -c '
+import pysam
+
+with pysam.AlignmentFile("-", "r") as untagged_file:
+    with pysam.AlignmentFile("-", "w", template=untagged_file) as tagged_file:
+        for read in untagged_file:
+            read.set_tag("HP",  2 if "alt" in read.query_name else 1)
+            tagged_file.write(read)
+'
+}
+
+
 usage()
 {
     cat << EOF
@@ -158,6 +171,7 @@ do
             "${READS_PREFIX}1.fq" "${READS_PREFIX}2.fq"
     fi | \
     samblaster -q -M --addMateTags | \
+    add_HP_tag | \
     samtools view -S -u  - | \
     sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
 

@@ -235,7 +235,9 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
 #    { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
 #    { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
 #    { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
-   { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
+#   { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
+   #{ "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf") }, # Haplotagged
+   { "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf") }, # Haplotagged
 ])
 class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
     """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
@@ -246,8 +248,9 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
             "generator=single_depth",
             "reference=/data/human_g1k_v37.fasta",
             "shared_reference={}".format(os.path.basename('/data/human_g1k_v37.fasta')),
-            "simulation.replicates=2",         
+            "simulation.replicates=1",         
             "simulation.sample_ref=false",
+            f"simulation.save_sim_bam_dir={RESULT_DIR}"
         ])
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
         self.sample = Sample("HG002", mean_coverage=25.46, mean_insert_size=573.1, std_insert_size=164.2, sequencer="HS25", read_length=148)
