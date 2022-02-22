@@ -127,9 +127,8 @@ class ImageGenerator:
         elif realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
             return 0
         else:
-            return np.clip((realignment.alt_quality - realignment.ref_quality) / 40 * 100 + 150, 1, MAX_PIXEL_VALUE)
+            return np.clip((realignment.alt_quality - realignment.ref_quality) / self._cfg.pileup.max_alleleq * self._cfg.pileup.allele_pixel_range + self._cfg.pileup.amb_allele_pixel, 1, MAX_PIXEL_VALUE)
             
-
     def _strand_pixel(self, read: pysam.AlignedSegment):
         return self._strand_to_pixel[Strand.NEGATIVE if read.is_reverse else Strand.POSITIVE]
 
@@ -138,6 +137,18 @@ class ImageGenerator:
             return 0
         else:
             return np.minimum(np.array(qual) / max_qual, 1.0) * MAX_PIXEL_VALUE
+
+    def _mapq_pixel(self, qual):
+        if qual is None:
+            return 0
+        elif self._cfg.pileup.discrete_mapq:
+            if qual == 0:
+                return self._cfg.pileup.mapq0_pixel
+            else:
+                return np.minimum((np.array(qual) / self._cfg.pileup.max_mapq) * 127 + 128, MAX_PIXEL_VALUE) 
+        else:
+            return self._qual_pixel(qual, self._cfg.pileup.max_mapq)
+
 
     def _flatten_image(self, image_tensor, render_channels=False, margin=5):
         if tf.is_tensor(image_tensor):
@@ -178,7 +189,7 @@ class SingleImageGenerator(ImageGenerator):
     def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, region: Range, image_tensor):
         assert variant.num_alt == 1, "Variant strip doesn't support multi-allelic variants"
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALIGNED_CHANNEL] = self._align_pixel(BaseAlignment.MATCH)
-        image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_mapq, self._cfg.pileup.max_mapq)
+        image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = self._mapq_pixel(self._cfg.pileup.variant_mapq)
         
         ref_zscore, alt_zscore = abs(variant.length_change() / sample.std_insert_size), 0
         image_tensor[:self._cfg.pileup.variant_band_height, :, REF_PAIRED_CHANNEL] = self._zscore_pixel(ref_zscore)
@@ -371,7 +382,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
             for col_slice, aligned, read_slice in pileup.read_columns(regions, read, ref_seq):
                 col_idxs = range(col_slice.start, col_slice.stop)
                 image_tensor[row_idxs[col_slice], col_idxs, ALIGNED_CHANNEL] = self._align_pixel(aligned)
-                image_tensor[row_idxs[col_slice], col_idxs, MAPQ_CHANNEL] = self._qual_pixel(read.mapq, self._cfg.pileup.max_mapq)
+                image_tensor[row_idxs[col_slice], col_idxs, MAPQ_CHANNEL] = self._mapq_pixel(read.mapq)
                 image_tensor[row_idxs[col_slice], col_idxs, REF_PAIRED_CHANNEL] = self._zscore_pixel(read.ref_zscore)
                 image_tensor[row_idxs[col_slice], col_idxs, ALT_PAIRED_CHANNEL] = self._zscore_pixel(read.alt_zscore)
                 image_tensor[row_idxs[col_slice], col_idxs, ALLELE_CHANNEL] = self._allele_pixel(read.allele)

@@ -21,8 +21,12 @@ binary_allele: false
 ref_allele_pixel: 50
 amb_allele_pixel: 150
 alt_allele_pixel: 250
+allele_pixel_range: 100
 min_normalized_allele_score: -.inf
 max_alleleq: 40
+
+discrete_mapq: false
+mapq0_pixel: 64
 
 max_mapq: 60
 
