@@ -200,7 +200,7 @@ def refine_vcf(
                         # No alternate record to update with
                         assert pd.isna(possible_calls.loc[possible_calls.index[0], "ORIGINAL"])
                         continue
-                    elif not cfg.refine_nonref_orig and np.argmin(call["DS"]) > 0:
+                    elif not cfg.refine.refine_nonref_orig and np.argmin(call["DS"]) > 0:
                         # Original call is non-reference, respect that genotype (instead of trying to refine)
                         continue
                     else:
