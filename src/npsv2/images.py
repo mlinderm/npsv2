@@ -331,7 +331,6 @@ class SingleDepthImageGenerator(SingleImageGenerator):
         
 
     def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, alleles: typing.AbstractSet[int]={1}, **kwargs):
-        assert variant.is_deletion, "Currently only deletions supported"
         assert ref_seq is None or len(ref_seq) == regions.length
 
         image_height, _, num_channels = self.image_shape
@@ -358,12 +357,18 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 # Prefer possible alternate alleles (i.e. the best "alt") vs. reference straddlers
                 ref_zscore, alt_zscore = None, None  # Best is defined as closest to zero
                 for length_change, straddle in zip(variant.length_change(allele=None), straddle_regions):
-                    allele_alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=length_change)
-                    if fragment.fragment_straddles(straddle.left_region, straddle.right_region) and (alt_zscore is None or abs(allele_alt_zscore) < abs(alt_zscore)):
-                        ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
-                        alt_zscore = allele_alt_zscore
-                    elif alt_zscore is None and (fragment.fragment_straddles(straddle.left_region, straddle.event_region) ^ fragment.fragment_straddles(straddle.event_region, straddle.right_region)):
-                        ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                    if fragment.fragment_straddles(straddle.left_region, straddle.right_region):
+                        allele_alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=length_change)
+                        if alt_zscore is None or abs(allele_alt_zscore) < abs(alt_zscore):
+                            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                            alt_zscore = allele_alt_zscore
+                    elif straddle.event_region.length >= self._cfg.pileup.anchor_min_aligned:
+                        # Insertions will have a region length of 0
+                        ref_straddle_left = fragment.fragment_straddles(straddle.left_region, straddle.event_region)
+                        ref_straddle_right = fragment.fragment_straddles(straddle.event_region, straddle.right_region)
+                        if ref_straddle_left or ref_straddle_right:
+                            assert ref_straddle_left ^ ref_straddle_right, "Fragments straddling both breakpoints shouldn't make it here"
+                            ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
                     
 
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not

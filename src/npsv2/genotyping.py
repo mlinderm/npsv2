@@ -1,4 +1,4 @@
-import io, itertools, logging, os, tempfile, typing
+import io, itertools, logging, math, os, tempfile, typing
 from functools import partial
 import pysam
 import pysam.bcftools as bcftools
@@ -22,6 +22,10 @@ VCF_HEADER_TYPES_TO_COPY = frozenset(["GENERIC", "STRUCTURED", "INFO", "FILTER",
 
 def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_baseq=15, min_anchor=11):
     """Compute mean coverage, total coverage and region length for a genomic region"""
+    region_length = region.length
+    if region_length == 0:
+        return (0., 0., region_length)
+    
     depth_result = pysam.depth(  # pylint: disable=no-member
         "-Q", str(min_mapq),
         "-q", str(min_baseq),
@@ -30,10 +34,8 @@ def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_b
         "--reference", reference,
         input_bam,
     )
-    
-    # start, end are 0-indexed half-open coordinates
-    region_length = region.length
-    if len(depth_result) > 0 and region_length > 0:
+
+    if len(depth_result) > 0:
         depths = np.loadtxt(io.StringIO(depth_result), dtype=int, usecols=2)
         total_coverage = np.sum(depths)
         return (total_coverage / region_length, total_coverage, region_length)
@@ -57,7 +59,7 @@ def coverage_features(cfg: DictConfig, variant: Variant, sample: Sample, allele=
     if total_flank_bases > 0 and total_flank_length > 0:
         dhffc = coverage / (total_flank_bases / total_flank_length)
     else:
-        dhffc = 1. if coverage > 0 else 0.
+        dhffc = math.nan
     return { "DHFFC": dhffc }
 
 

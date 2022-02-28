@@ -104,10 +104,16 @@ class Variant(object):
             svlen = map(lambda a: len(a) - len(record.ref), record.alts)
             if all(map(lambda l: l < 0, svlen)):
                 svtype = "DEL"
+            elif all(map(lambda l: l > 0, svlen)):
+                svtype="INS"
             else:
                 raise ValueError("Inconsistent variant types")
-        assert svtype.startswith("DEL"), "Only deletions current supported"
-        return DeletionVariant(record)
+        if svtype.startswith("DEL"):
+            return DeletionVariant(record)
+        elif svtype.startswith("INS"):
+            return InsertionVariant(record)
+        else:
+            raise ValueError(f"Variant kind {svtype} not supported")
 
     @property
     def alt_allele_indices(self):
@@ -119,6 +125,10 @@ class Variant(object):
 
     @property
     def is_deletion(self):
+        return False
+
+    @property
+    def is_insertion(self):
         return False
 
     @property
@@ -256,12 +266,17 @@ class Variant(object):
         # Flatten alt_contig if only a single alternate allele
         return allele_fasta.name, ref_contig, (alt_contig[0] if self.num_alt == 1 else alt_contig)
 
+    @property
+    def _svtype_as_proto(self):
+        raise NotImplementedError()
+
     def as_proto(self):
         sv = npsv2_pb2.StructuralVariant()
         sv.contig = self.contig
         sv.start = self.start
         sv.end = self.end
         sv.svlen.extend(self.length_change(allele=None))
+        sv.svtype = self._svtype_as_proto
         return sv
 
 
@@ -359,3 +374,39 @@ class DeletionVariant(Variant):
         print(alt_contig, alt_covg, sep="\t", file=covg_file)
        
         return covg_file.name, ref_contig, alt_contig
+
+    @property
+    def _svtype_as_proto(self):
+        return npsv2_pb2.StructuralVariant.Type.DEL
+
+class InsertionVariant(Variant):
+    def __init__(self, record):
+        Variant.__init__(self, record)
+        if not self._sequence_resolved:
+            raise ValueError("Symbolic inserstions are not supported")
+
+    @property
+    def is_insertion(self):
+        return True
+
+    @property
+    def ref_length(self):
+        return len(self._record.alleles[0])
+
+    def alt_length(self, allele=1):
+        assert allele >= 1
+        assert self._sequence_resolved
+        alt_allele = self._record.alleles[allele]
+        return len(alt_allele)
+    
+    def _alt_seq(self, ref_seq, flank, allele=1):
+        assert allele >= 1
+        assert self._sequence_resolved
+        
+        alt_allele = self._record.alleles[allele].upper()
+        assert _VALID_BASES_RE.fullmatch(alt_allele), "Unexpected base in sequence resolved allele"
+        return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
+
+    @property
+    def _svtype_as_proto(self):
+        return npsv2_pb2.StructuralVariant.Type.INS

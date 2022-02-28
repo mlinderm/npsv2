@@ -7,4 +7,12 @@ message StructuralVariant {
     int64 start = 2;
     int64 end = 3;
     repeated int64 svlen = 4;
+
+    enum Type {
+        DEL = 0;
+        INS = 1;
+        DUP = 2;
+        INV = 3;
+    }
+    Type svtype = 5;
 }

@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pysam
 from npsv2.variant import Variant, _reference_sequence
 from npsv2.range import Range
+from npsv2 import npsv2_pb2
 
 FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -18,6 +19,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_properties(self):
+        self.assertTrue(self.variant.is_deletion)
         self.assertTrue(self.variant._sequence_resolved)
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 71)
@@ -26,7 +28,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant.num_alt, 1)
         self.assertTrue(self.variant.is_biallelic())
 
-    def test_region_strings(self):
+    def test_regions(self):
         self.assertEqual(self.variant.reference_region, Range("1", 899922, 899992))
         self.assertEqual(self.variant.left_flank_region(left_flank=2, right_flank=5), Range("1", 899920, 899927))
         self.assertEqual(self.variant.right_flank_region(left_flank=2, right_flank=5), Range("1", 899990, 899997))
@@ -52,6 +54,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
     def test_construct_proto(self):
         proto = self.variant.as_proto()
         self.assertEqual(proto.start, 899921)
+        self.assertEqual(proto.svtype, npsv2_pb2.StructuralVariant.Type.DEL)
 
     def test_window_regions(self):
         regions = self.variant.window_regions(50, 1)
@@ -409,3 +412,69 @@ class MultiallelicSequenceResolvedDELVariantTestSuite(unittest.TestCase):
             self.assertEqual(lines[2], "AG")
             self.assertEqual(lines[3], f">{alt_contig[1]}")
             self.assertEqual(lines[4], "AGGACGGGTGGGACTCTCATACCCACGGCCGG")
+
+class SequenceResolvedINSVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+            """##fileformat=VCFv4.1
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END for imprecise variants">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##ALT=<ID=INS,Description="Insertion">
+##contig=<ID=1,length=249250621>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	931634	HG2_PB_SVrefine2PB10Xhap12_17	A	AGGGAGGGCAGAAAGGACCCCCACGTGAGGGGGCACCCCACATCTGGGGCCACAGGATGCAGGGTGGGGAGGGCAGAAAGGCCCCCCCGCGGGAAGGGGCACCCCACATCTGGGCCACAGGATGCAGGGTGGGGAGGGCAGAAAGGCCCCCCCGCGGGAAGGGGCACCCCACATCTGGGGCCACAGGATGCAGGGTG	.	PASS	SVTYPE=INS;END=931634;SVLEN=196
+"""
+        )
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_properties(self):
+        self.assertTrue(self.variant.is_insertion)
+        self.assertTrue(self.variant._sequence_resolved)
+        self.assertEqual(self.variant._padding, 1)
+        self.assertEqual(self.variant.ref_length, 1)
+        self.assertEqual(self.variant.alt_length(), 197)
+        self.assertEqual(set(self.variant.alt_allele_indices), {1})
+        self.assertEqual(self.variant.num_alt, 1)
+        self.assertTrue(self.variant.is_biallelic())
+
+    def test_regions(self):
+        self.assertEqual(self.variant.left_flank_region(left_flank=2, right_flank=5), Range("1", 931632, 931639))
+        self.assertEqual(self.variant.right_flank_region(left_flank=2, right_flank=5), Range("1", 931632, 931639))
+
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), None))
+        self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), Range.parse_literal("alt:197-198")))
+
+    @patch("npsv2.variant._reference_sequence", return_value="AG")
+    def test_consensus_fasta(self, mock_ref):
+            fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(reference_fasta=None, dir=self.tempdir.name, line_width=sys.maxsize)
+            mock_ref.assert_called_once_with(None, Range("1",931633,931635), snv_vcf_path=None)
+            self.assertEqual(ref_contig, "1_931634_931635")
+            self.assertEqual(alt_contig, "1_931634_931635_1_alt")
+            
+            with open(fasta_path, "r") as fasta:
+                lines = [line.strip() for line in fasta]
+            self.assertEqual(len(lines), 4)
+            self.assertEqual(lines[0], f">{ref_contig}")
+            self.assertEqual(lines[1], "AG")
+            self.assertEqual(lines[2], f">{alt_contig}")
+            self.assertEqual(
+                lines[3],
+                "AGGGAGGGCAGAAAGGACCCCCACGTGAGGGGGCACCCCACATCTGGGGCCACAGGATGCAGGGTGGGGAGGGCAGAAAGGCCCCCCCGCGGGAAGGGGCACCCCACATCTGGGCCACAGGATGCAGGGTGGGGAGGGCAGAAAGGCCCCCCCGCGGGAAGGGGCACCCCACATCTGGGGCCACAGGATGCAGGGTGG",
+            )
+
+    def test_construct_proto(self):
+        proto = self.variant.as_proto()
+        self.assertEqual(proto.start, 931633)
+        self.assertEqual(proto.svtype, npsv2_pb2.StructuralVariant.Type.INS)
