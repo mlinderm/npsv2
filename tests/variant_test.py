@@ -24,6 +24,7 @@ class SequenceResolvedDELVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 71)
         self.assertEqual(self.variant.alt_length(), 1)
+        self.assertEqual(self.variant.length_change(), -70)
         self.assertEqual(set(self.variant.alt_allele_indices), {1})
         self.assertEqual(self.variant.num_alt, 1)
         self.assertTrue(self.variant.is_biallelic())
@@ -444,6 +445,7 @@ class SequenceResolvedINSVariantTestSuite(unittest.TestCase):
         self.assertEqual(self.variant._padding, 1)
         self.assertEqual(self.variant.ref_length, 1)
         self.assertEqual(self.variant.alt_length(), 197)
+        self.assertEqual(self.variant.length_change(), 196)
         self.assertEqual(set(self.variant.alt_allele_indices), {1})
         self.assertEqual(self.variant.num_alt, 1)
         self.assertTrue(self.variant.is_biallelic())
@@ -478,3 +480,57 @@ class SequenceResolvedINSVariantTestSuite(unittest.TestCase):
         proto = self.variant.as_proto()
         self.assertEqual(proto.start, 931633)
         self.assertEqual(proto.svtype, npsv2_pb2.StructuralVariant.Type.INS)
+
+
+class SNVVariantTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+
+        vcf_path = os.path.join(self.tempdir.name, "test.vcf")
+        with open(vcf_path, "w") as vcf_file:
+            vcf_file.write(
+            """##fileformat=VCFv4.1
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END for imprecise variants">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##ALT=<ID=INS,Description="Insertion">
+##contig=<ID=1,length=249250621>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	900298	.	C	G	299.17	PASS	.
+"""
+        )
+        record = next(pysam.VariantFile(vcf_path))
+        self.variant = Variant.from_pysam(record)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_properties(self):
+        self.assertTrue(self.variant.is_substitution)
+        self.assertTrue(self.variant.is_SNV)
+        self.assertFalse(self.variant.is_MNV)
+        self.assertTrue(self.variant._sequence_resolved)
+        self.assertEqual(self.variant._padding, 0)
+        self.assertEqual(self.variant.ref_length, 1)
+        self.assertEqual(self.variant.alt_length(), 1)
+        self.assertEqual(self.variant.length_change(), 0)
+        self.assertEqual(set(self.variant.alt_allele_indices), {1})
+        self.assertEqual(self.variant.num_alt, 1)
+        self.assertTrue(self.variant.is_biallelic())
+        self.assertEqual(self.variant.name, "1_900298_900298_SUB")
+
+    def test_regions(self):
+        self.assertEqual(self.variant.left_flank_region(left_flank=2, right_flank=5), Range("1", 900295, 900302))
+        self.assertEqual(self.variant.right_flank_region(left_flank=2, right_flank=5), Range("1", 900296, 900303))
+
+    def test_breakpoints(self):
+        self.assertEqual(self.variant.ref_breakpoints(flank=1, contig="ref"), (Range.parse_literal("ref:1-2"), Range.parse_literal("ref:2-3")))
+        self.assertEqual(self.variant.alt_breakpoints(flank=1, contig="alt"), (Range.parse_literal("alt:1-2"), Range.parse_literal("alt:2-3")))
+
+    def test_construct_proto(self):
+        proto = self.variant.as_proto()
+        self.assertEqual(proto.start, 900297)
+        self.assertEqual(proto.end, 900298)
+        self.assertEqual(proto.svtype, npsv2_pb2.StructuralVariant.Type.SUB)

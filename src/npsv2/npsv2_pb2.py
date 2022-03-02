@@ -19,7 +19,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   name='src/npsv2/npsv2.proto',
   package='npsv2',
   syntax='proto3',
-  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2\"\xa9\x01\n\x11StructuralVariant\x12\x0e\n\x06\x63ontig\x18\x01 \x01(\t\x12\r\n\x05start\x18\x02 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x03 \x01(\x03\x12\r\n\x05svlen\x18\x04 \x03(\x03\x12-\n\x06svtype\x18\x05 \x01(\x0e\x32\x1d.npsv2.StructuralVariant.Type\"*\n\x04Type\x12\x07\n\x03\x44\x45L\x10\x00\x12\x07\n\x03INS\x10\x01\x12\x07\n\x03\x44UP\x10\x02\x12\x07\n\x03INV\x10\x03\x62\x06proto3')
+  serialized_pb=_b('\n\x15src/npsv2/npsv2.proto\x12\x05npsv2\"\xb2\x01\n\x11StructuralVariant\x12\x0e\n\x06\x63ontig\x18\x01 \x01(\t\x12\r\n\x05start\x18\x02 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x03 \x01(\x03\x12\r\n\x05svlen\x18\x04 \x03(\x03\x12-\n\x06svtype\x18\x05 \x01(\x0e\x32\x1d.npsv2.StructuralVariant.Type\"3\n\x04Type\x12\x07\n\x03\x44\x45L\x10\x00\x12\x07\n\x03INS\x10\x01\x12\x07\n\x03\x44UP\x10\x02\x12\x07\n\x03INV\x10\x03\x12\x07\n\x03SUB\x10\x04\x62\x06proto3')
 )
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
@@ -47,11 +47,15 @@ _STRUCTURALVARIANT_TYPE = _descriptor.EnumDescriptor(
       name='INV', index=3, number=3,
       options=None,
       type=None),
+    _descriptor.EnumValueDescriptor(
+      name='SUB', index=4, number=4,
+      options=None,
+      type=None),
   ],
   containing_type=None,
   options=None,
   serialized_start=160,
-  serialized_end=202,
+  serialized_end=211,
 )
 _sym_db.RegisterEnumDescriptor(_STRUCTURALVARIANT_TYPE)
 
@@ -112,7 +116,7 @@ _STRUCTURALVARIANT = _descriptor.Descriptor(
   oneofs=[
   ],
   serialized_start=33,
-  serialized_end=202,
+  serialized_end=211,
 )
 
 _STRUCTURALVARIANT.fields_by_name['svtype'].enum_type = _STRUCTURALVARIANT_TYPE

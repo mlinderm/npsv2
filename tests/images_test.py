@@ -68,6 +68,24 @@ class ImageGeneratorConfigTest(unittest.TestCase):
         self.assertIn("flank_windows", cfg.pileup)
 
 
+class ImageRegionTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+               "pileup.image_width=300",
+               "pileup.variant_padding=100",
+            ],
+        )
+
+    def test_small(self):
+        self.assertEqual(images.image_region(self.cfg, Range("1",900297,900298)).length, 300)
+        self.assertEqual(images.image_region(self.cfg, Range("1",900296,900298)).length, 300)
+
+    def test_large(self):
+        self.assertGreater(images.image_region(self.cfg, Range("12",22129564,22130387)).length, 300)
+
+
 class SingleDepthImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -378,23 +396,26 @@ class SNVRenderTest(unittest.TestCase):
     os.path.exists("/data/human_g1k_v37.fasta") and bwa_index_loaded("/data/human_g1k_v37.fasta"),
     "Reference genome not available",
 )
-class INSSingleDepthImageGeneratorClassTest(unittest.TestCase):
+@parameterized_class([
+    {"vcf_path": os.path.join(FILE_DIR, "1_931634_931634_INS.vcf.gz"), "bam_path": os.path.join(FILE_DIR, "1_931634_931634.bam")},
+    {"vcf_path": os.path.join(FILE_DIR, "1_900298_900298_SUB.vcf.gz"), "bam_path": os.path.join(FILE_DIR, "1_896922_902998.bam")},
+])
+class KindSingleDepthImageGeneratorClassTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.cfg = hydra.compose(
             config_name="config",
             overrides=[
                 "generator=single_depth",
-                "reference={}".format(os.path.join(FILE_DIR, "/data/human_g1k_v37.fasta")),
+                "reference=/data/human_g1k_v37.fasta",
                 "simulation.replicates=1",
             ],
         )
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
 
-        # GIAB genotype is 1/1
-        record = next(pysam.VariantFile(os.path.join(FILE_DIR, "1_931634_931634_INS.vcf.gz")))
+        record = next(pysam.VariantFile(self.vcf_path))
         self.variant = Variant.from_pysam(record)
-        self.bam_path = os.path.join(FILE_DIR, "1_931634_931634.bam")
+        self.bam_path = self.bam_path
         self.sample = Sample(
             "HG002",
             mean_coverage=25.46,
@@ -422,3 +443,4 @@ class INSSingleDepthImageGeneratorClassTest(unittest.TestCase):
         )
         png_path = os.path.join(self.tempdir.name, "test.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=1)
+        self.assertTrue(os.path.exists(png_path))

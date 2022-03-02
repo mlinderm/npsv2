@@ -25,6 +25,7 @@ _ALLELES_TO_IUPAC = {
     frozenset("ACGT"): "N",
 }
 
+
 def _snv_alleles(record: pysam.VariantRecord) -> typing.FrozenSet:
     alleles = []
     for allele in record.alleles:
@@ -32,19 +33,21 @@ def _snv_alleles(record: pysam.VariantRecord) -> typing.FrozenSet:
             return frozenset()
         alleles.append(allele.upper())
     return frozenset(alleles)
-    
+
+
 def _iupac_code(alleles: typing.FrozenSet) -> str:
     return _ALLELES_TO_IUPAC.get(alleles, "N")
+
 
 def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str = None) -> str:
     with pysam.FastaFile(reference_fasta) as ref_fasta:
         # Make sure reference sequence is all upper case
-        ref_seq = ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end).upper()    
+        ref_seq = ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end).upper()
 
     # If SNV VCF is provided, modify the reference sequence with IUPAC codes
     if snv_vcf_path is None:
         return ref_seq
-    
+
     with pysam.VariantFile(snv_vcf_path) as vcf_file:
         # TODO: We currently drop all samples and use all reported alleles, in the future only use alleles present
         # in a specified sample
@@ -56,13 +59,13 @@ def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str =
             ref_seq_index = record.start - region.start
             assert record.ref == ref_seq[ref_seq_index]
             # Replace reference base with single letter IUPAC code
-            ref_seq = ref_seq[:ref_seq_index] + _iupac_code(alleles) + ref_seq[ref_seq_index+1:]
+            ref_seq = ref_seq[:ref_seq_index] + _iupac_code(alleles) + ref_seq[ref_seq_index + 1 :]
 
     assert len(ref_seq) == region.length
     return ref_seq
 
 
-def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int]={1}) -> int:
+def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int] = {1}) -> int:
     count = 0
     for idx in indices:
         if idx == -1:
@@ -80,13 +83,21 @@ def _has_symbolic_allele(record):
 
 
 class Variant(object):
-    def __init__(self, record):
+    def __init__(self, record: pysam.VariantRecord):
+        """Initialize Variant object from pysam.VariantRecord
+
+        Args:
+            record (pysam.VariantRecord): Underlying VariantRecord
+        """
         self._record = record
-        
+
         self._sequence_resolved = not _has_symbolic_allele(record)
         if self._sequence_resolved:
             self._padding = len(os.path.commonprefix(record.alleles))
-            self._right_padding = [len(os.path.commonprefix([record.ref[self._padding:][::-1], a[self._padding:][::-1]])) for a in record.alts]
+            self._right_padding = [
+                len(os.path.commonprefix([record.ref[self._padding :][::-1], a[self._padding :][::-1]]))
+                for a in record.alts
+            ]
         else:
             assert len(record.alts) == 1, "Multiallelic symbolic variants not currently supported"
             self._padding = 1
@@ -95,33 +106,38 @@ class Variant(object):
             logging.warning("Variant has more than expected number of padding bases, is the VCF normalized?")
 
     @classmethod
-    def from_pysam(cls, record):
+    def from_pysam(cls, record: pysam.VariantRecord) -> "Variant":
+        """Factory method for creating appropriate Variant objects"""
         if "SVTYPE" in record.info:
             svtype = as_scalar(record.info["SVTYPE"])
         elif _has_symbolic_allele(record):
             svtype = os.path.commonprefix([a.strip("<>") for a in record.alts])
         else:
-            svlen = map(lambda a: len(a) - len(record.ref), record.alts)
+            svlen = tuple(len(a) - len(record.ref) for a in record.alts)
             if all(map(lambda l: l < 0, svlen)):
                 svtype = "DEL"
             elif all(map(lambda l: l > 0, svlen)):
-                svtype="INS"
+                svtype = "INS"
+            elif all(map(lambda l: l == 0, svlen)):
+                svtype = "SUB"
             else:
                 raise ValueError("Inconsistent variant types")
         if svtype.startswith("DEL"):
             return DeletionVariant(record)
         elif svtype.startswith("INS"):
             return InsertionVariant(record)
+        elif svtype == "SUB":
+            return SubstitutionVariant(record)
         else:
             raise ValueError(f"Variant kind {svtype} not supported")
 
     @property
     def alt_allele_indices(self):
-        return range(1, 1+self.num_alt)
+        return range(1, 1 + self.num_alt)
 
     @property
     def name(self):
-        return f"{self.contig}_{self.start + 1}_{self.end}_DEL"
+        return f"{self.contig}_{self.start + 1}_{self.end}_{npsv2_pb2.StructuralVariant.Type.Name(self._svtype_as_proto)}"
 
     @property
     def is_deletion(self):
@@ -129,6 +145,18 @@ class Variant(object):
 
     @property
     def is_insertion(self):
+        return False
+
+    @property
+    def is_substitution(self):
+        return False
+
+    @property
+    def is_SNV(self):
+        return False
+
+    @property
+    def is_MNV(self):
         return False
 
     @property
@@ -153,13 +181,13 @@ class Variant(object):
         return self.num_alt == 1
 
     def length_change(self, allele=1):
-        # TODO: Infer if SVLEN is not present
-        assert "SVLEN" in self._record.info, "Variants required to have SVLEN INFO field"
-        svlen = self._record.info["SVLEN"]
-        if isinstance(svlen, int):
-            svlen = (svlen,) # If SVLEN is Number=1, convert to sequence
-        return svlen if allele is None else svlen[allele-1]
-        
+        svlen = self._record.info.get("SVLEN", None)
+        if svlen is None:
+            svlen = tuple(self.alt_length(i + 1) - self.ref_length for i in range(self.num_alt))
+        elif isinstance(svlen, int):
+            svlen = (svlen,)  # If SVLEN is Number=1, convert to sequence
+        return svlen if allele is None else svlen[allele - 1]
+
     @property
     def ref_length(self):
         """Length of reference allele including any padding bases"""
@@ -170,34 +198,41 @@ class Variant(object):
         raise NotImplementedError()
 
     @property
-    def reference_region(self):
+    def reference_region(self) -> Range:
+        """Returns changed region of the reference genome, excluding any padding bases"""
         return Range(self.contig, self.start + self._padding, self.end)
 
     def left_flank_region(self, left_flank, right_flank=0, allele=1):
         start = self.start + self._padding
         return Range(self.contig, start - left_flank, start + right_flank)
-    
+
     def right_flank_region(self, right_flank, left_flank=0, allele=1):
-        end = self.end - self._right_padding[allele-1]
+        end = self.end - self._right_padding[allele - 1]
         return Range(self.contig, end - left_flank, end + right_flank)
 
     def ref_breakpoints(self, flank, allele=1, contig=None):
         if contig is None:
             contig = self.contig
-        event_end = flank + self.ref_length - self._padding - self._right_padding[allele-1]
-        return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
+        event_end = flank + self.ref_length - self._padding - self._right_padding[allele - 1]
+        return (
+            Range(contig, flank - 1, flank + 1),
+            (Range(contig, event_end - 1, event_end + 1) if event_end > flank else None),
+        )
 
     def alt_breakpoints(self, flank, allele=1, contig=None):
         if contig is None:
             contig = self.contig
-        event_end = flank + self.alt_length(allele) - self._padding - self._right_padding[allele-1]
-        return Range(contig, flank-1, flank+1), (Range(contig, event_end-1, event_end+1) if event_end > flank else None)
+        event_end = flank + self.alt_length(allele) - self._padding - self._right_padding[allele - 1]
+        return (
+            Range(contig, flank - 1, flank + 1),
+            (Range(contig, event_end - 1, event_end + 1) if event_end > flank else None),
+        )
 
     def genotype_indices(self, index_or_id):
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
 
-    def genotype_allele_count(self, index_or_id, alleles:typing.AbstractSet[int]=None):
+    def genotype_allele_count(self, index_or_id, alleles: typing.AbstractSet[int] = None):
         indices = self.genotype_indices(index_or_id)
         if indices is None:
             return None
@@ -209,15 +244,15 @@ class Variant(object):
                 return None
             elif idx in alleles:
                 count += 1
-        return count  
+        return count
 
     def _alt_seq(self, ref_seq, flank, allele=1):
-        raise NotImplementedError()  
+        raise NotImplementedError()
 
     def synth_fasta(
         self,
         reference_fasta,
-        alleles=(0,1),
+        alleles=(0, 1),
         flank=1,
         ref_contig=None,
         alt_contig=None,
@@ -228,10 +263,10 @@ class Variant(object):
     ):
         region = self.reference_region.expand(flank)
         ref_seq = _reference_sequence(reference_fasta, region, snv_vcf_path=snv_vcf_path)
-        
+
         if ref_contig is None:
             ref_contig = str(region).replace(":", "_").replace("-", "_")
-        
+
         if alt_contig is None:
             alt_contig = [f"{ref_contig}_{i}_alt" for i in self.alt_allele_indices]
         elif isinstance(alt_contig, str) and self.num_alt == 1:
@@ -239,28 +274,26 @@ class Variant(object):
         if len(alt_contig) != self.num_alt:
             raise ValueError("There must be one alt_contig name for each alternate allele")
 
-        allele_fasta = tempfile.NamedTemporaryFile(
-            mode="w", delete=False, suffix=".fasta", dir=dir
-        )
+        allele_fasta = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
 
         # Write out FASTA
         unique_alleles = set(alleles)
-        
+
         # Always write out REF header, but only write sequence if reference allele is present or we are generating sequences
         # for the alignment index
         print(">", ref_contig, sep="", file=allele_fasta)
         if index_mode or 0 in unique_alleles:
             for line in textwrap.wrap(ref_seq, width=line_width):
                 print(line, file=allele_fasta)
-        
+
         for allele_idx, contig in zip(self.alt_allele_indices, alt_contig):
             if allele_idx in unique_alleles:
                 print(">", contig, sep="", file=allele_fasta)
-                alt_seq = self._alt_seq(ref_seq, flank, allele=allele_idx) 
+                alt_seq = self._alt_seq(ref_seq, flank, allele=allele_idx)
                 for line in textwrap.wrap(alt_seq, width=line_width):
                     print(line, file=allele_fasta)
             elif not index_mode:
-                # Only write header without sequence if not in index mode (i.e. simulation mode)     
+                # Only write header without sequence if not in index mode (i.e. simulation mode)
                 print(">", contig, sep="", file=allele_fasta)
 
         # Flatten alt_contig if only a single alternate allele
@@ -280,11 +313,9 @@ class Variant(object):
         return sv
 
 
-
 class DeletionVariant(Variant):
     def __init__(self, record):
         Variant.__init__(self, record)
-        # TODO: Update right paddding when there are multiple symblic alleles
 
     @property
     def is_deletion(self):
@@ -306,17 +337,17 @@ class DeletionVariant(Variant):
         if self._sequence_resolved:
             alt_allele = self._record.alleles[allele].upper()
             assert _VALID_BASES_RE.fullmatch(alt_allele), "Unexpected base in sequence resolved allele"
-            return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
+            return ref_seq[:flank] + alt_allele[self._padding :] + ref_seq[-flank:]
         else:
             # TODO: This may not be valid for multi-allelic variants
             assert self.num_alt == 1
-            return ref_seq[: flank] + ref_seq[-flank :]
+            return ref_seq[:flank] + ref_seq[-flank:]
 
     def window_regions(self, window_size: int, flank_windows: int, window_interior=True):
         # We anchor windows on the breakpoints
         assert window_size % 2 == 0, "Window size must be evenly split in half"
         breakpoint_flank = window_size // 2
-        
+
         # How many interior windows are needed on each side?
         interior = self.reference_region
         if window_interior:
@@ -324,24 +355,24 @@ class DeletionVariant(Variant):
         else:
             interior_windows = flank_windows
 
-        left_region = self.left_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
-        right_region = self.right_flank_region(window_size*flank_windows + breakpoint_flank, breakpoint_flank + interior_windows*window_size)
+        left_region = self.left_flank_region(
+            window_size * flank_windows + breakpoint_flank, breakpoint_flank + interior_windows * window_size
+        )
+        right_region = self.right_flank_region(
+            window_size * flank_windows + breakpoint_flank, breakpoint_flank + interior_windows * window_size
+        )
         if left_region.end >= right_region.start or not window_interior:
             # Regions abut or overlap, or we are not specifically tiling the interior
             return left_region.window(window_size) + right_region.window(window_size)
         else:
-            assert (right_region.start - left_region.end) <= window_size, "Should only be one potentially overlapping 'center' region"
+            assert (
+                right_region.start - left_region.end
+            ) <= window_size, "Should only be one potentially overlapping 'center' region"
             center_region = interior.center.expand(breakpoint_flank)
             return left_region.window(window_size) + [center_region] + right_region.window(window_size)
-    
+
     def gnomad_coverage_profile(
-        self,
-        gnomad_coverage: str,
-        flank=1,
-        ref_contig=None,
-        alt_contig=None,
-        line_width=60,
-        dir=None,
+        self, gnomad_coverage: str, flank=1, ref_contig=None, alt_contig=None, line_width=60, dir=None,
     ):
         assert self.num_alt == 1, "Multiallelic variants not yet supported"
         region = self.reference_region.expand(flank)
@@ -350,16 +381,18 @@ class DeletionVariant(Variant):
             ref_covg = "".join(
                 map(
                     lambda x: chr(min(round(float(x[2])) + 33, 126)),
-                    gnomad_coverage_tabix.fetch(reference=region.contig, start=region.start, end=region.end, parser=pysam.asTuple()),
+                    gnomad_coverage_tabix.fetch(
+                        reference=region.contig, start=region.start, end=region.end, parser=pysam.asTuple()
+                    ),
                 )
             )
 
         if self._sequence_resolved:
             alt_allele = self._record.alts[0]
             # Extend coverage for the last flanking base over the whole region
-            alt_covg = ref_covg[: flank] + (ref_covg[flank-1] * (len(alt_allele) - self._padding)) + ref_covg[-flank :]
+            alt_covg = ref_covg[:flank] + (ref_covg[flank - 1] * (len(alt_allele) - self._padding)) + ref_covg[-flank:]
         else:
-            alt_covg = ref_covg[: flank] + ref_covg[-flank :]
+            alt_covg = ref_covg[:flank] + ref_covg[-flank:]
 
         # Write out
         if ref_contig is None:
@@ -367,19 +400,18 @@ class DeletionVariant(Variant):
         if alt_contig is None:
             alt_contig = ref_contig + "_alt"
 
-        covg_file = tempfile.NamedTemporaryFile(
-            mode="w", delete=False, suffix=".fasta", dir=dir
-        )
+        covg_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
         print(ref_contig, ref_covg, sep="\t", file=covg_file)
         print(alt_contig, alt_covg, sep="\t", file=covg_file)
-       
+
         return covg_file.name, ref_contig, alt_contig
 
     @property
     def _svtype_as_proto(self):
         return npsv2_pb2.StructuralVariant.Type.DEL
 
-class InsertionVariant(Variant):
+
+class _SequenceResolvedVariant(Variant):
     def __init__(self, record):
         Variant.__init__(self, record)
         if not self._sequence_resolved:
@@ -398,15 +430,40 @@ class InsertionVariant(Variant):
         assert self._sequence_resolved
         alt_allele = self._record.alleles[allele]
         return len(alt_allele)
-    
+
     def _alt_seq(self, ref_seq, flank, allele=1):
         assert allele >= 1
         assert self._sequence_resolved
-        
+
         alt_allele = self._record.alleles[allele].upper()
         assert _VALID_BASES_RE.fullmatch(alt_allele), "Unexpected base in sequence resolved allele"
-        return ref_seq[: flank] + alt_allele[self._padding:] + ref_seq[-flank :]
+        return ref_seq[:flank] + alt_allele[self._padding :] + ref_seq[-flank:]
+
+
+class InsertionVariant(_SequenceResolvedVariant):
+    @property
+    def is_insertion(self):
+        return True
 
     @property
     def _svtype_as_proto(self):
         return npsv2_pb2.StructuralVariant.Type.INS
+
+
+class SubstitutionVariant(_SequenceResolvedVariant):
+    @property
+    def is_substitution(self):
+        return True
+
+    @property
+    def is_SNV(self):
+        return self.ref_length == 1
+
+    @property
+    def is_MNV(self):
+        return self.ref_length > 1
+
+    @property
+    def _svtype_as_proto(self):
+        return npsv2_pb2.StructuralVariant.Type.SUB
+

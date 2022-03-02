@@ -13,6 +13,7 @@ message StructuralVariant {
         INS = 1;
         DUP = 2;
         INV = 3;
+        SUB = 4;
     }
     Type svtype = 5;
 }

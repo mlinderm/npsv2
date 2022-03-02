@@ -173,9 +173,11 @@ class ImageGenerator:
             return combined_image
 
 def image_region(cfg, variant_region: Range) -> Range:
-    # TODO: Handle odd-sized variants
-    padding = max((cfg.pileup.image_width - variant_region.length + 1) // 2, cfg.pileup.variant_padding)
-    return variant_region.expand(padding)
+    # Try to minimize compression by setting right padding to exact width...
+    to_pad = cfg.pileup.image_width - variant_region.length
+    left_padding = max((to_pad + 1) // 2, cfg.pileup.variant_padding)
+    right_padding = max(to_pad // 2, cfg.pileup.variant_padding)
+    return variant_region.expand(left_padding, right_padding)
 
 class SingleImageGenerator(ImageGenerator):
     def __init__(self, cfg, num_channels):
