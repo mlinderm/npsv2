@@ -137,7 +137,11 @@ class Variant(object):
 
     @property
     def name(self):
-        return f"{self.contig}_{self.start + 1}_{self.end}_{npsv2_pb2.StructuralVariant.Type.Name(self._svtype_as_proto)}"
+        return f"{self.contig}_{self.start + 1}_{self.end}_{self.type}"
+
+    @property
+    def type(self) -> str:
+        return npsv2_pb2.StructuralVariant.Type.Name(self._svtype_as_proto)
 
     @property
     def is_deletion(self):
@@ -246,7 +250,7 @@ class Variant(object):
                 count += 1
         return count
 
-    def _alt_seq(self, ref_seq, flank, allele=1):
+    def _alt_seq(self, ref_seq, flank, allele=1, right_flank=None):
         raise NotImplementedError()
 
     def synth_fasta(
@@ -333,15 +337,17 @@ class DeletionVariant(Variant):
         else:
             return 1
 
-    def _alt_seq(self, ref_seq, flank, allele=1):
+    def _alt_seq(self, ref_seq, flank, allele=1, right_flank = None):
+        if right_flank is None:
+            right_flank = flank
         if self._sequence_resolved:
             alt_allele = self._record.alleles[allele].upper()
             assert _VALID_BASES_RE.fullmatch(alt_allele), "Unexpected base in sequence resolved allele"
-            return ref_seq[:flank] + alt_allele[self._padding :] + ref_seq[-flank:]
+            return ref_seq[:flank] + alt_allele[self._padding :] + ref_seq[len(ref_seq)-right_flank:]
         else:
             # TODO: This may not be valid for multi-allelic variants
             assert self.num_alt == 1
-            return ref_seq[:flank] + ref_seq[-flank:]
+            return ref_seq[:flank] + ref_seq[-right_flank:]
 
     def window_regions(self, window_size: int, flank_windows: int, window_interior=True):
         # We anchor windows on the breakpoints

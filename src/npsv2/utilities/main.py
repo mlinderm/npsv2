@@ -1,12 +1,32 @@
-import argparse
+import argparse, logging
 from ..simulation import filter_reads_gc, filter_reads_gnomad
-from ..multiallelic import filter_nonref
+from ..multiallelic import filter_nonref, merge_into_multiallelic
 from ..propose.refine import train_model
 
 def main():
     parser = argparse.ArgumentParser(
         "npsv2u", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+
+    logging_options = parser.add_mutually_exclusive_group()
+    logging_options.add_argument(
+        "-d",
+        "--debug",
+        help="Debug logging",
+        action="store_const",
+        dest="loglevel",
+        const=logging.DEBUG,
+        default=logging.WARNING,
+    )
+    logging_options.add_argument(
+        "-v",
+        "--verbose",
+        help="Verbose logging",
+        action="store_const",
+        dest="loglevel",
+        const=logging.INFO,
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Sub-command help")
 
     parser_gccovg = subparsers.add_parser(
@@ -61,7 +81,7 @@ def main():
     )
     
     parser_refinetrain = subparsers.add_parser(
-        "refine_train", help="train model for refine with RF"
+        "refine_train", help="Train model for refine with RF"
     )
     parser_refinetrain.add_argument(
         "-i", "--input", help="Input VCF file.", type=str, required=True
@@ -73,8 +93,25 @@ def main():
         "-p", "--pbsv", help="Input PBSV file.", type=str, required=True
     )
 
-    args = parser.parse_args()
+    parser_multiallelic = subparsers.add_parser(
+        "multiallelic", help="Merge biallelic SVs into multiallelic SVs"
+    )
+    parser_multiallelic.add_argument(
+        "-i", "--input", help="Input VCF file.", type=str, required=True
+    )
+    parser_multiallelic.add_argument(
+        "-o", "--output", help="Output VCF file.", default="/dev/stdout"
+    )
+    parser_multiallelic.add_argument(
+        "-R", "--reference", help="Reference fasta.", type=str, required=True,
+    )
+    parser_multiallelic.add_argument(
+        "--flank", help="Expand variants by flank during merging", default=0,
+    )
 
+
+    args = parser.parse_args()
+    logging.basicConfig(level=args.loglevel)
     if args.command == "gc_covg":
         filter_reads_gc(args.stats_path, args.fasta_path, args.input, "/dev/stdout")
     elif args.command == "gnomad_covg":
@@ -83,6 +120,8 @@ def main():
         filter_nonref(args.input, args.output, args.sample, flank=args.flank)
     elif args.command == "refine_train":
         train_model(args.input, args.pbsv, args.output)
+    elif args.command == "multiallelic":
+        merge_into_multiallelic(args.input, args.output, args.reference, flank=args.flank)
 
 if __name__ == "__main__":
     main()
