@@ -1,3 +1,6 @@
 _target_: npsv2.models.JointEmbeddingsModel
 model_path: null
 projection_size: [512]
+typed_projection: false
+# Currently only generate typed projections for DEL=0 and INS=1 (encoding in npsv2.proto)
+selected_type_indices: [0,1]

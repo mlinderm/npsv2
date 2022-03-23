@@ -11,7 +11,7 @@ from google.protobuf import descriptor_pb2
 from .images import load_example_dataset, _extract_metadata_from_first_example, _features_variant
 from . import npsv2_pb2
 from .utilities.callbacks import NModelCheckpoint
-from.utilities.sequence import as_scalar
+from .utilities.sequence import as_scalar
 
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
@@ -85,7 +85,7 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
 
 # Adapted from:
 # https://github.com/google-research/google-research/blob/e2308c7593eda306daab40db07930a2d5132255b/supcon/models.py#L26
-def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], batch_normalize_projection=False, normalize_projection=True):
+def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normalize_embedding=True, stop_gradient_before_projection=False, projection_size=[128], batch_normalize_projection=False, normalize_projection=True, typed_projection=False, selected_type_indices=None):
     assert tf.keras.backend.image_data_format() == "channels_last"
 
     image = layers.Input(input_shape) 
@@ -98,28 +98,53 @@ def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normali
     embedding = base_model(image, training=(None if weights is None else False))
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
 
-    projection = normalized_embedding if normalize_embedding else embedding
-    if len(projection_size) > 0:
-        if stop_gradient_before_projection:
-            projection = tf.stop_gradient(projection)
-        
-        # Enable MLP (like supcon or SimCLR) where intermediate layers use ReLU
-        for dim in projection_size[:-1]:
-            projection = layers.Dense(
-                dim,
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
-                use_bias=False,
-                activation="relu",
-            )(projection)
-            projection = layers.BatchNormalization()(projection)
-        
-        # Last layer in projection
-        projection = layers.Dense(projection_size[-1], use_bias=False, activation=None)(projection)
-        if batch_normalize_projection:
-            # SimCLR looks to batch normalize the last layer, while supcon does not
-            projection = layers.BatchNormalization()(projection)
-        if normalize_projection:
-            projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
+    # Create unique projections for each variant type
+    assert npsv2_pb2.StructuralVariant.Type.values() == list(range(len(npsv2_pb2.StructuralVariant.Type.values()))), "SV type encodings aren't contiguous range starting at 0, as required by tf.case"
+    projections = []
+    for _ in npsv2_pb2.StructuralVariant.Type.keys() if typed_projection else range(1):
+        projection = normalized_embedding if normalize_embedding else embedding
+        if len(projection_size) > 0:
+            if stop_gradient_before_projection:
+                projection = tf.stop_gradient(projection)
+            
+            # Enable MLP (like supcon or SimCLR) where intermediate layers use ReLU
+            for dim in projection_size[:-1]:
+                projection = layers.Dense(
+                    dim,
+                    kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+                    use_bias=False,
+                    activation="relu",
+                )(projection)
+                projection = layers.BatchNormalization()(projection)
+            
+            # Last layer in projection
+            projection = layers.Dense(projection_size[-1], use_bias=False, activation=None)(projection)
+            if batch_normalize_projection:
+                # SimCLR looks to batch normalize the last layer, while supcon does not
+                projection = layers.BatchNormalization()(projection)
+            if normalize_projection:
+                projection = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(projection)
+        projections.append(projection)
+
+    if typed_projection:
+        # Eliminate parameters for types we aren't considering, by setting those values to 0
+        if selected_type_indices:
+            for i in (set(npsv2_pb2.StructuralVariant.Type.values()) - set(selected_type_indices)):
+                projections[i] = layers.Lambda(lambda x: tf.zeros(tf.shape(x)))(projections[selected_type_indices[0]])
+
+        # Since TimeDistributed doesn't accept multiple inputs until TF 2.5, we do the selection outside the encoder, instead of within
+        # def _chooser(inputs):
+        #     # Slice out which projection to use for this particular variant type. Assumes select, e.g. type enumeration indexes,
+        #     # are valid indices for gather
+        #     select, branches = inputs
+        #     branches = tf.stack(branches, axis=1)
+        #     return tf.gather(branches, select, batch_dims=1)
+
+        # svtype = layers.Input((), name="svtype", dtype=tf.int32)
+        # projection = layers.Lambda(_chooser)([svtype, projections])
+        projection = layers.Lambda(lambda x: tf.stack(x, axis=1))(projections)
+    else:
+        projection = projections[0]
 
     return tf.keras.Model(inputs=image, outputs=[embedding, normalized_embedding, projection], name="encoder")
 
@@ -295,15 +320,16 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         self.image_shape = image_shape
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
-    def _create_model(self, image_shape, model_path: typing.Union[str, typing.List[str]]=None, projection_size=[512], weights=None, **kwargs):
+    def _create_model(self, image_shape, model_path: typing.Union[str, typing.List[str]]=None, projection_size=[512], weights=None, typed_projection=False, **kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
         
         support = layers.Input((3,) + image_shape, name="support")
         query = layers.Input(image_shape, name="query")
-        
+        svtype = layers.Input((), name="svtype", dtype=tf.int32)
+
         def siamese_network(model_path, index=""):
              # In this context, we only care about the projection output
-            encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True)
+            encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True, typed_projection=typed_projection, **kwargs)
             _, _, projection = encoder.output
             encoder = tf.keras.Model(encoder.input, projection, name=f"encoder{index}")
             if model_path:
@@ -311,6 +337,19 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
             support_embeddings = layers.TimeDistributed(encoder, name=f"support_embeddings{index}")(support)
             query_embeddings = encoder(query)
+            
+            if typed_projection:
+                # Because of limitations in TimeDistributed <v2.5 we can't move this into the encoder itself and instead
+                # implement it here so there is only one input and output to TimeDistributed
+                def _chooser(inputs, axis=None):
+                    # Slice out which projection to use for this particular variant type. Assumes select, e.g. type enumeration indexes,
+                    # are valid indices for gather
+                    select, embeddings = inputs
+                    return tf.gather(embeddings, select, batch_dims=1, axis=axis)
+
+                support_embeddings = layers.Lambda(lambda x: _chooser(x, 2))([svtype, support_embeddings])
+                query_embeddings = layers.Lambda(lambda x: _chooser(x))([svtype, query_embeddings])            
+            
             distances = layers.Lambda(_query_distances, name=f"distances{index}")([query_embeddings, support_embeddings])
             return distances
 
@@ -326,7 +365,10 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         # Convert distance to probability
         genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
 
-        return tf.keras.Model(inputs=[query, support], outputs=[genotypes, distances])
+        inputs = [query, support]
+        if typed_projection:
+            inputs.append(svtype)
+        return tf.keras.Model(inputs=inputs, outputs=[genotypes, distances])
 
 
     def _train_input(self, cfg, dataset): 
@@ -417,15 +459,15 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
         tf.debugging.assert_greater(support_replicates, 0)
         
         # TODO: Actually obtain reference size (since that determines the image size)
-        # _, variant_size = tf.io.decode_proto(
-        #     features["variant/encoded"],
-        #     "npsv2.StructuralVariant",
-        #     ["svlen"],
-        #     [tf.int64],
-        #     descriptor_source=self._descriptor_source
-        # )
-        # variant_size = tf.squeeze(variant_size)
-        
+        _, [_, svtype] = tf.io.decode_proto(
+            features["variant/encoded"],
+            "npsv2.StructuralVariant",
+            ["svlen", "svtype"],
+            [tf.int64, tf.int32], # svtype is an enum
+            descriptor_source=self._descriptor_source
+        )
+        svtype = tf.squeeze(svtype)
+
         queries = tf.image.convert_image_dtype(features["image"], dtype=tf.float32)
         queries = tf.repeat(tf.expand_dims(queries, axis=0), repeats=support_replicates, axis=0)
 
@@ -437,8 +479,9 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
         inputs = { 
             "query": queries,
             "support": support,
-            #"variant_size": tf.repeat(variant_size, support_replicates),
         }
+        if cfg.model.typed_projection:
+            inputs["svtype"] = tf.repeat(svtype, support_replicates)
 
         if original_label is not None:
             return tf.data.Dataset.from_tensor_slices((inputs, {

@@ -3,6 +3,7 @@ from unittest.mock import patch, call
 
 import numpy as np
 import hydra
+from omegaconf import OmegaConf
 
 from npsv2 import models
 from npsv2.images import load_example_dataset, vcf_to_tfrecords, _extract_metadata_from_first_example
@@ -29,7 +30,7 @@ class EncoderTest(unittest.TestCase):
         )
         self.assertEqual(encoder.name, "encoder")
         encoder.summary()
-        embeddings, normalized_embeddings, projections = encoder.output_shape
+        embeddings, _, projections = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
         self.assertEqual(projections, (None, 512))
     
@@ -72,6 +73,19 @@ class EncoderTest(unittest.TestCase):
 
         embeddings, *_ = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
+
+
+    def test_type_specific(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 7),
+            normalize_embedding=False,
+            projection_size=[512],
+            normalize_projection=True,
+            batch_normalize_projection=True,
+            typed_projection=True,
+        )
+        self.assertEqual(encoder.name, "encoder")
+        encoder.summary()
 
 
 #@unittest.skip("Development only")
@@ -151,6 +165,13 @@ class JointEmbeddingsModelTest(unittest.TestCase):
     
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
+        self.assertIsInstance(model, models.JointEmbeddingsModel)
+        model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
+        model.summary()
+
+    def test_construct_typed_projection_model(self):
+        cfg = OmegaConf.merge(self.cfg, {"model": {"typed_projection": True}})
+        model = hydra.utils.instantiate(cfg.model, (100, 300, 7), 5)
         self.assertIsInstance(model, models.JointEmbeddingsModel)
         model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
         model.summary()
