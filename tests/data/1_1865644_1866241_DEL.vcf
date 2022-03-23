@@ -1,0 +1,83 @@
+##fileformat=VCFv4.2
+##fileDate=20180605
+##reference=GRCh37
+##bcftools_viewVersion=1.10.2+htslib-1.10.2
+##bcftools_viewCommand=view -Oz -o HG002_SVs_Tier1_v0.6.DEL.vcf.gz -i '(SVTYPE = "DEL" & INFO/sizecat != "20to49")' HG002_SVs_Tier1_v0.6.vcf.gz; Date=Thu May 21 10:15:11 2020
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the structural variant">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of SV:DEL=Deletion, CON=Contraction, INS=Insertion, DUP=Duplication, INV=Inversion">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=ClusterIDs,Number=1,Type=String,Description="IDs of SVs that cluster with this SV">
+##INFO=<ID=NumClusterSVs,Number=1,Type=Integer,Description="Total number of SV calls in this cluster">
+##INFO=<ID=ExactMatchIDs,Number=1,Type=String,Description="IDs of SVs that are exactly the same call as this SV">
+##INFO=<ID=NumExactMatchSVs,Number=1,Type=Integer,Description="Total number of SVs in this exact cluster">
+##INFO=<ID=ClusterMaxShiftDist,Number=1,Type=Float,Description="Maximum relative shift distance between two SVs in this cluster">
+##INFO=<ID=ClusterMaxSizeDiff,Number=1,Type=Float,Description="Maximum relative size difference between two SVs in this cluster">
+##INFO=<ID=ClusterMaxEditDist,Number=1,Type=Float,Description="Maximum relative edit distance between two SVs in this cluster">
+##INFO=<ID=PBcalls,Number=1,Type=Integer,Description="Number of PacBio calls in this cluster">
+##INFO=<ID=Illcalls,Number=1,Type=Integer,Description="Number of Illumina calls in this cluster">
+##INFO=<ID=TenXcalls,Number=1,Type=Integer,Description="Number of 10X Genomics calls in this cluster">
+##INFO=<ID=CGcalls,Number=1,Type=Integer,Description="Number of Complete Genomics calls in this cluster">
+##INFO=<ID=PBexactcalls,Number=1,Type=Integer,Description="Number of PacBio calls exactly matching the call output for this cluster">
+##INFO=<ID=Illexactcalls,Number=1,Type=Integer,Description="Number of Illumina calls exactly matching the call output for this cluster">
+##INFO=<ID=TenXexactcalls,Number=1,Type=Integer,Description="Number of 10X Genomics calls exactly matching the call output for this cluster">
+##INFO=<ID=CGexactcalls,Number=1,Type=Integer,Description="Number of Complete Genomics calls exactly matching the call output for this cluster">
+##INFO=<ID=HG2count,Number=1,Type=Integer,Description="Number of calls discovered in HG002 in this cluster">
+##INFO=<ID=HG3count,Number=1,Type=Integer,Description="Number of calls discovered in HG003 in this cluster">
+##INFO=<ID=HG4count,Number=1,Type=Integer,Description="Number of calls discovered in HG004 in this cluster">
+##INFO=<ID=NumTechs,Number=1,Type=Integer,Description="Number of technologies from which calls were discovered in this cluster">
+##INFO=<ID=NumTechsExact,Number=1,Type=Integer,Description="Number of technologies from which calls were discovered that exactly match the call output for this cluster">
+##INFO=<ID=DistBack,Number=1,Type=Integer,Description="Distance to the closest non-matching variant before this variant">
+##INFO=<ID=DistForward,Number=1,Type=Integer,Description="Distance to the closest non-matching variant after this variant">
+##INFO=<ID=DistMin,Number=1,Type=Integer,Description="Distance to the closest non-matching variant in either direction">
+##INFO=<ID=DistMinlt1000,Number=1,Type=String,Description="TRUE if Distance to the closest non-matching variant in either direction is less than 1000bp, suggesting possible complex or compound heterozygous variant">
+##INFO=<ID=MultiTech,Number=1,Type=String,Description="TRUE if callsets from more than one technology are in this cluster, i.e., NumTechs>1">
+##INFO=<ID=MultiTechExact,Number=1,Type=String,Description="TRUE if callsets from more than one technology exactly matches the call output for this cluster, i.e., NumTechsExact>1">
+##INFO=<ID=sizecat,Number=1,Type=String,Description="Size category in bp: 20to49, 50to99, 100to299, 300to999, or gt1000">
+##INFO=<ID=DistPASSHG2gt49Minlt1000,Number=1,Type=String,Description="TRUE if Distance to the closest non-matching PASS variant >49bp in HG002 in either direction is less than 1000bp, suggesting possible complex or compound heterozygous variant or inaccurate call">
+##INFO=<ID=DistPASSMinlt1000,Number=1,Type=String,Description="TRUE if Distance to the closest non-matching PASS variant in either direction is less than 1000bp, suggesting possible complex or compound heterozygous variant or inaccurate call">
+##INFO=<ID=MendelianError,Number=1,Type=String,Description="TRUE if all individuals have a consensus GT and they are not consistent with Mendelian inheritance">
+##INFO=<ID=HG003_GT,Number=1,Type=String,Description="Consensus GT for HG003/Father">
+##INFO=<ID=HG004_GT,Number=1,Type=String,Description="Consensus GT for HG004/Mother">
+##INFO=<ID=BREAKSIMLENGTH,Number=1,Type=Integer,Description="Length of alignable similarity at event breakpoints as determined by the aligner">
+##INFO=<ID=REFWIDENED,Number=1,Type=String,Description="Widened boundaries of the event in the reference allele">
+##INFO=<ID=REPTYPE,Number=1,Type=String,Description="Type of SV, with designation of uniqueness of new or deleted sequence:SIMPLEDEL=Deletion of at least some unique sequence, SIMPLEINS=Insertion of at least some unique sequence, CONTRAC=Contraction, or deletion of sequence entirely similar to remaining sequence, DUP=Duplication, or insertion of sequence entirely similar to pre-existing sequence, INV=Inversion, SUBSINS=Insertion of new sequence with alteration of some pre-existing sequence, SUBSDEL=Deletion of sequence with alteration of some remaining sequence">
+##INFO=<ID=TRall,Number=1,Type=String,Description="TRUE if at least 20% of the REF bases are tandem repeats of any length">
+##INFO=<ID=TRgt100,Number=1,Type=String,Description="TRUE if at least 20% of the REF bases are tandem repeats at least 100bp long">
+##INFO=<ID=TRgt10k,Number=1,Type=String,Description="TRUE if at least 20% of the REF bases are tandem repeats at least 10kbp long">
+##INFO=<ID=segdup,Number=1,Type=String,Description="TRUE if at least 20% of the REF bases are segmental duplications at least 10kbp long">
+##INFO=<ID=ORIGINAL,Number=.,Type=String,Description="This record is a proposed alternate representation for these variant IDs">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GTcons1,Number=1,Type=String,Description="Consensus Genotype using the GT from svviz2 rather than ref and alt allele counts, which is sometimes inaccurate for large variants">
+##FORMAT=<ID=PB_GT,Number=1,Type=String,Description="Genotype predicted by svviz from PacBio">
+##FORMAT=<ID=PB_REF,Number=1,Type=Integer,Description="Number of PacBio reads supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=PB_ALT,Number=1,Type=Integer,Description="Number of PacBio reads supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=PBHP_GT,Number=1,Type=String,Description="Genotype predicted by svviz from PacBio haplotype-separated by 10X">
+##FORMAT=<ID=PB_REF_HP1,Number=1,Type=Integer,Description="Number of PacBio reads on haplotype 1 supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=PB_ALT_HP1,Number=1,Type=Integer,Description="Number of PacBio reads on haplotype 1 supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=PB_REF_HP2,Number=1,Type=Integer,Description="Number of PacBio reads on haplotype 2 supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=PB_ALT_HP2,Number=1,Type=Integer,Description="Number of PacBio reads on haplotype 2 supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=TenX_GT,Number=1,Type=String,Description="Genotype predicted by svviz from 10X by combining the GT's from each haplotype">
+##FORMAT=<ID=TenX_REF_HP1,Number=1,Type=Integer,Description="Number of 10X reads on haplotype 1 supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=TenX_ALT_HP1,Number=1,Type=Integer,Description="Number of 10X reads on haplotype 1 supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=TenX_REF_HP2,Number=1,Type=Integer,Description="Number of 10X reads on haplotype 2 supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=TenX_ALT_HP2,Number=1,Type=Integer,Description="Number of 10X reads on haplotype 2 supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=ILL250bp_GT,Number=1,Type=String,Description="Genotype predicted by svviz from Illumina 250bp reads">
+##FORMAT=<ID=ILL250bp_REF,Number=1,Type=Integer,Description="Number of Illumina 250bp reads supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=ILL250bp_ALT,Number=1,Type=Integer,Description="Number of Illumina 250bp reads supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=ILLMP_GT,Number=1,Type=String,Description="Genotype predicted by svviz from Illumina mate-pair reads">
+##FORMAT=<ID=ILLMP_REF,Number=1,Type=Integer,Description="Number of Illumina mate-pair reads supporting the REF allele as predicted by svviz">
+##FORMAT=<ID=ILLMP_ALT,Number=1,Type=Integer,Description="Number of Illumina mate-pair reads supporting the ALT allele as predicted by svviz">
+##FORMAT=<ID=BNG_LEN_DEL,Number=1,Type=Integer,Description="Length of a deletion predicted by BioNano in a region overlapping this variant">
+##FORMAT=<ID=BNG_LEN_INS,Number=1,Type=Integer,Description="Length of an insertion predicted by BioNano in a region overlapping this variant">
+##FORMAT=<ID=nabsys_svm,Number=1,Type=Float,Description="Nabsys SVM score for this variant if it was evaluated">
+##FORMAT=<ID=DS,Number=G,Type=Float,Description="Distance between real and simulated data">
+##FORMAT=<ID=DHFFC,Number=A,Type=Float,Description="Ratio between mean coverage in the event and the flanks">
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=NoConsensusGT,Description="No individual had genotypes from svviz agree across all datasets with confident genotypes">
+##FILTER=<ID=LongReadHomRef,Description="Long reads supported homozygous reference for all individuals">
+##FILTER=<ID=ClusteredCalls,Description="Supported SVs that are within 1kb of a different supported SV">
+##FILTER=<ID=lt50bp,Description="Supported variant but smaller than 50bp">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=1,length=249250621>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
+1	1865644	HG3_PB_SVrefine2PBcRDovetail_27	TGTGTGTATGTGTGAGTGTTAGGGTATAGGTACACACGTGTGTACGTGTGTTAGGCTGTAGGTACACAGGTGTATACGTGGGTGTTAGGTTGTAGGTACACAGGTGTACACGTGGGTGTTAGGTTGTAGGTACACAGGTGTATACGTGGGTGTTAGGTTGTAGGTACACACATGTGTACGTGTGTGTTAGGTTGTAGGTACACACGTGTGTACATGTGTGTTGTAGGTACACATGTGTGTATTAGGTTGTAGGTACACAGGTGTGTATGTGTGTTAGGTTGTAGGTACACAGGTGTATACGTGGGTGTTAGGTTGTAGGTACACAGGTGTATACGTGGGTGTTAGGTTGTAGGTACACACGTGTGTACGTGGGTGTTAGGTTATAGGTACACGTGTGTATGTGTGTGTGTTAGGTTGTAGGTACACACGTGTGTACGTGGGTGTTAGGCTGTAGGTACACACGTGTGTACGTGGGTGTTAGGCTGTAGGTACACAGGTGTGTACGTGGGTGTTAGGCTGTAGGTACACACGTGTGTACGTGGGTGTTAGGTTGTAGGTACACACGTGTGTACGTGGGTGTTAGGTTGTAGGTACACAC	T	20	PASS	ClusterIDs=HG2_PB_SVrefine2Falcon1plusDovetail_35:HG2_PB_pbsv_37:HG3_Ill_MetaSV_9:HG2_Ill_MetaSV_6:HG2_Ill_tnscope_1:HG3_PB_pbsv_38:HG4_PB_SVrefine2Falcon1Dovetail_31:HG3_PB_SVrefine2PBcRDovetail_27:HG3_PB_SVrefine2Falcon1Dovetail_32:HG3_Ill_SVrefine2DISCOVARDovetail_12:HG2_PB_SVrefine2PBcRplusDovetail_30:HG2_PB_SVrefine2PB10Xhap12_35:HG2_PB_SVrefine2Falcon2Bionano_25;NumClusterSVs=13;ExactMatchIDs=HG2_PB_SVrefine2Falcon1plusDovetail_35:HG4_PB_SVrefine2Falcon1Dovetail_31:HG3_PB_SVrefine2PBcRDovetail_27:HG3_PB_SVrefine2Falcon1Dovetail_32:HG3_Ill_SVrefine2DISCOVARDovetail_12:HG2_PB_SVrefine2PBcRplusDovetail_30:HG2_PB_SVrefine2PB10Xhap12_35:HG2_PB_SVrefine2Falcon2Bionano_25;NumExactMatchSVs=8;ClusterMaxShiftDist=0.150504266873545;ClusterMaxSizeDiff=0.150504266873545;ClusterMaxEditDist=0.254066615027111;PBcalls=9;Illcalls=4;TenXcalls=0;CGcalls=0;PBexactcalls=7;Illexactcalls=1;TenXexactcalls=0;CGexactcalls=0;HG2count=7;HG3count=5;HG4count=1;NumTechs=2;NumTechsExact=2;SVLEN=-597;DistBack=-10917;DistForward=-543;DistMin=-10917;DistMinlt1000=TRUE;MultiTech=TRUE;MultiTechExact=TRUE;SVTYPE=DEL;END=1866241;sizecat=300to999;DistPASSHG2gt49Minlt1000=FALSE;DistPASSMinlt1000=TRUE;MendelianError=FALSE;HG003_GT=./.;HG004_GT=./.;TRall=TRUE;TRgt100=TRUE;TRgt10k=FALSE;segdup=FALSE;REPTYPE=SIMPLEDEL;BREAKSIMLENGTH=214;REFWIDENED=1:1865645-1866455	GT:GTcons1:PB_GT:PB_REF:PB_ALT:PBHP_GT:PB_REF_HP1:PB_ALT_HP1:PB_REF_HP2:PB_ALT_HP2:TenX_GT:TenX_REF_HP1:TenX_ALT_HP1:TenX_REF_HP2:TenX_ALT_HP2:ILL250bp_GT:ILL250bp_REF:ILL250bp_ALT:ILLMP_GT:ILLMP_REF:ILLMP_ALT:BNG_LEN_DEL:BNG_LEN_INS:nabsys_svm	0/1:0/1:0/1:24:18:0|1:18:0:6:20:0/0:46:1:49:1:0/0:78:0:0/0:102:2:.:.:.

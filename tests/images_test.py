@@ -160,21 +160,27 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         np.testing.assert_allclose(hap_coverages, np.array([1.0, 0.5, 1.0]) * 1.5 * self.sample.mean_coverage)
 
 
-@unittest.skip("Development only")
+#@unittest.skip("Development only")
 @unittest.skipUnless(
     os.path.exists("/data/human_g1k_v37.fasta")
     and bwa_index_loaded("/data/human_g1k_v37.fasta")
     and os.path.exists("/data/HG002-ready.bam"),
-    "Reference genome not available",
+    "Reference genome or HG002 sequencing data not available",
 )
 @parameterized_class(
     [
-        #    { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
-        #    { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
-        #    { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
-        #   { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
+        # { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
+        # { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
+        # { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
+        # { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
+        # {"vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
+        # {"vcf_path": os.path.join(FILE_DIR, "1_900011_900086_DEL.vcf.gz")},  # Offset (PBSV)
+        {"vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
+        {"vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
+        {"vcf_path": os.path.join(FILE_DIR, "1_1866396_1867023_DEL.vcf")},  # Offset (PBSV)
         # { "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf") }, # Haplotagged
-        {"vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf")},  # Haplotagged
+        # {"vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf")},  # Haplotagged
+
     ]
 )
 class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
