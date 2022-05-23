@@ -61,12 +61,6 @@ class ImageGeneratorConfigTest(unittest.TestCase):
         generator = hydra.utils.instantiate(cfg.generator, cfg)
         self.assertIsInstance(generator, images.SingleDepthImageGenerator)
 
-    def test_override_generator(self):
-        cfg = hydra.compose(config_name="config", overrides=["generator=windowed_read"])
-        generator = hydra.utils.instantiate(cfg.generator, cfg)
-        self.assertIsInstance(generator, images.WindowedReadImageGenerator)
-        self.assertIn("flank_windows", cfg.pileup)
-
 
 class ImageRegionTest(unittest.TestCase):
     def setUp(self):
@@ -137,7 +131,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         for i in range(1, cfg.pileup.variant_band_height):
             self.assertTrue(np.array_equal(image_tensor[i], image_tensor[0]))
 
-        png_path = "test.png"  # os.path.join(self.tempdir.name, "test.png")
+        png_path = os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
         self.assertTrue(os.path.exists(png_path))

@@ -7,6 +7,7 @@ defaults:
   - optional model_training: ${model}
   - refine
   - command: genotype
+  - _self_
 
 threads: 1
 

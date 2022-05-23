@@ -1,7 +1,0 @@
-# @package _global_
-generator:
-  _target_: npsv2.images.WindowedReadImageGenerator
-pileup:
-  image_width: 50
-  image_height: 50
-  flank_windows: 1
