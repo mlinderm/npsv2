@@ -132,16 +132,7 @@ def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normali
             for i in (set(npsv2_pb2.StructuralVariant.Type.values()) - set(selected_type_indices)):
                 projections[i] = layers.Lambda(lambda x: tf.zeros(tf.shape(x)))(projections[selected_type_indices[0]])
 
-        # Since TimeDistributed doesn't accept multiple inputs until TF 2.5, we do the selection outside the encoder, instead of within
-        # def _chooser(inputs):
-        #     # Slice out which projection to use for this particular variant type. Assumes select, e.g. type enumeration indexes,
-        #     # are valid indices for gather
-        #     select, branches = inputs
-        #     branches = tf.stack(branches, axis=1)
-        #     return tf.gather(branches, select, batch_dims=1)
-
-        # svtype = layers.Input((), name="svtype", dtype=tf.int32)
-        # projection = layers.Lambda(_chooser)([svtype, projections])
+        # To use TimeDistributed, use a single input and output (all of the projection heads)
         projection = layers.Lambda(lambda x: tf.stack(x, axis=1))(projections)
     else:
         projection = projections[0]
@@ -339,7 +330,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
             query_embeddings = encoder(query)
             
             if typed_projection:
-                # Because of limitations in TimeDistributed <v2.5 we can't move this into the encoder itself and instead
+                # Because of limitations in TimeDistributed we can't move this into the encoder itself and instead
                 # implement it here so there is only one input and output to TimeDistributed
                 def _chooser(inputs, axis=None):
                     # Slice out which projection to use for this particular variant type. Assumes select, e.g. type enumeration indexes,
@@ -347,7 +338,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
                     select, embeddings = inputs
                     return tf.gather(embeddings, select, batch_dims=1, axis=axis)
 
-                support_embeddings = layers.Lambda(lambda x: _chooser(x, 2))([svtype, support_embeddings])
+                support_embeddings = layers.Lambda(lambda x: _chooser(x, axis=2))([svtype, support_embeddings])
                 query_embeddings = layers.Lambda(lambda x: _chooser(x))([svtype, query_embeddings])            
             
             distances = layers.Lambda(_query_distances, name=f"distances{index}")([query_embeddings, support_embeddings])

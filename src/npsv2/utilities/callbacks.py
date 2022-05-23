@@ -51,10 +51,10 @@ class NModelCheckpoint(ModelCheckpoint):
         self._keep_count = max_to_keep
         self._checkpoints = deque(existing_checkpoints)
 
-    def _save_model(self, epoch, logs):
-        super()._save_model(epoch, logs)
-        logs = tf_utils.to_numpy_or_python_type(logs or {})
-        filepath = self._get_file_path(epoch, logs)
+    def _save_model(self, epoch, batch, logs):
+        super()._save_model(epoch, batch, logs)
+        logs = logs or {}
+        filepath = self._get_file_path(epoch, batch, logs)
 
         if not self._checkpoint_exists(filepath):
             # Did not save a checkpoint for current epoch

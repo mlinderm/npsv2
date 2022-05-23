@@ -83,6 +83,15 @@ def file_find_or_append(original_path, match_pattern, append, sep=" "):
             else:
                 replaced_file.write(line)
 
+def file_replace(original_path, match_pattern, replace_pattern):
+    # Adapted from SeqLib python package.
+    with open(original_path, "r") as original_file:
+        original = original_file.readlines()
+    with open(original_path, "w") as replaced_file:
+        for line in original:
+            replaced_file.write(re.sub(match_pattern, replace_pattern, line))
+
+
 class SeqLibCMakeBuild(CMakeBuild):
     def run(self):
         # To link into a shared library we need to add the -fPIC and other flags to SeqLib dependencies
@@ -96,6 +105,11 @@ class SeqLibCMakeBuild(CMakeBuild):
             os.path.dirname(os.path.realpath(__file__)), "lib", "seqlib", "fermi-lite", "Makefile"
         )
         file_find_or_append(fermi_makefile_path, r"^CFLAGS\s*=.*$", ["-Wno-unused-result", "-Wno-unused-but-set-variable"])
+
+        for lib in ("bwa", "fermi-lite"):
+            file_replace(os.path.join(
+                os.path.dirname(os.path.realpath(__file__)), "lib" , "seqlib", lib, "rle.h"
+            ), r"^(const uint8_t rle_auxtab\[8\];)", r"extern \1")
 
         super().run()
 
@@ -172,6 +186,6 @@ setup(
         "Intended Audience :: Science/Research",
         "Topic :: Scientific/Engineering :: Bio-Informatics",
         "License :: OSI Approved :: Apache Software License",
-        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
     ],
 )

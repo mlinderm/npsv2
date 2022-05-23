@@ -161,12 +161,13 @@ class JointEmbeddingsModelTest(unittest.TestCase):
             "training.epochs=1",
             "model=joint_embeddings",
             "training.contrastive_margin=0.5",
+            #"model.typed_projection=true",
         ])
     
     def test_construct_model(self):
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 5), 5)
         self.assertIsInstance(model, models.JointEmbeddingsModel)
-        model._model.get_layer("encoder")  # Will raise if 'encoder' is not defined
+        model._model.get_layer("encoder").summary()  # Will raise if 'encoder' is not defined
         model.summary()
 
     def test_construct_typed_projection_model(self):

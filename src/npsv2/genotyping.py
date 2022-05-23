@@ -31,7 +31,7 @@ def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_b
         "-q", str(min_baseq),
         "-l", str(min_anchor),
         "-r", str(region),
-        "--reference", reference,
+        #"--reference", reference,  # no longer seems to be an argument in recent versions
         input_bam,
     )
 
@@ -208,7 +208,8 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                         # Convert example to features
                         features = {
                             "image": images._example_image(example),
-                            "sim/images": images._example_sim_images(example)
+                            "sim/images": images._example_sim_images(example),
+                            "variant/encoded": example_variant.SerializeToString(),
                         }
 
                         # Predict genotype using one or more models (by taking the mean of the distances across models and replicates)
