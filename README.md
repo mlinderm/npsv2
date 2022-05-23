@@ -8,7 +8,7 @@ NPSV2 is a work in progress that is currently under active development.
 
 When cloning NPSV2, make sure to recursively clone all of the submodules, i.e. `git clone --recursive git@github.com:mlinderm/npsv2.git`.
 
-NPSV requires Python 3.6+ and a suite of command-line genomics tools. For convenience, a Docker file is provided that installs all of the dependencies. To build that image:
+NPSV requires Python 3.7+ and a suite of command-line genomics tools. For convenience, a Docker file is provided that installs all of the dependencies. To build that image:
 ```
 docker build -t npsv2 .
 ```
