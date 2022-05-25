@@ -408,12 +408,13 @@ def _region_columns(region: Range, render_region: Range):
 
 # TODO: Consolidate these Pileup classes with a common base class
 class PileupRead:
-    def __init__(self, read, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float):
+    def __init__(self, read: pysam.AlignedSegment, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase_tag: str):
         self._read = read
         self.region = _read_region(read, read.cigartuples)
         self.allele = allele
         self.ref_zscore = ref_zscore
         self.alt_zscore = alt_zscore
+        self.phase = self._read.get_tag(phase_tag) if self._read.has_tag(phase_tag) else None
 
     @property
     def read_start(self):
@@ -432,13 +433,14 @@ class PileupRead:
 
 
 class PileupInsert:
-    def __init__(self, region: Range, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float):
+    def __init__(self, region: Range, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase: int = None):
         self.region = region
         self.allele = allele
         self.ref_zscore = ref_zscore
         self.alt_zscore = alt_zscore
         self.mapq = None
         self.strand = None
+        self.phase = phase
 
     @property
     def read_start(self):
@@ -483,22 +485,25 @@ class ReadPileup:
         for region, reads in self._reads.items():
             if region.get_overlap(pileup_read.region) > 0:
                 reads.append(pileup_read)
+        return pileup_read
 
     def add_insert(self, insert_region: Range, **attributes):
         # Exclude the allele for the insert bases (even though the fragment may be assigned to an allele)
-        attributes.update({ "allele": AlleleRealignment() }) #None, False, 0, 0) })
+        attributes.update({ "allele": AlleleRealignment() })
         for region, reads in self._reads.items():
             overlap = region.intersection(insert_region)
             if overlap.length > 0:
                 reads.append(PileupInsert(overlap, **attributes))
 
-    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str=None, **attributes):
+    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str=None, phase_tag = "HP", **attributes):
         if fragment.read1:
-            self.add_read(fragment.read1, **attributes)
+            read1 = self.add_read(fragment.read1, phase_tag=phase_tag, **attributes)
         if fragment.read2:
-            self.add_read(fragment.read2, **attributes)
+            read2 = self.add_read(fragment.read2, phase_tag=phase_tag, **attributes)
         if add_insert and fragment.is_properly_paired:
-            self.add_insert(fragment.insert_region, **attributes)
+            # Phasing information passes through to insert bases
+            assert read1.phase == read2.phase, "Phasing specification doesn't match between reads in pair"
+            self.add_insert(fragment.insert_region, phase=read1.phase, **attributes)
 
 
 class PileupFragment:

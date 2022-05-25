@@ -57,7 +57,7 @@ def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str =
             if len(alleles) == 0:  # TODO: Add additional filtering criteria?
                 continue
             ref_seq_index = record.start - region.start
-            assert record.ref == ref_seq[ref_seq_index]
+            assert record.ref == ref_seq[ref_seq_index], f"VCF REF {record.contig}:{record.pos}{record.ref} doesn't match reference {ref_seq[ref_seq_index]}"
             # Replace reference base with single letter IUPAC code
             ref_seq = ref_seq[:ref_seq_index] + _iupac_code(alleles) + ref_seq[ref_seq_index + 1 :]
 

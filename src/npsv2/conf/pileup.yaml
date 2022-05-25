@@ -1,6 +1,7 @@
 # @package pileup
 image_width: 300
 image_height: 100
+image_channels: [0, 1, 2, 3, 4, 5, 6, 7]
 
 variant_padding: 100
 
@@ -34,6 +35,9 @@ max_baseq: 40
 
 positive_strand_pixel: 70
 negative_strand_pixel: 240
+
+phase_tag: "HP"
+haplotag_reads: true
 
 fetch_flank: 1000
 realigner_flank: 1000

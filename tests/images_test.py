@@ -111,6 +111,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
     @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
     def test_generate(self, mock_ref):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
+        self.assertEqual(image_tensor.shape, (self.cfg.pileup.image_height, self.cfg.pileup.image_width, len(self.cfg.pileup.image_channels)))
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
 
         png_path = os.path.join(self.tempdir.name, "test.png")
@@ -167,18 +168,21 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         # { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
         # { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
         # { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
-        # {"vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
-        # {"vcf_path": os.path.join(FILE_DIR, "1_900011_900086_DEL.vcf.gz")},  # Offset (PBSV)
-        {"vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
-        {"vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
-        {"vcf_path": os.path.join(FILE_DIR, "1_1866396_1867023_DEL.vcf")},  # Offset (PBSV)
-        # { "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf") }, # Haplotagged
-        # {"vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf")},  # Haplotagged
+        # { "vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
+        # { "vcf_path": os.path.join(FILE_DIR, "1_900011_900086_DEL.vcf.gz")},  # Offset (PBSV)
+        #{ "vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
+        #{ "vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
+        #{ "vcf_path": os.path.join(FILE_DIR, "1_1866396_1867023_DEL.vcf")},  # Offset (PBSV)
+        { "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "bam_path": os.path.join(FILE_DIR, "5_126843428_126845322.bam") }, # Haplotagged
+        { "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotagged
 
     ]
 )
 class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
     """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
+
+    bam_path = "/data/HG002-ready.bam"
+    snv_path = None
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -191,7 +195,7 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
                 "simulation.replicates=1",
                 "simulation.sample_ref=false",
                 f"simulation.save_sim_bam_dir={RESULT_DIR}",
-            ],
+            ] + ([f"pileup.snv_vcf_input={self.snv_path}"] if self.snv_path else []),
         )
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
         self.sample = Sample(
@@ -202,7 +206,7 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
             sequencer="HS25",
             read_length=148,
         )
-        self.bam_path = "/data/HG002-ready.bam"
+        
 
     def tearDown(self):
         self.tempdir.cleanup()

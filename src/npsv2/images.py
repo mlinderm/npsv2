@@ -1,5 +1,6 @@
 import datetime, functools, itertools, math, logging, os, random, shutil, subprocess, sys, tempfile, typing
 from dataclasses import dataclass, field
+from shlex import quote
 import numpy as np
 import pysam
 import tensorflow as tf
@@ -27,10 +28,9 @@ ALLELE_CHANNEL = 3
 MAPQ_CHANNEL = 4
 STRAND_CHANNEL = 5
 BASEQ_CHANNEL = 6
+PHASE_CHANNEL = 7
 
-REF_ALLELE_CHANNEL = 3
-ALT_ALLELE_CHANNEL = 7
-
+MAX_NUM_CHANNELS = 8
 
 def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
@@ -76,9 +76,10 @@ def _fetch_reads(read_path: str, fetch_region: Range, reference: str = None) -> 
 
 
 class ImageGenerator:
-    def __init__(self, cfg, num_channels):
+    def __init__(self, cfg):
         self._cfg = cfg
-        self._image_shape = (self._cfg.pileup.image_height, self._cfg.pileup.image_width, num_channels)
+        self._image_shape = (self._cfg.pileup.image_height, self._cfg.pileup.image_width, len(self._cfg.pileup.image_channels))
+        assert all(channel in range(MAX_NUM_CHANNELS) for channel in self._cfg.pileup.image_channels), "Invalid channel indices specified"
 
         # Helper dictionaries to map to pixel values
         self._aligned_to_pixel = {
@@ -86,7 +87,7 @@ class ImageGenerator:
             BaseAlignment.MATCH: self._cfg.pileup.match_base_pixel if self._cfg.pileup.render_snv else self._cfg.pileup.aligned_base_pixel,
             BaseAlignment.MISMATCH: self._cfg.pileup.mismatch_base_pixel if self._cfg.pileup.render_snv else self._cfg.pileup.aligned_base_pixel,
             BaseAlignment.SOFT_CLIP: self._cfg.pileup.soft_clip_base_pixel,
-            BaseAlignment.INSERT: self._cfg.pileup.insert_base_pixel
+            BaseAlignment.INSERT: self._cfg.pileup.insert_base_pixel,
         }
 
         self._allele_to_pixel = {
@@ -149,6 +150,11 @@ class ImageGenerator:
         else:
             return self._qual_pixel(qual, self._cfg.pileup.max_mapq)
 
+    def _phase_pixel(self, hp):
+        if hp is None:
+            return 0
+        else:
+            return (hp / 2.0) * MAX_PIXEL_VALUE
 
     def _flatten_image(self, image_tensor, render_channels=False, margin=5):
         if tf.is_tensor(image_tensor):
@@ -159,7 +165,7 @@ class ImageGenerator:
         combined_image = Image.fromarray(image_tensor[:, :, channels], mode="RGB")  
 
         if render_channels:
-            height, width, num_channels = self._image_shape
+            height, width, num_channels = image_tensor.shape
             image = Image.new(combined_image.mode,  (width + (num_channels - 1)*(width + margin), 2*height + margin))
             image.paste(combined_image, ((image.width - width) // 2, 0))
 
@@ -180,8 +186,8 @@ def image_region(cfg, variant_region: Range) -> Range:
     return variant_region.expand(left_padding, right_padding)
 
 class SingleImageGenerator(ImageGenerator):
-    def __init__(self, cfg, num_channels):
-        super().__init__(cfg, num_channels=num_channels)
+    def __init__(self, cfg,):
+        super().__init__(cfg)
         
 
     def image_regions(self, variant) -> Range:
@@ -199,8 +205,9 @@ class SingleImageGenerator(ImageGenerator):
                         
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250
         image_tensor[:self._cfg.pileup.variant_band_height, :, STRAND_CHANNEL] = self._strand_to_pixel[Strand.POSITIVE]
-        image_tensor[:self._cfg.pileup.variant_band_height, :, BASEQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_baseq, self._cfg.pileup.max_baseq)
-      
+        image_tensor[:self._cfg.pileup.variant_band_height, :, BASEQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_baseq, self._cfg.pileup.max_baseq)    
+        image_tensor[:self._cfg.pileup.variant_band_height, :, PHASE_CHANNEL] = self._phase_pixel(None)
+
         # Clip out the region containing the variant
         for col_slice in pileup.region_columns(region, variant.reference_region):
             image_tensor[:self._cfg.pileup.variant_band_height, col_slice, :] = 0
@@ -229,7 +236,7 @@ class SingleImageGenerator(ImageGenerator):
         if image_tensor.shape != self.image_shape:
             # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
             # we use cast instead
-            image_tensor = tf.cast(tf.image.resize(image_tensor, self.image_shape[:2]), dtype=tf.uint8).numpy()
+            image_tensor = tf.cast(tf.image.resize(image_tensor[:,:,self._cfg.pileup.image_channels], self.image_shape[:2]), dtype=tf.uint8).numpy()
 
         return image_tensor
 
@@ -247,14 +254,14 @@ class _StraddleRegions:
 
 class SingleDepthImageGenerator(SingleImageGenerator):
     def __init__(self, cfg):
-        super().__init__(cfg, num_channels=7)
+        super().__init__(cfg)
         
 
     def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, alleles: typing.AbstractSet[int]={1}, **kwargs):
         assert ref_seq is None or len(ref_seq) == regions.length
 
-        image_height, _, num_channels = self.image_shape
-        image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
+        image_height, _, _ = self.image_shape
+        image_tensor = np.zeros((image_height, regions.length, MAX_NUM_CHANNELS), dtype=np.uint8)
 
         fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
 
@@ -294,7 +301,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
                 # otherwise be represented)
                 add_insert = self._cfg.pileup.insert_bases and not fragment.reads_overlap(regions)
-                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore)
+                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore, phase_tag=self._cfg.pileup.phase_tag)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
@@ -313,7 +320,8 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[row_idxs[col_slice], col_idxs, ALLELE_CHANNEL] = self._allele_pixel(read.allele)
                 image_tensor[row_idxs[col_slice], col_idxs, STRAND_CHANNEL] = self._strand_to_pixel[read.strand]
                 image_tensor[row_idxs[col_slice], col_idxs, BASEQ_CHANNEL] = self._qual_pixel(read.baseq(read_slice), self._cfg.pileup.max_baseq)
-                
+                image_tensor[row_idxs[col_slice], col_idxs, PHASE_CHANNEL] = self._phase_pixel(read.phase)             
+
                 # Increment the 'current' row for the bases we just added to the pileup, overwrite the last row if we exceed
                 # the maximum coverage
                 row_idxs[col_slice] = np.clip(row_idxs[col_slice] + 1, self._cfg.pileup.variant_band_height, image_height - 1) 
@@ -353,6 +361,27 @@ def _float_feature(list_of_floats):
     return tf.train.Feature(float_list=tf.train.FloatList(value=list_of_floats))
 
 
+def _haplotag_reads(reference: str, sample: Sample, read_path: str, vcf_path: str, region: Range, dir) -> str:
+    tagged_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
+    tagged_bam.close()
+    
+    whatshap_commandline = f"whatshap haplotag \
+        --tag-supplementary \
+        --reference {quote(reference)} \
+        --regions {region} \
+        --sample {sample.name} \
+        --output {quote(tagged_bam.name)} \
+        {quote(vcf_path)} \
+        {quote(read_path)}"
+    
+    haplotag_result = subprocess.run(whatshap_commandline, shell=True, stderr=subprocess.PIPE)
+    if haplotag_result.returncode != 0 or not os.path.exists(tagged_bam.name):
+        print(haplotag_result.stderr)
+        raise RuntimeError(f"Failed to haplotag read file")
+    pysam.index(tagged_bam.name)
+    return tagged_bam.name
+
+
 def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}, addl_features={}):
     assert 1 <= len(alleles) <= min(variant.num_alt, 2)
 
@@ -373,9 +402,18 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         ref_seq = None
    
     # Construct image for "real" data
-    image_tensor = generator.generate(
-        variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
-    )
+    if cfg.pileup.haplotag_reads and cfg.pileup.snv_vcf_input:
+        # Haplotag reads on the fly using whatshap. We don't need to tag the simulated reads as that
+        # is done automatically at simulation time.
+        with tempfile.TemporaryDirectory() as tempdir:
+            tagged_read_path = _haplotag_reads(cfg.reference, sample, read_path, cfg.pileup.snv_vcf_input, example_regions.expand(cfg.pileup.fetch_flank), tempdir)
+            image_tensor = generator.generate(
+                variant, tagged_read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
+            )
+    else:
+        image_tensor = generator.generate(
+            variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
+        )
 
     feature = {
         "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
@@ -405,10 +443,10 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
             with tempfile.TemporaryDirectory() as tempdir:
                 # Generate the FASTA file for this zygosity
                 if allele_count == 0:
-                    fasta_alleles = (0, 0)
+                    fasta_alleles = [0, 0]
                 elif allele_count == 1:
                     # Use first allele in multi-allelic contexts (where heterozygous is ill-defined)
-                    fasta_alleles = (0, next(iter(alleles)))
+                    fasta_alleles = [0, next(iter(alleles))]
                 elif allele_count == 2:
                     fasta_alleles = sorted(alleles) * (allele_count // len(alleles))
                 haplotypes = len(set(fasta_alleles)) # Number of distinct haplotypes
@@ -518,7 +556,6 @@ def make_vcf_examples(
         for i, record in enumerate(variant_iter):
             if i % num_shards == index:
                 variant = Variant.from_pysam(record)
-                assert variant.is_biallelic(), "Multi-allelic sites not yet supported"
 
                 # To avoid duplicated entries, only generate images for variants that start within region
                 if region and not query_range.contains(variant.start):

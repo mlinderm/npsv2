@@ -222,7 +222,7 @@ def filter_reads_gc(stats_path: str, fasta_path: str, in_sam: str, out_fastq: st
     sample = Sample.from_json(stats_path)
         
     gc_covg = np.fromiter((sample.gc_normalized_coverage(gc) for gc in range(0, 101, 1)), dtype=float)
-    max_normalized_gc = min(np.max(gc_covg), args.max_norm_covg)
+    max_normalized_gc = min(np.max(gc_covg), max_norm_covg)
     gc_covg /= max_normalized_gc
 
     _native.filter_reads_gc(fasta_path, in_sam, out_fastq, gc_covg)
