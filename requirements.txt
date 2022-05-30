@@ -14,4 +14,4 @@ parameterized
 joblib
 scikit-learn
 portalocker
-whatshap=1.4
+whatshap==1.4

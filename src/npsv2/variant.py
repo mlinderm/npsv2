@@ -25,6 +25,25 @@ _ALLELES_TO_IUPAC = {
     frozenset("ACGT"): "N",
 }
 
+_IUPAC_TO_ALLELES = {
+    "A": frozenset("A"),
+    "C": frozenset("C"),
+    "G": frozenset("G"),
+    "T": frozenset("T"),
+    "R": frozenset("AG"),
+    "Y": frozenset("CT"),
+    "S": frozenset("GC"),
+    "W": frozenset("AT"),
+    "K": frozenset("GT"),
+    "M": frozenset("AC"),
+    "B": frozenset("CGT"),
+    "D": frozenset("AGT"),
+    "H": frozenset("ACT"),
+    "V": frozenset("ACG"),
+    "N": frozenset("ACGT"),
+} 
+
+
 
 def _snv_alleles(record: pysam.VariantRecord) -> typing.FrozenSet:
     alleles = []
@@ -33,10 +52,6 @@ def _snv_alleles(record: pysam.VariantRecord) -> typing.FrozenSet:
             return frozenset()
         alleles.append(allele.upper())
     return frozenset(alleles)
-
-
-def _iupac_code(alleles: typing.FrozenSet) -> str:
-    return _ALLELES_TO_IUPAC.get(alleles, "N")
 
 
 def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str = None) -> str:
@@ -57,9 +72,14 @@ def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str =
             if len(alleles) == 0:  # TODO: Add additional filtering criteria?
                 continue
             ref_seq_index = record.start - region.start
-            assert record.ref == ref_seq[ref_seq_index], f"VCF REF {record.contig}:{record.pos}{record.ref} doesn't match reference {ref_seq[ref_seq_index]}"
+
+            # The ref_seq might already be converted to IUPAC, make sure the VCF reference is compatible with those alleles
+            ref_alleles = _IUPAC_TO_ALLELES[ref_seq[ref_seq_index]]
+            assert record.ref in ref_alleles, f"VCF REF {record.contig}:{record.pos}{record.ref} not compatible with {ref_seq[ref_seq_index]}"
+            alleles |= ref_alleles
+             
             # Replace reference base with single letter IUPAC code
-            ref_seq = ref_seq[:ref_seq_index] + _iupac_code(alleles) + ref_seq[ref_seq_index + 1 :]
+            ref_seq = ref_seq[:ref_seq_index] + _ALLELES_TO_IUPAC.get(alleles, "N") + ref_seq[ref_seq_index + 1 :]
 
     assert len(ref_seq) == region.length
     return ref_seq

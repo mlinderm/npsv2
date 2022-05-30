@@ -534,3 +534,15 @@ class SNVVariantTestSuite(unittest.TestCase):
         self.assertEqual(proto.start, 900297)
         self.assertEqual(proto.end, 900298)
         self.assertEqual(proto.svtype, npsv2_pb2.StructuralVariant.Type.SUB)
+
+
+class ReferenceSequenceTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.vcf_path = os.path.join(FILE_DIR, "overlapping_snvs.vcf.gz")
+
+    @patch("pysam.FastaFile")
+    def test_overlapping_snvs(self, MockFastaFile):
+        # FastaFile is used in a context
+        MockFastaFile.return_value.__enter__.return_value.fetch.return_value = "C"
+        # The alleles should be A,C,T or H
+        self.assertEqual(_reference_sequence("null.fasta", Range.parse_literal("chr4:112580127-112580127"), self.vcf_path), "H")
