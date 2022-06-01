@@ -40,7 +40,8 @@ def _mock_simulate_variant_sequencing(
     shared_reference=None,
     dir=tempfile.gettempdir(),
     stats_path=None,
-    gnomad_covg_path=None,
+    region: Range = None, 
+    phase_vcf_path: str = None,
 ):
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
@@ -164,7 +165,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
 )
 @parameterized_class(
     [
-        # { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
+        { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
         # { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
         # { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
         # { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
@@ -173,16 +174,15 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866396_1867023_DEL.vcf")},  # Offset (PBSV)
-        { "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "bam_path": os.path.join(FILE_DIR, "5_126843428_126845322.bam") }, # Haplotagged
-        { "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotagged
-
+        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") }, # Haplotag
+        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotag
     ]
 )
 class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
     """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
 
     bam_path = "/data/HG002-ready.bam"
-    snv_path = None
+    snv_path = "null"
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -195,7 +195,8 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
                 "simulation.replicates=1",
                 "simulation.sample_ref=false",
                 f"simulation.save_sim_bam_dir={RESULT_DIR}",
-            ] + ([f"pileup.snv_vcf_input={self.snv_path}"] if self.snv_path else []),
+                f"pileup.snv_vcf_input={self.snv_path}",
+            ]
         )
         self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
         self.sample = Sample(
@@ -218,7 +219,7 @@ class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
 
     def test_example_channel_image(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
-        png_path = os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".channel.png")
+        png_path = "test.channel.png" #os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".channel.png")
         images.example_to_image(
             self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True
         )

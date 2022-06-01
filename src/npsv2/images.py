@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 
 from .variant import Variant, _reference_sequence
 from .range import Range
-from .pileup import Pileup, FragmentTracker, AlleleAssignment, BaseAlignment, Strand, ReadPileup, FragmentPileup, read_start
+from .pileup import FragmentTracker, AlleleAssignment, BaseAlignment, Strand, ReadPileup
 from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
@@ -194,7 +194,7 @@ class SingleImageGenerator(ImageGenerator):
         return image_region(self._cfg, variant.reference_region)
 
 
-    def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: Pileup, region: Range, image_tensor):
+    def _add_variant_strip(self, variant: Variant, sample: Sample, pileup: ReadPileup, region: Range, image_tensor):
         assert variant.num_alt == 1, "Variant strip doesn't support multi-allelic variants"
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALIGNED_CHANNEL] = self._align_pixel(BaseAlignment.MATCH)
         image_tensor[:self._cfg.pileup.variant_band_height, :, MAPQ_CHANNEL] = self._mapq_pixel(self._cfg.pileup.variant_mapq)
@@ -403,8 +403,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
    
     # Construct image for "real" data
     if cfg.pileup.haplotag_reads and cfg.pileup.snv_vcf_input:
-        # Haplotag reads on the fly using whatshap. We don't need to tag the simulated reads as that
-        # is done automatically at simulation time.
+        # Haplotag reads on the fly using whatshap
         with tempfile.TemporaryDirectory() as tempdir:
             tagged_read_path = _haplotag_reads(cfg.reference, sample, read_path, cfg.pileup.snv_vcf_input, example_regions.expand(cfg.pileup.fetch_flank), tempdir)
             image_tensor = generator.generate(
@@ -449,16 +448,24 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                     fasta_alleles = [0, next(iter(alleles))]
                 elif allele_count == 2:
                     fasta_alleles = sorted(alleles) * (allele_count // len(alleles))
-                haplotypes = len(set(fasta_alleles)) # Number of distinct haplotypes
-
-                fasta_path, ref_contig, alt_contig = variant.synth_fasta(
-                    reference_fasta=cfg.reference, alleles=fasta_alleles, flank=cfg.pileup.realigner_flank, dir=tempdir
-                )
-
-                if cfg.simulation.gnomad_norm_covg:
-                    gnomad_covg_path = variant.gnomad_coverage_profile(cfg.simulation.gnomad_covg, ref_contig=ref_contig, alt_contig=alt_contig, flank=cfg.pileup.realigner_flank, dir=tempdir)
+                
+                if cfg.pileup.haplotag_sim and cfg.pileup.snv_vcf_input:
+                    # Generate fasta with multiple haplotypes containing phased SNVs to enable on-the-fly phasing of simulated
+                    # reads with whatshap
+                    haplotypes = len(fasta_alleles) # Number of distinct haplotypes in FASTA
+                    fasta_path, *_= variant.phase_synth_fasta(
+                        reference_fasta=cfg.reference,
+                        snv_vcf_path=cfg.pileup.snv_vcf_input,
+                        sample=sample.name,
+                        alleles=fasta_alleles,
+                        flank=cfg.pileup.realigner_flank,
+                        dir=tempdir,
+                    )
                 else:
-                    gnomad_covg_path = None
+                    haplotypes = len(set(fasta_alleles)) # Number of distinct haplotypes in FASTA
+                    fasta_path, *_ = variant.synth_fasta(
+                        reference_fasta=cfg.reference, alleles=fasta_alleles, flank=cfg.pileup.realigner_flank, dir=tempdir
+                    )
 
                 # Generate and image synthetic bam files
                 repl_encoded_images = []
@@ -475,7 +482,8 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                             shared_reference=cfg.shared_reference,
                             dir=tempdir,
                             stats_path=cfg.stats_path if cfg.simulation.gc_norm_covg else None,
-                            gnomad_covg_path=gnomad_covg_path,
+                            region=example_regions.expand(cfg.pileup.realigner_flank),
+                            phase_vcf_path=cfg.pileup.snv_vcf_input if cfg.pileup.haplotag_sim else None,
                         )
                     except ValueError:
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
@@ -566,7 +574,7 @@ def make_vcf_examples(
            
 
 
-def _filename_to_compression(filename: str) -> str:
+def _filename_to_compression(filename: str) -> typing.Optional[str]:
     if filename.endswith(".gz"):
         return "GZIP"
     else:

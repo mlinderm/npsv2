@@ -37,7 +37,8 @@ positive_strand_pixel: 70
 negative_strand_pixel: 240
 
 phase_tag: "HP"
-haplotag_reads: true
+haplotag_reads: false
+haplotag_sim: false
 
 fetch_flank: 1000
 realigner_flank: 1000

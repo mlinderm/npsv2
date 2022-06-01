@@ -151,7 +151,9 @@ class Fragment(object):
 
     @property
     def fragment_length(self):
-        # TODO: Handle weird pairs
+        # #TODO: Tools are inconsistent and will report 5' to 5'. That can be negative for weird fragments. Report discordant
+        # pairs separately? Maybe with NaN value... Only report insert size for 99/147 and 83/163 reads? The latter can still have weird insert sizes.
+        # https://ppotato.wordpress.com/2010/08/25/samtool-bitwise-flag-paired-reads/ 
         # if self.read1.template_length != (self.read2.reference_end - self.read1.reference_start):
         #     print(self.read1)
         #     print(self.read2)
@@ -216,146 +218,6 @@ class FragmentTracker(object):
             self._fragments[name] = Fragment(read)
 
 
-class PileupBase(NamedTuple):
-    read_start: int
-    aligned: BaseAlignment
-    mapq: int = None
-    allele: AlleleRealignment = AlleleRealignment() #AlleleAssignment.AMB, False, 0, 0)
-    ref_zscore: float = None
-    alt_zscore: float = None
-    strand: Strand = None
-    baseq: int = None
-
-
-class PileupColumn:
-    def __init__(self):
-        self._bases = []
-
-    def __len__(self):
-        return len(self._bases)
-
-    def __getitem__(self, sliced):
-        return self._bases[sliced]
-
-    def _aligned_count(self, kind):
-        return sum((base.aligned == kind for base in self._bases))
-
-    @property
-    def aligned_bases(self):
-        return self._aligned_count(BaseAlignment.ALIGNED)
-
-    @property
-    def soft_clipped_bases(self):
-        return self._aligned_count(BaseAlignment.SOFT_CLIP)
-
-    def add_base(self, read_start, cigar_op_or_alignment, **attributes):
-        if isinstance(cigar_op_or_alignment, BaseAlignment):
-            self._bases.append(PileupBase(read_start, cigar_op_or_alignment, **attributes))
-        else:
-            align = _CIGAR_TO_BASE_ALIGNMENT.get(cigar_op_or_alignment, None)
-            if align:
-                self._bases.append(PileupBase(read_start, align, **attributes))
-
-    def ordered_bases(self, max_bases=None, order="read_start"):
-        # Return bases sorted by specified field, randomly downsampling if needed
-        if max_bases is not None and len(self._bases) > max_bases:
-            bases = random.sample(self._bases, k=max_bases)
-        else:
-            bases = self._bases
-        sort_idx = PileupBase._fields.index(order)
-        return sorted(bases, key=lambda base: base[sort_idx])
-
-class Pileup:
-    def __init__(self, reference_region: Range):
-        self._region = reference_region
-        self._columns = [PileupColumn() for _ in range(self._region.length)]
-
-    def __len__(self):
-        return len(self._columns)
-
-    def __getitem__(self, sliced):
-        return self._columns[sliced]
-
-    def __iter__(self):
-        return iter(self._columns)
-
-    def region_columns(self, region: Range):
-        if region.contig != self._region.contig:
-            return []
-
-        pileup_start = region.start - self._region.start
-        next_slice = slice(max(pileup_start, 0), min(pileup_start + region.length, len(self._columns)))
-        if next_slice.stop > next_slice.start:
-            return [next_slice]
-        else:
-            return []
-
-    def read_columns(self, read: pysam.AlignedSegment):
-        if read.reference_name != self._region.contig:
-            return None, []
-        
-        cigar = read.cigartuples
-        if not cigar:
-            return None, []
-        
-        first_op, first_len = cigar[0]
-        if first_op == pysam.CSOFT_CLIP:
-            read_start = read.reference_start - first_len
-        else:
-            read_start = read.reference_start
-        
-        if read_start >= self._region.end:
-            return read_start, []
-        
-        slices = []
-        pileup_index = read_start - self._region.start
-        read_index = 0
-        for cigar_op, cigar_len in cigar:
-            if cigar_op in CIGAR_ADVANCE_PILEUP:
-                next_slice = slice(max(pileup_index, 0), min(pileup_index + cigar_len, len(self._columns)))
-                next_slice_len = next_slice.stop - next_slice.start
-                if next_slice_len > 0 and cigar_op in CIGAR_ADVANCE_READ:
-                    read_slice_start = read_index + next_slice.start - pileup_index
-                    slices.append((next_slice, cigar_op, slice(read_slice_start, read_slice_start + next_slice_len)))
-                elif next_slice_len > 0:
-                    slices.append((next_slice, cigar_op, slice(read_index, read_index)))
-                pileup_index += cigar_len
-            if cigar_op in CIGAR_ADVANCE_READ:
-                read_index += cigar_len
-
-        return read_start, slices
-
-    def add_read(self, read: pysam.AlignedSegment, ref_seq: str = None, **attributes):
-        assert ref_seq is None or len(ref_seq) == len(self._columns)
-
-        read_start, slices = self.read_columns(read)
-        for col_slice, cigar_op, read_slice in slices:
-            if ref_seq and cigar_op == pysam.CMATCH:
-                # Refine CMATCH to CEQUAL or CDIFF so that we can render match/mismatch
-                revised_cigar_op = map(_refine_cigar_op, read.query_sequence[read_slice], ref_seq[col_slice])
-            else:
-                revised_cigar_op = itertools.repeat(cigar_op, len(range(*col_slice.indices(len(self)))))
-            for column, baseq, base_cigar_op in zip(self._columns[col_slice], read.query_qualities[read_slice], revised_cigar_op):
-                column.add_base(read_start, base_cigar_op, mapq=read.mapping_quality, strand=_read_strand(read), baseq=baseq, **attributes)
-
-        
-
-    def add_insert(self, insert_region: Range, **attributes):
-        # Exclude the allele for the insert bases (even though the fragment may be assigned to an allele)
-        attributes.update({ "allele": AlleleRealignment(None, False, 0, 0) })
-        overlap = self._region.intersection(insert_region)
-        for column in self._columns[(overlap.start - self._region.start):(overlap.end - self._region.start)]:
-            column.add_base(overlap.start, BaseAlignment.INSERT, **attributes)
-
-    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str = None, **attributes):  
-        if fragment.read1:
-            self.add_read(fragment.read1, ref_seq=ref_seq, **attributes)
-        if fragment.read2:
-            self.add_read(fragment.read2, ref_seq=ref_seq, **attributes)
-        if add_insert and fragment.is_properly_paired:
-            self.add_insert(fragment.insert_region, **attributes)
-
-
 def _read_columns(region: Range, read: pysam.AlignedSegment):
     if read.reference_name != region.contig:
         return []
@@ -408,7 +270,7 @@ def _region_columns(region: Range, render_region: Range):
 
 # TODO: Consolidate these Pileup classes with a common base class
 class PileupRead:
-    def __init__(self, read: pysam.AlignedSegment, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase_tag: str):
+    def __init__(self, read: pysam.AlignedSegment, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase_tag: str="HP"):
         self._read = read
         self.region = _read_region(read, read.cigartuples)
         self.allele = allele
@@ -488,8 +350,8 @@ class ReadPileup:
         return pileup_read
 
     def add_insert(self, insert_region: Range, **attributes):
-        # Exclude the allele for the insert bases (even though the fragment may be assigned to an allele)
-        attributes.update({ "allele": AlleleRealignment() })
+        # Exclude the allele/phase for the insert bases (even though the fragment may be assigned to an allele or haplotype)
+        attributes.update({ "allele": AlleleRealignment(), "phase": 0 })
         for region, reads in self._reads.items():
             overlap = region.intersection(insert_region)
             if overlap.length > 0:
@@ -506,65 +368,3 @@ class ReadPileup:
             self.add_insert(fragment.insert_region, phase=read1.phase, **attributes)
 
 
-class PileupFragment:
-    def __init__(self, fragment, allele: AlleleRealignment, ref_zscore: float, alt_zscore: float):
-        self._fragment = fragment
-        
-        # TODO: Handle soft-clip starts. Get a more robust start
-        self.region = fragment.fragment_region
-        
-        self.allele = allele
-        self.ref_zscore = ref_zscore
-        self.alt_zscore = alt_zscore
-
-    @property
-    def reads(self):
-        return self._fragment.reads
-
-    @property
-    def start(self):
-        return self.region.start
-
-    @property
-    def fragment_region(self):
-        return self._fragment.fragment_region
-
-
-class FragmentPileup:
-    def __init__(self, reference_regions): 
-        self._fragments = { r:[] for r in reference_regions }
-
-
-    def overlapping_fragments(self, region: Range, max_length: int=None):
-        fragments = self._fragments[region]
-        if len(fragments) > max_length:
-            fragments = random.sample(fragments, k=max_length)
-        return sorted(fragments, key=lambda fragment: fragment.start)
-
-
-    def read_columns(self, region: Range, pileup_item, ref_seq: str = None):
-        if isinstance(pileup_item, pysam.AlignedSegment):
-            assert ref_seq is None or region.length == len(ref_seq)
-            for col_slice, cigar_op, read_slice in _read_columns(region, pileup_item):
-                align = _CIGAR_TO_BASE_ALIGNMENT.get(cigar_op, None)
-                if align is None:
-                    continue
-                elif ref_seq and cigar_op == pysam.CMATCH:
-                    # Refine CMATCH to CEQUAL or CDIFF so that we can render match/mismatch
-                    align = list(map(_refine_base_alignment, pileup_item._read.query_sequence[read_slice], ref_seq[col_slice]))
-                yield (col_slice, align, read_slice)
-        elif isinstance(pileup_item, PileupInsert):
-            for col_slice in _region_columns(region, pileup_item.region):
-                yield (col_slice, BaseAlignment.INSERT, slice(0, col_slice.stop - col_slice.start))    
-
-
-    def fragment_columns(self, region: Range, fragment: PileupFragment):
-        return _region_columns(region, fragment.fragment_region)
-
-
-    def add_fragment(self, fragment: Fragment, **attributes):
-        pileup_fragment = PileupFragment(fragment, **attributes)
-        for region, fragments in self._fragments.items():
-            # Fragment is relevant if any of the reads overlap the region
-            if fragment.reads_overlap(region, min_overlap=1):
-                fragments.append(pileup_fragment)

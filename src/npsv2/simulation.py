@@ -184,13 +184,11 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, gnomad_covg_path: str = None):
-    assert not (stats_path and gnomad_covg_path), "Only one of stats path or GnomAD coverage path can be provided"
-    
+def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, region: Range = None, phase_vcf_path: str = None):
     # TODO: Adjust haplotype coverage based on normalization strategy
     shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
     stats_path_arg = f"-j {quote(stats_path)}" if stats_path else ""
-    gnomad_covg_arg = f"-g {quote(gnomad_covg_path)}" if gnomad_covg_path else ""
+    phase_vcf_arg = f"-r {quote(str(region))} -v {quote(phase_vcf_path)}" if region and phase_vcf_path else ""
 
     replicate_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
     replicate_bam.close()
@@ -200,12 +198,12 @@ def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference,
         -R {quote(reference)} \
         {shared_ref_arg} \
         {stats_path_arg} \
-        {gnomad_covg_arg} \
         -c {hap_covg:0.1f} \
         -m {sample.mean_insert_size} \
         -s {sample.std_insert_size} \
         -l {_art_read_length(sample.read_length, sample.sequencer)} \
         -p {sample.sequencer} \
+        {phase_vcf_arg} \
         -i 1 \
         {quote(fasta_path)} \
         {quote(replicate_bam.name)}"

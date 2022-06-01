@@ -85,7 +85,42 @@ def _reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str =
     return ref_seq
 
 
-def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int] = {1}) -> int:
+def _phased_reference_sequence(reference_fasta: str, region: Range, snv_vcf_path: str, sample: str) -> typing.Tuple[str,str]:
+    with pysam.FastaFile(reference_fasta) as ref_fasta:
+        # Make sure reference sequence is all upper case
+        ref_seq = ref_fasta.fetch(reference=region.contig, start=region.start, end=region.end).upper()
+    
+    # If SNV VCF is provided, modify the reference sequence with phased SNVs
+    if snv_vcf_path is None:
+        return (ref_seq, ref_seq)
+    
+    seq0, seq1 = ref_seq, ref_seq
+    with pysam.VariantFile(snv_vcf_path) as vcf_file:
+        vcf_file.subset_samples([sample])  # Drop all but relevant sample
+        phase_sets = set()
+        for record in vcf_file.fetch(**region.pysam_fetch):
+            # Only consider SNVs
+            if not all(len(allele) == 1 for allele in record.alleles):
+                continue
+            
+            # Only apply phased genotypes, and require single phase set
+            call = record.samples[0]
+            if not call.phased:
+                continue
+            phase_sets |= call.get("PS", set())
+            if len(phase_sets) > 1:
+                return (ref_seq, ref_seq)
+
+            ref_seq_index = record.start - region.start
+            alleles = call.alleles
+            assert len(alleles) == 2
+            seq0 = seq0[:ref_seq_index] + alleles[0] + seq0[ref_seq_index + 1 :]
+            seq1 = seq1[:ref_seq_index] + alleles[1] + seq1[ref_seq_index + 1 :]
+
+    return (seq0, seq1)
+
+
+def allele_indices_to_ac(indices, alleles: typing.AbstractSet[int] = {1}) -> typing.Optional[int]:
     count = 0
     for idx in indices:
         if idx == -1:
@@ -150,6 +185,10 @@ class Variant(object):
             return SubstitutionVariant(record)
         else:
             raise ValueError(f"Variant kind {svtype} not supported")
+
+    @property
+    def allele_indices(self):
+        return range(1 + self.num_alt)
 
     @property
     def alt_allele_indices(self):
@@ -273,6 +312,21 @@ class Variant(object):
     def _alt_seq(self, ref_seq, flank, allele=1, right_flank=None):
         raise NotImplementedError()
 
+
+    def _contig_names(self, region: Range, ref_contig=None, alt_contig=None):
+        if ref_contig is None:
+            ref_contig = str(region).replace(":", "_").replace("-", "_")
+
+        if alt_contig is None:
+            alt_contig = [f"{ref_contig}_{i}_alt" for i in self.alt_allele_indices]
+        elif isinstance(alt_contig, str) and self.num_alt == 1:
+            alt_contig = [alt_contig]
+        if len(alt_contig) != self.num_alt:
+            raise ValueError("There must be one alt_contig name for each alternate allele")
+
+        return ref_contig, alt_contig
+
+
     def synth_fasta(
         self,
         reference_fasta,
@@ -286,42 +340,74 @@ class Variant(object):
         index_mode=False,
     ):
         region = self.reference_region.expand(flank)
+        ref_contig, alt_contig = self._contig_names(region, ref_contig=ref_contig, alt_contig=alt_contig)
         ref_seq = _reference_sequence(reference_fasta, region, snv_vcf_path=snv_vcf_path)
-
-        if ref_contig is None:
-            ref_contig = str(region).replace(":", "_").replace("-", "_")
-
-        if alt_contig is None:
-            alt_contig = [f"{ref_contig}_{i}_alt" for i in self.alt_allele_indices]
-        elif isinstance(alt_contig, str) and self.num_alt == 1:
-            alt_contig = [alt_contig]
-        if len(alt_contig) != self.num_alt:
-            raise ValueError("There must be one alt_contig name for each alternate allele")
-
-        allele_fasta = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
-
-        # Write out FASTA
+  
         unique_alleles = set(alleles)
 
+        # Write out FASTA
+        allele_fasta = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
+       
         # Always write out REF header, but only write sequence if reference allele is present or we are generating sequences
         # for the alignment index
-        print(">", ref_contig, sep="", file=allele_fasta)
+        print(f">{ref_contig}", file=allele_fasta)
         if index_mode or 0 in unique_alleles:
             for line in textwrap.wrap(ref_seq, width=line_width):
                 print(line, file=allele_fasta)
 
         for allele_idx, contig in zip(self.alt_allele_indices, alt_contig):
             if allele_idx in unique_alleles:
-                print(">", contig, sep="", file=allele_fasta)
+                print(f">{contig}", file=allele_fasta)
                 alt_seq = self._alt_seq(ref_seq, flank, allele=allele_idx)
                 for line in textwrap.wrap(alt_seq, width=line_width):
                     print(line, file=allele_fasta)
             elif not index_mode:
                 # Only write header without sequence if not in index mode (i.e. simulation mode)
-                print(">", contig, sep="", file=allele_fasta)
+                 print(f">{contig}", file=allele_fasta)
 
         # Flatten alt_contig if only a single alternate allele
         return allele_fasta.name, ref_contig, (alt_contig[0] if self.num_alt == 1 else alt_contig)
+
+
+    def phase_synth_fasta(
+        self,
+        reference_fasta,
+        snv_vcf_path: str,
+        sample: str,
+        alleles=(0, 1),
+        flank=1,
+        ref_contig=None,
+        alt_contig=None,
+        line_width=60,
+        dir=None,
+    ):
+        assert len(alleles) == 2
+        region = self.reference_region.expand(flank)
+        ref_contig, alt_contig = self._contig_names(region, ref_contig=ref_contig, alt_contig=alt_contig)
+        seqs = _phased_reference_sequence(reference_fasta, region, snv_vcf_path=snv_vcf_path, sample=sample)
+
+        # Write out FASTA, duplicating contigs with different haplotypes as appropriate
+        allele_fasta = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
+
+        next_seq = 0
+        fasta_contigs = []
+        for allele_idx, contig in zip(self.allele_indices, [ref_contig] + alt_contig):
+            allele_count = alleles.count(allele_idx)
+            
+            # Make sure to generate the sequence header, even without sequence
+            if allele_count == 0:
+                print(f">{contig}", file=allele_fasta)
+            for i in range(allele_count):
+                fasta_contigs.append(f">{contig}_hap{next_seq}")
+                print(fasta_contigs[-1], file=allele_fasta)
+                seq = seqs[next_seq] if allele_idx == 0 else self._alt_seq(seqs[next_seq], flank, allele=allele_idx)
+                for line in textwrap.wrap(seq, width=line_width):
+                    print(line, file=allele_fasta)
+                next_seq += 1
+
+        assert len(fasta_contigs) == 2
+        return allele_fasta.name, fasta_contigs[0], fasta_contigs[1]
+
 
     @property
     def _svtype_as_proto(self):
@@ -397,40 +483,6 @@ class DeletionVariant(Variant):
             center_region = interior.center.expand(breakpoint_flank)
             return left_region.window(window_size) + [center_region] + right_region.window(window_size)
 
-    def gnomad_coverage_profile(
-        self, gnomad_coverage: str, flank=1, ref_contig=None, alt_contig=None, line_width=60, dir=None,
-    ):
-        assert self.num_alt == 1, "Multiallelic variants not yet supported"
-        region = self.reference_region.expand(flank)
-        with pysam.TabixFile(gnomad_coverage) as gnomad_coverage_tabix:
-            # Use a FASTQ-like +33 scheme for encoding depth
-            ref_covg = "".join(
-                map(
-                    lambda x: chr(min(round(float(x[2])) + 33, 126)),
-                    gnomad_coverage_tabix.fetch(
-                        reference=region.contig, start=region.start, end=region.end, parser=pysam.asTuple()
-                    ),
-                )
-            )
-
-        if self._sequence_resolved:
-            alt_allele = self._record.alts[0]
-            # Extend coverage for the last flanking base over the whole region
-            alt_covg = ref_covg[:flank] + (ref_covg[flank - 1] * (len(alt_allele) - self._padding)) + ref_covg[-flank:]
-        else:
-            alt_covg = ref_covg[:flank] + ref_covg[-flank:]
-
-        # Write out
-        if ref_contig is None:
-            ref_contig = str(region).replace(":", "_").replace("-", "_")
-        if alt_contig is None:
-            alt_contig = ref_contig + "_alt"
-
-        covg_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta", dir=dir)
-        print(ref_contig, ref_covg, sep="\t", file=covg_file)
-        print(alt_contig, alt_covg, sep="\t", file=covg_file)
-
-        return covg_file.name, ref_contig, alt_contig
 
     @property
     def _svtype_as_proto(self):

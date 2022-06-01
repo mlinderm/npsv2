@@ -6,3 +6,5 @@ pileup:
   render_snv: true
   match_base_pixel: ${pileup.aligned_base_pixel}
   mismatch_base_pixel: 192
+  haplotag_reads: true
+  haplotag_sim: true

@@ -72,29 +72,6 @@ class NormalizeCoverage(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(replicate_bam_path))
 
-    def test_gnomad_normalized_coverage(self):
-        fasta_path, ref_contig, alt_contig = self.variant.synth_fasta(
-            reference_fasta=self.cfg.reference, alleles=(1,1), flank=self.cfg.pileup.realigner_flank, dir=self.tempdir.name,
-        )
-        covg_path, *_ = self.variant.gnomad_coverage_profile(
-            os.path.join(FILE_DIR, "1_896922_903086.gnomad.genomes.coverage.summary.tsv.gz"),
-            ref_contig=ref_contig,
-            alt_contig=alt_contig,
-            flank=self.cfg.pileup.realigner_flank,
-            dir=self.tempdir.name,
-        )
-        self.assertTrue(os.path.exists(covg_path))
-
-        replicate_bam_path = simulate_variant_sequencing(
-            fasta_path,
-            2, # Allele count
-            self.sample,
-            reference=self.cfg.reference,
-            shared_reference=self.cfg.shared_reference,
-            dir=".", #self.tempdir.name, #".",
-            gnomad_covg_path=covg_path,
-        )
-        self.assertTrue(os.path.exists(replicate_bam_path))
 
 class ManageBWAIndex(unittest.TestCase):
     def setUp(self):
