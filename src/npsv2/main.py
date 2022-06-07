@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, logging, os, re, subprocess, sys, tempfile, typing
+import argparse, json, logging, os, re, subprocess, sys, tempfile, typing
 from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
@@ -264,6 +264,22 @@ def main(cfg: DictConfig) -> None:
             output = hydra.utils.to_absolute_path(cfg.output)
         
         refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), output, classifier_path=classifier_path, progress_bar=True)
+
+    elif cfg.command == "preprocess":
+        from .sample import compute_read_stats
+
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "stats.json"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+
+        _make_paths_absolute(cfg, ["reference"])
+
+        stats = compute_read_stats(cfg, hydra.utils.to_absolute_path(cfg.reads))
+        with open(output, "w") as file:
+            json.dump(stats, file)
+
 
 if __name__ == "__main__":
     main()

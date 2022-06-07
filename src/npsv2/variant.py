@@ -107,7 +107,10 @@ def _phased_reference_sequence(reference_fasta: str, region: Range, snv_vcf_path
             call = record.samples[0]
             if not call.phased:
                 continue
-            phase_sets |= call.get("PS", set())
+            
+            ps = call.get("PS", None)
+            if ps is not None:
+                phase_sets.add(ps)
             if len(phase_sets) > 1:
                 return (ref_seq, ref_seq)
 

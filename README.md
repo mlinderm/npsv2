@@ -80,3 +80,25 @@ This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.g
 
 The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion) if it has not already been loaded. 
 
+### Preprocessing to create a "stats" file
+
+NPSV2 utilizes information about the aligned reads to inform simulation and image generation. The preprocessing step, run with the preprocess sub-command for `npsv2`, will create a JSON file with the relevant stats. Note that since this example BAM file only includes reads in a small region on chromosome 12, the results for the following example command will not be meaningful.
+
+```
+npsv2 command=preprocess \
+    reference=/data/human_g1k_v37.fasta \
+    sequencer=HSXn \
+    reads=tests/data/12_22127565_22132387.bam \
+    output=tests/results/stats.json
+```
+
+The `sequencer` argument specifies the sequencer model and thus the profile to use with the [ART NGS simulator](https://www.niehs.nih.gov/research/resources/software/biostatistics/art/index.cfm). Currently available profiles in ART are:
+
+```
+GA1 - GenomeAnalyzer I (36bp,44bp), GA2 - GenomeAnalyzer II (50bp, 75bp)
+HS10 - HiSeq 1000 (100bp),          HS20 - HiSeq 2000 (100bp),      HS25 - HiSeq 2500 (125bp, 150bp)
+HSXn - HiSeqX PCR free (150bp),     HSXt - HiSeqX TruSeq (150bp),   MinS - MiniSeq TruSeq (50bp)
+MSv1 - MiSeq v1 (250bp),            MSv3 - MiSeq v3 (250bp),        NS50 - NextSeq500 v2 (75bp)
+```
+
+Preprocessing is multi-threaded. Specifying multiple threads, e.g. `threads=8`, will improve preprocessing performance.
