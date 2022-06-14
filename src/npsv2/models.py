@@ -342,16 +342,20 @@ class SimulatedEmbeddingsModel(GenotypingModel):
                 query_embeddings = layers.Lambda(lambda x: _chooser(x))([svtype, query_embeddings])            
             
             distances = layers.Lambda(_query_distances, name=f"distances{index}")([query_embeddings, support_embeddings])
-            return distances
+            return distances, query_embeddings, support_embeddings
 
         if isinstance(model_path, collections.abc.Sized) and len(model_path) > 1:
-            # Average the distance outputs of the ensemble members together
-            distance_layers = []
-            for i, path in enumerate(model_path):
-                distance_layers.append(siamese_network(path, index=i))
-            distances = layers.Average(name="distances")(distance_layers)
+            # Average the distance outputs of the ensemble members together, but stack the embeddings since different members of the ensemble
+            # may not have the same embeddings
+            ensemble = [siamese_network(path, index=i) for i, path in enumerate(model_path)]
+            distances = layers.Average(name="distances")([distance for distance, *_, in ensemble])
+            query_embeddings = layers.Lambda(lambda x: tf.stack(x, axis=1), name="ensemble_query_embeddings")([embedding for _, embedding, _ in ensemble])
+            support_embeddings = layers.Lambda(lambda x: tf.stack(x, axis=1), name="ensemble_support_embeddings")([embedding for _, _, embedding in ensemble])
+
         else:
-            distances = siamese_network(as_scalar(model_path))
+            distances, query_embeddings, support_embeddings = siamese_network(as_scalar(model_path))
+            query_embeddings = layers.Lambda(lambda x: tf.expand_dims(x, axis=1), name="ensemble_query_embeddings")(query_embeddings)
+            support_embeddings = layers.Lambda(lambda x: tf.expand_dims(x, axis=1), name="ensemble_support_embeddings")(support_embeddings)
 
         # Convert distance to probability
         genotypes = layers.Lambda(lambda x: tf.nn.softmax(-x, axis=-1), name="genotypes")(distances) 
@@ -359,7 +363,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         inputs = [query, support]
         if typed_projection:
             inputs.append(svtype)
-        return tf.keras.Model(inputs=inputs, outputs=[genotypes, distances])
+        return tf.keras.Model(inputs=inputs, outputs=[genotypes, distances, query_embeddings, support_embeddings])
 
 
     def _train_input(self, cfg, dataset): 

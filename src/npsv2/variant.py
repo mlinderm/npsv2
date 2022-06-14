@@ -292,6 +292,7 @@ class Variant(object):
         )
 
     def genotype_indices(self, index_or_id):
+        # TODO: When sample is present in header, but not dropped, then exception not caught by "get" method
         call = self._record.samples[index_or_id]
         return call.allele_indices if call else None
 

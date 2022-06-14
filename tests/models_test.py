@@ -88,7 +88,7 @@ class EncoderTest(unittest.TestCase):
         encoder.summary()
 
 
-#@unittest.skip("Development only")
+@unittest.skip("Development only")
 class SupervisedBaselineModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[
@@ -161,7 +161,6 @@ class JointEmbeddingsModelTest(unittest.TestCase):
             "training.epochs=1",
             "model=joint_embeddings",
             "training.contrastive_margin=0.5",
-            #"model.typed_projection=true",
         ])
     
     def test_construct_model(self):
@@ -169,6 +168,14 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         self.assertIsInstance(model, models.JointEmbeddingsModel)
         model._model.get_layer("encoder").summary()  # Will raise if 'encoder' is not defined
         model.summary()
+        
+        genotypes_shape, distances_shape, query_embeddings_shape, support_embeddings_shape = model._model.output_shape
+        self.assertEqual(genotypes_shape, (None, 3))
+        self.assertEqual(distances_shape, (None, 3))
+        projection, *_ = self.cfg.model.projection_size
+        self.assertEqual(query_embeddings_shape, (None, 1, projection))
+        self.assertEqual(support_embeddings_shape, (None, 1, 3, projection))
+
 
     def test_construct_typed_projection_model(self):
         cfg = OmegaConf.merge(self.cfg, {"model": {"typed_projection": True}})
@@ -182,6 +189,13 @@ class JointEmbeddingsModelTest(unittest.TestCase):
         model_path = os.path.join(os.path.dirname(__file__), "results", "model.h5")
         model = hydra.utils.instantiate(self.cfg.model, (100, 300, 7), 5, model_path=[model_path]*2)
         model.summary()
+
+        genotypes_shape, distances_shape, query_embeddings_shape, support_embeddings_shape = model._model.output_shape
+        self.assertEqual(genotypes_shape, (None, 3))
+        self.assertEqual(distances_shape, (None, 3))
+        projection, *_ = self.cfg.model.projection_size
+        self.assertEqual(query_embeddings_shape, (None, 2, projection))
+        self.assertEqual(support_embeddings_shape, (None, 2, 3, projection))
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
     def test_fit_model(self):
