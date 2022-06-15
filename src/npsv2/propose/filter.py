@@ -1,71 +1,91 @@
+import logging, os
 import pysam
 from tqdm import tqdm
-import subprocess
+import dna_jellyfish as jf
 from ..variant import Variant, _reference_sequence
-from ..range import Range
+from ..utilities.vcf import index_variant_file
 
 from . import ORIGINAL_KEY
-import matplotlib.pyplot as plt
-import math
 
-def filter_vcf(vcf_path: str, output: str, reference_fasta: str, progress_bar=True):
 
-    k = 30
+def filter_vcf(cfg, vcf_path: str, output: str, progress_bar=False):
+
+    k = cfg.refine.filterk
+
+    # Use Python interface to Jellyfish database
+    if not cfg.refine.reference_jf_path or not os.path.exists(cfg.refine.reference_jf_path):
+        raise ValueError("Genome jellyfish database not defined")
+    ref_query = jf.QueryMerFile(cfg.refine.reference_jf_path)
+
+    if not cfg.refine.reads_jf_path or not os.path.exists(cfg.refine.reads_jf_path):
+        raise ValueError("Reads jellyfish database not defined")
+    reads_query = jf.QueryMerFile(cfg.refine.reads_jf_path)
+
+    # Stats
+    total_records = 0
+    original_records = 0
+    nonunique_records = 0
+    supported_records = 0
+
     with pysam.VariantFile(vcf_path) as src_vcf_file:
         # Create header for destination file
         src_header = src_vcf_file.header
-        #assert ORIGINAL_KEY not in src_header.info, f"{ORIGINAL_KEY} already presented in VCF INFO field"
         dst_header = src_header.copy()
-        dst_header.add_line(
-            f'##INFO=<ID={ORIGINAL_KEY},Number=.,Type=String,Description="Filtered Variants based on presence of unique kmers in sequence or absent of unique kmers">'
-        )
 
         with pysam.VariantFile(output, mode="w", header=dst_header) as dst_vcf_file:
-            #src_vcf_file.subset_samples(["HG002"])
-            for i, record in enumerate(tqdm(src_vcf_file, desc="Generating proposed SV representations", disable=not progress_bar)):
+            for record in tqdm(src_vcf_file, desc="Filtering SVs using k-mers", disable=not progress_bar):
+                total_records += 1
+                # Write all "original" records out by default, even if they might otherwise be filtered out
+                if not record.info.get(ORIGINAL_KEY, False):
+                    dst_vcf_file.write(record)
+                    original_records += 1
+                    continue
+
                 variant = Variant.from_pysam(record)
 
-                left_flank = variant.left_flank_region(k)
-                right_flank = variant.right_flank_region(k)
-                left_ref = _reference_sequence(reference_fasta, left_flank)
-                right_ref = _reference_sequence(reference_fasta, right_flank)            
-                kmer_all = left_ref + right_ref
+                region = variant.reference_region.expand(cfg.refine.filterk - 1)
+                ref_seq = _reference_sequence(cfg.reference, region)
 
-                # string of the list of kmers
-                jellyfish_input = ""
-                for i in range(k):
-                    jellyfish_input += kmer_all[i:(k+1)+i] + " "
+                unique_kmers = present_kmers = 0
+                for allele in variant.alt_allele_indices:
+                    alt_seq = variant._alt_seq(ref_seq, cfg.refine.filterk - 1, allele)
+                    for i in range(len(alt_seq) - k + 1):
+                        mer = jf.MerDNA(alt_seq[i : i + k])
 
-                jellyfish_command = f"jellyfish query /storage/phansen/npsv2/mer_counts.jf {jellyfish_input}"
-                kmerstats = subprocess.check_output(jellyfish_command, shell=True, universal_newlines=True)
+                        # The reference genome is only the forward strand and so mers should not be "canonicalized"
+                        if ref_query[mer] > 0:
+                            continue
+                        unique_kmers += 1
 
-                res_split = kmerstats.split("\n")
-                min_count = math.inf
-                kmer_list = []
-                for res in res_split:
-                    if res != "":
-                        count = int(res.split()[1])
-                        if count == 0:
-                            # add unique kmer
-                            kmer_list.append(res.split()[0])
+                        # Only query reads for unique kmers. If any supporting data, is found, immediately write variant.
+                        # Since we are starting with alignment files, all reads should be on the forward strand and so mers 
+                        # should not be "canonicalized".
+                        if reads_query[mer] > 0:
+                            present_kmers += 1
+                            break
+
+                    if present_kmers > 0:
+                        break
+
+                assert not (unique_kmers == 0 and present_kmers > 0)
+                if unique_kmers == 0:
+                    dst_vcf_file.write(record)
+                    nonunique_records += 1
+                elif present_kmers > 0:
+                    dst_vcf_file.write(record)
+                    supported_records += 1
+
+            retained_records = original_records + nonunique_records + supported_records
+            logging.info(
+                "Retained %d of %d (%f) records (%d original, %d non-unique, %d supported)",
+                retained_records,
+                total_records,
+                retained_records / total_records,
+                original_records,
+                nonunique_records,
+                supported_records,
+            )
+        
+        # Write index if file if compressed variant file
+        index_variant_file(output)
             
-                # query unique kmer in sequencing data
-                query_input = ""
-                for i in range(len(kmer_list)):
-                    query_input += kmer_list[i] + " "
-                
-                sequence_command = f"jellyfish query /storage/phansen/npsv2/HG002-ready.b37.jf {query_input}"
-                querystat = subprocess.check_output(sequence_command, shell=True, universal_newlines=True)
-
-                query_split = querystat.split("\n")
-                present = []
-                for c in query_split:
-                    if c != "":
-                        count = int(c.split()[1])
-                        if count != 0:
-                            # add unique kmer
-                            present.append(c.split()[0])
-
-                if len(present) != 0 or len(kmer_list) == 0 or not record.info.get(ORIGINAL_KEY, False):
-                    dst_vcf_file.write(record)                    
-    dst_vcf_file.close()

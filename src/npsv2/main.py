@@ -265,5 +265,16 @@ def main(cfg: DictConfig) -> None:
         
         refine_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), output, classifier_path=classifier_path, progress_bar=True)
 
+    elif cfg.command == "filter":
+        from .propose.filter import filter_vcf
+
+        # If no output file is specified, create a fixed file in the Hydra output directory
+        if OmegaConf.is_missing(cfg, "output"):
+            output = "filter.vcf.gz"
+        else:
+            output = hydra.utils.to_absolute_path(cfg.output)
+
+        filter_vcf(cfg, hydra.utils.to_absolute_path(cfg.input), output, progress_bar=True)
+
 if __name__ == "__main__":
     main()

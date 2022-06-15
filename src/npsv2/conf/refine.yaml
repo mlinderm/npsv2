@@ -14,3 +14,8 @@ include_orig_ref_min_overlap: 1
 include_orig_ref: false
 refine_nonref_orig: true
 smooth_distances: false
+
+# Filtering
+reference_jf_path: null
+reads_jf_path: null
+filterk: 31

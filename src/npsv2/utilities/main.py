@@ -2,7 +2,6 @@ import argparse, logging
 from ..simulation import filter_reads_gc, filter_reads_gnomad
 from ..multiallelic import filter_nonref, merge_into_multiallelic
 from ..propose.refine import train_model
-from ..propose.filter import filter_vcf
 
 def main():
     parser = argparse.ArgumentParser(
@@ -110,19 +109,6 @@ def main():
         "--flank", help="Expand variants by flank during merging", default=0,
     )
 
-    parser_kmer_filter = subparsers.add_parser(
-        "kmer_filter", help="Filter proposals by k-mers"
-    )
-    parser_kmer_filter.add_argument(
-        "-i", "--input", help="Input VCF file.", type=str, required=True
-    )
-    parser_kmer_filter.add_argument(
-        "-o", "--output", help="Output VCF file.", default="/dev/stdout"
-    )
-    parser_kmer_filter.add_argument(
-        "-R", "--reference", help="Reference fasta.", type=str, required=True,
-    )
-
     args = parser.parse_args()
     logging.basicConfig(level=args.loglevel)
     if args.command == "gc_covg":
@@ -135,8 +121,6 @@ def main():
         train_model(args.input, args.pbsv, args.output)
     elif args.command == "multiallelic":
         merge_into_multiallelic(args.input, args.output, args.reference, flank=args.flank)
-    elif args.command == "kmer_filter":
-        filter_vcf(args.input, args.output, args.reference)
 
 if __name__ == "__main__":
     main()
