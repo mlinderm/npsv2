@@ -9,6 +9,7 @@ import pandas as pd
 from tqdm import tqdm
 import hydra
 from omegaconf import DictConfig
+from google.protobuf import descriptor_pb2
 from .variant import Variant
 from .sample import Sample
 from . import images
@@ -22,6 +23,7 @@ from .utilities.vcf import (
     bcftools_format,
 )
 from .propose import ORIGINAL_KEY
+from . import npsv2_pb2
 
 PLOIDY = 2
 VCF_HEADER_TYPES_TO_COPY = frozenset(["GENERIC", "STRUCTURED", "INFO", "FILTER", "CONTIG"])
@@ -234,6 +236,7 @@ def genotype_vcf(
             tfrecord_writer = tf.io.TFRecordWriter(
                 cfg.embeddings_output, images._filename_to_compression(cfg.embeddings_output)
             )
+            group_id = {}  # Unique integer ID for each upstream SV (when genotyping proposals)
         else:
             tfrecord_writer = contextlib.nullcontext()
 
@@ -300,7 +303,6 @@ def genotype_vcf(
 
                         # Write out embeddings for SV refining
                         if embeddings_writer:
-                            # TODO: Add sample ID, original and other data needed to create training data
                             assert len(mask) == 1, "Only bi-allelic variants currently supported for embeddings"
                             feature = {
                                 "variant/encoded": images._bytes_feature([variant.as_proto().SerializeToString()]),
@@ -313,15 +315,22 @@ def genotype_vcf(
                                 ),
                                 "genotype": images._int_feature([np.argmin(vcf_distances)]),
                                 "proposal": images._int_feature([ORIGINAL_KEY in record.info]),
-                                "original": images._bytes_feature(
+                                "group/encoded": images._bytes_feature(
                                     tf.io.serialize_tensor(
-                                        tf.constant(record.info.get(ORIGINAL_KEY, tuple()), dtype=tf.string)
+                                        tf.constant(
+                                            [
+                                                group_id.setdefault(id, len(group_id))
+                                                for id in record.info.get(ORIGINAL_KEY, [])
+                                            ],
+                                            dtype=tf.int64,
+                                        )
                                     )
                                 ),
                             }
                             if sample_name in record.samples:
+                                original_genotype = variant.genotype_indices(sample_name)
                                 feature["upstream_genotype"] = images._int_feature(
-                                    [genotype_field_index(variant.genotype_indices(sample_name))]
+                                    [genotype_field_index(original_genotype) if original_genotype else -1]
                                 )
 
                             example = tf.train.Example(features=tf.train.Features(feature=feature))
@@ -380,29 +389,38 @@ def genotype_vcf(
         index_variant_file(output_path)
 
 
-def load_embeddings_dataset(filenames, with_upstream=False, num_parallel_reads: int = None) -> tf.data.Dataset:
-    if isinstance(filenames, str):
-        filenames = [filenames]
-    assert len(filenames) > 0
+def load_embeddings_dataset(filename: str) -> tf.data.Dataset:
+    """Load embeddings dataset from tfrecords file
+
+    Args:
+        filename (str): tfrecords file, can be compressed, e.g. *.tfrecords.gz
+
+    Returns:
+        tf.data.Dataset: Dataset with decoded tensors and SV start (POS) and svlen (INFO/SVLEN) fields
+    """
+
+    # Description to parse SV protobuf saved with embeddings
+    file_descriptor_set = descriptor_pb2.FileDescriptorSet()
+    npsv2_pb2.DESCRIPTOR.CopyToProto(file_descriptor_set.file.add())
+    descriptor_source = b"bytes://" + file_descriptor_set.SerializeToString()
 
     proto_features = {
         "variant/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "proposal": tf.io.FixedLenFeature(shape=(), dtype=tf.int64),
-        "original": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
+        "group/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "sample": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "query_embeddings/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "support_embeddings/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "genotype": tf.io.FixedLenFeature(shape=(), dtype=tf.int64),
         "upstream_genotype": tf.io.FixedLenFeature(shape=(), dtype=tf.int64),
     }
-    if with_upstream:
-        proto_features["upstream_genotype"] = tf.io.FixedLenFeature(shape=(), dtype=tf.int64)
 
     def _process_input(proto_string):
         """Helper function for input function that parses a serialized example."""
 
         parsed_features = tf.io.parse_single_example(serialized=proto_string, features=proto_features)
-        parsed_features["original"] = tf.io.parse_tensor(parsed_features["original"], tf.string)
+
+        parsed_features["group"] = tf.io.parse_tensor(parsed_features.pop("group/encoded"), tf.int64)
         parsed_features["query_embeddings"] = tf.io.parse_tensor(
             parsed_features.pop("query_embeddings/encoded"), tf.float32
         )
@@ -410,19 +428,19 @@ def load_embeddings_dataset(filenames, with_upstream=False, num_parallel_reads: 
             parsed_features.pop("support_embeddings/encoded"), tf.float32
         )
 
-        return parsed_features, None
+        _, [start, svlen] = tf.io.decode_proto(
+            parsed_features["variant/encoded"],
+            "npsv2.StructuralVariant",
+            ["start", "svlen"],
+            [tf.int64, tf.int64],
+            descriptor_source=descriptor_source,
+        )
+        parsed_features["start"] = start
+        parsed_features["svlen"] = svlen
 
-    compression = images._filename_to_compression(filenames[0])
-    num_parallel_calls = (
-        num_parallel_reads
-        if num_parallel_reads is None or num_parallel_reads == tf.data.experimental.AUTOTUNE
-        else min(len(filenames), num_parallel_reads)
-    )
-    return tf.data.Dataset.from_tensor_slices(filenames).interleave(
-        lambda filename: tf.data.TFRecordDataset(filename, compression_type=compression).map(
-            _process_input, num_parallel_calls=1
-        ),
-        cycle_length=len(filenames),
-        num_parallel_calls=num_parallel_calls,
-    )
+        return parsed_features
+
+    compression = images._filename_to_compression(filename)
+
+    return tf.data.TFRecordDataset(filename, compression_type=compression).map(_process_input)
 

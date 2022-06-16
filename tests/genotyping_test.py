@@ -95,7 +95,7 @@ class MultiallelicVCFGenotypeTest(unittest.TestCase):
 class EmbeddingsOutputTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.embeddings_path = os.path.join(self.tempdir.name, "test.tfrecords.gz")
+        self.embeddings_path = os.path.join("tests", "results", "test.tfrecords.gz")
         self.cfg = hydra.compose(
             config_name="config",
             overrides=[
@@ -134,6 +134,7 @@ class EmbeddingsOutputTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.embeddings_path))
 
         dataset = genotyping.load_embeddings_dataset(self.embeddings_path)
-        for features, label in dataset:
+        for features in dataset:
+            print(features)
             self.assertIn("support_embeddings", features)
             self.assertIn("query_embeddings", features)

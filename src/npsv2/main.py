@@ -220,7 +220,7 @@ def main(cfg: DictConfig) -> None:
        
         # Make sure model path (and other paths) are absolute
         model_paths = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.model.model_path)]
-        _make_paths_absolute(cfg, ["pileup.snv_vcf_input"])
+        _make_paths_absolute(cfg, ["pileup.snv_vcf_input", "embeddings_output"])
 
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):
