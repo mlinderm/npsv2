@@ -135,6 +135,5 @@ class EmbeddingsOutputTest(unittest.TestCase):
 
         dataset = genotyping.load_embeddings_dataset(self.embeddings_path)
         for features in dataset:
-            print(features)
             self.assertIn("support_embeddings", features)
             self.assertIn("query_embeddings", features)

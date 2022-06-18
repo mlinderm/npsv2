@@ -304,37 +304,28 @@ def genotype_vcf(
                         # Write out embeddings for SV refining
                         if embeddings_writer:
                             assert len(mask) == 1, "Only bi-allelic variants currently supported for embeddings"
-                            feature = {
-                                "variant/encoded": images._bytes_feature([variant.as_proto().SerializeToString()]),
-                                "sample": images._bytes_feature([bytes(sample_name, "utf-8")]),
-                                "query_embeddings/encoded": images._bytes_feature(
-                                    tf.io.serialize_tensor(query_embeddings)
-                                ),
-                                "support_embeddings/encoded": images._bytes_feature(
-                                    tf.io.serialize_tensor(support_embeddings)
-                                ),
-                                "genotype": images._int_feature([np.argmin(vcf_distances)]),
-                                "proposal": images._int_feature([ORIGINAL_KEY in record.info]),
-                                "group/encoded": images._bytes_feature(
-                                    tf.io.serialize_tensor(
-                                        tf.constant(
-                                            [
-                                                group_id.setdefault(id, len(group_id))
-                                                for id in record.info.get(ORIGINAL_KEY, [])
-                                            ],
-                                            dtype=tf.int64,
-                                        )
+                            for id in record.info.get(ORIGINAL_KEY, [record.id]):
+                                feature = {
+                                    "variant/encoded": images._bytes_feature([variant.as_proto().SerializeToString()]),
+                                    "sample": images._bytes_feature([bytes(sample_name, "utf-8")]),
+                                    "query_embeddings/encoded": images._bytes_feature(
+                                        tf.io.serialize_tensor(query_embeddings)
+                                    ),
+                                    "support_embeddings/encoded": images._bytes_feature(
+                                        tf.io.serialize_tensor(support_embeddings)
+                                    ),
+                                    "genotype": images._int_feature([np.argmin(vcf_distances)]),
+                                    "proposal": images._int_feature([ORIGINAL_KEY in record.info]),
+                                    "group": images._int_feature([group_id.setdefault(id, len(group_id))]),
+                                }
+                                if sample_name in record.samples:
+                                    original_genotype = variant.genotype_indices(sample_name)
+                                    feature["upstream_genotype"] = images._int_feature(
+                                        [genotype_field_index(original_genotype) if original_genotype else -1]
                                     )
-                                ),
-                            }
-                            if sample_name in record.samples:
-                                original_genotype = variant.genotype_indices(sample_name)
-                                feature["upstream_genotype"] = images._int_feature(
-                                    [genotype_field_index(original_genotype) if original_genotype else -1]
-                                )
 
-                            example = tf.train.Example(features=tf.train.Features(feature=feature))
-                            embeddings_writer.write(example.SerializeToString())
+                                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                                embeddings_writer.write(example.SerializeToString())
 
                     # pysam checks the Python type, so we use the `list` method to convert to Python float, int, etc.
                     gt_index = np.argmin(vcf_distances)
@@ -407,7 +398,7 @@ def load_embeddings_dataset(filename: str) -> tf.data.Dataset:
     proto_features = {
         "variant/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "proposal": tf.io.FixedLenFeature(shape=(), dtype=tf.int64),
-        "group/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
+        "group": tf.io.FixedLenFeature(shape=(), dtype=tf.int64),
         "sample": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "query_embeddings/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
         "support_embeddings/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
@@ -420,7 +411,6 @@ def load_embeddings_dataset(filename: str) -> tf.data.Dataset:
 
         parsed_features = tf.io.parse_single_example(serialized=proto_string, features=proto_features)
 
-        parsed_features["group"] = tf.io.parse_tensor(parsed_features.pop("group/encoded"), tf.int64)
         parsed_features["query_embeddings"] = tf.io.parse_tensor(
             parsed_features.pop("query_embeddings/encoded"), tf.float32
         )
