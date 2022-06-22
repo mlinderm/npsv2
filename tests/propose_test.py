@@ -1,5 +1,6 @@
-import os, subprocess, tempfile, unittest
+import os, subprocess, tempfile, unittest, warnings
 import pysam
+import ray
 import hydra
 from omegaconf import OmegaConf
 from parameterized import parameterized
@@ -9,10 +10,15 @@ FILE_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
 def setUpModule():
+     # Ignore resource warnings within Ray
+    warnings.simplefilter("ignore", ResourceWarning)
+    ray.init(num_cpus=1, num_gpus=0, local_mode=True, include_dashboard=False)
+
     hydra.initialize(config_path="../src/npsv2/conf")
 
 
 def tearDownModule():
+    ray.shutdown()
     hydra.core.global_hydra.GlobalHydra.instance().clear()
 
 
@@ -109,8 +115,4 @@ class FilterTestSuite(unittest.TestCase):
         output_path = os.path.join(self.tempdir.name, "test.vcf")
         filter.filter_vcf(self.cfg, os.path.join(FILE_DIR, "refine_input.vcf"), output_path)
         self.assertTrue(os.path.exists(output_path))
-
-        with open(output_path, "r") as file:
-            for line in file:
-                print(line)
 
