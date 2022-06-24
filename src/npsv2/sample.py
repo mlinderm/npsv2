@@ -61,8 +61,8 @@ class Sample:
             gc_normalized_coverage = {}
             for gc, norm_covg in sample_info["gc_normalized_coverage"].items():
                 if (
-                    sample_info["gc_bin_count"].get(gc, 0) >= min_gc_bin
-                    and sample_info["gc_normalized_coverage_error"].get(gc, 0) <= max_gc_error
+                    sample_info.get("gc_bin_count", {}).get(gc, 0) >= min_gc_bin
+                    and sample_info.get("gc_normalized_coverage_error", {}).get(gc, 0) <= max_gc_error
                 ):
                     gc_normalized_coverage[round(float(gc) * 100)] = norm_covg
             fields["gc_normalized_coverage"] = gc_normalized_coverage
@@ -139,7 +139,10 @@ def _compute_coverage_with_samtools(
             stderr=subprocess.DEVNULL,
         )
         depth_table = pd.read_csv(
-            prefix + ".depth.bed", sep="\t", names=["chrom", "start", "end", "mean", "GC", "CpG", "Masked"]
+            prefix + ".depth.bed",
+            sep="\t",
+            names=["chrom", "start", "end", "mean", "GC", "CpG", "Masked"],
+            dtype={"chrom": str},
         )
         depth_table["len"] = depth_table.end - depth_table.start
 

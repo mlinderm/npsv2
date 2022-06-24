@@ -28,7 +28,10 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
         dst_header.add_line(
             f'##INFO=<ID={ORIGINAL_KEY},Number=.,Type=String,Description="Proposed alternate representation for these variant IDs">'
         )
-
+        # Make sure to add standard SV fields if not present
+        dst_header.add_line('##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">')
+        dst_header.add_line('##ALT=<ID=DEL,Description="Deletion">')
+        
         # Setup repeats file
         simple_repeats_bed = pysam.TabixFile(repeats_bed_path)
 
@@ -149,6 +152,7 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
                             )
 
             for proposed_record in proposed_variants.values():
+                print(proposed_record)
                 dst_vcf_file.write(proposed_record)
 
 

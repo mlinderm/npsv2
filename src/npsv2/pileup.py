@@ -351,7 +351,7 @@ class ReadPileup:
 
     def add_insert(self, insert_region: Range, **attributes):
         # Exclude the allele/phase for the insert bases (even though the fragment may be assigned to an allele or haplotype)
-        attributes.update({ "allele": AlleleRealignment(), "phase": 0 })
+        attributes.update({ "allele": AlleleRealignment() }) #, "phase": 0 })
         for region, reads in self._reads.items():
             overlap = region.intersection(insert_region)
             if overlap.length > 0:

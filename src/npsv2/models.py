@@ -183,9 +183,11 @@ class GenotypingModel:
         if cfg.training.checkpoint_dir:
             logging.info("Saving checkpoints to %s", cfg.training.checkpoint_dir)
 
+            restart_path = os.path.join(cfg.training.checkpoint_dir, "restart")
+
             existing_checkpoints = []
             if cfg.training.restart_from_checkpoint:
-                latest = tf.train.latest_checkpoint(cfg.training.checkpoint_dir)
+                latest = tf.train.latest_checkpoint(restart_path)
                 if latest:
                     existing_checkpoints.append(latest) # Ensure existing checkpoints are deleted if no longer needed
                     epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
@@ -203,6 +205,20 @@ class GenotypingModel:
             )
             callbacks.append(checkpoint_callback)
     
+            if validation_dataset:
+                # TODO: Integrate the two checkpoint callbacks, so it keeps track of latest and best
+                best_path = os.path.join(cfg.training.checkpoint_dir, "best")
+                best_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+                    filepath=best_path,
+                    save_weights_only=True,
+                    save_best_only=True,
+                    monitor="val_genotypes_sparse_categorical_accuracy",
+                    mode="max",
+                    verbose=1,
+                )
+                callbacks.append(best_checkpoint_callback)
+
+
         if cfg.training.log_dir:
             log_dir = os.path.join(cfg.training.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
             logging.info("Logging TensorBoard data to: %s", log_dir)
@@ -217,6 +233,11 @@ class GenotypingModel:
             callbacks=callbacks,
             validation_freq=cfg.training.validation_freq,
         )
+
+        if cfg.training.checkpoint_dir and validation_dataset:
+            self.model.load_weights(best_path)
+
+
 
 class SupervisedBaselineModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
