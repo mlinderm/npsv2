@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, logging, os, re, subprocess, sys, tempfile, typing
+import argparse, json, logging, os, random, re, subprocess, sys, tempfile, typing
 from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
@@ -116,13 +116,29 @@ def main(cfg: DictConfig) -> None:
         tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
         tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
 
-        _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir", "training.validation_input"])
+        if cfg.training.validation_input and isinstance(cfg.training.validation_input, str):
+            validation_tfrecords_paths = [cfg.training.validation_input]
+        elif cfg.training.validation_input:
+            validation_tfrecords_paths = cfg.training.validation_input
+        else:
+            validation_tfrecords_paths = []
+        validation_tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in validation_tfrecords_paths]
+
+        if cfg.training.validation_split and len(validation_tfrecords_paths) == 0 and len(tfrecords_paths) > 1:
+            # Construct validation datasets from input files
+            random.shuffle(tfrecords_paths)
+            split_index = int(len(tfrecords_paths) * cfg.training.validation_split)
+            logging.info("Using random selection of %d input files for validation", split_index)
+            validation_tfrecords_paths, tfrecords_paths = tfrecords_paths[:split_index], tfrecords_paths[split_index:]
+            logging.info("Using %s for validation", ",".join(validation_tfrecords_paths))
+
+        _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])
 
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
         model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path, weights=cfg.training.initial_weights)
 
         dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
-        validation_dataset = cfg.training.validation_input and load_example_dataset(cfg.training.validation_input, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
+        validation_dataset = load_example_dataset(validation_tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads) if validation_tfrecords_paths else None
         model.fit(cfg, dataset, validation_dataset=validation_dataset)
     
         model_path = os.path.join(os.getcwd(), "model.h5")

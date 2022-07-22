@@ -1,4 +1,4 @@
-replicates: 5
+replicates: 1
 augment: true
 sample_ref: false
 sample_exclude_bed: ???

@@ -74,10 +74,16 @@ def main():
         "-o", "--output", help="Output VCF file.", default="/dev/stdout"
     )
     parser_filter.add_argument(
+        "-R", "--reference", help="Reference fasta.", type=str, required=True,
+    )
+    parser_filter.add_argument(
         "--sample", help="Sample genotypes to use in filter", type=str, required=True
     )
     parser_filter.add_argument(
-        "--flank", help="Flank (bp) for determining variant overlap", default=500
+        "--flank", help="Flank (bp) for determining variant overlap", default=1000
+    )
+    parser_filter.add_argument(
+        "--keep_noref", help="Keep records containing or overlapping 'N's", action="store_true"
     )
     
     parser_refinetrain = subparsers.add_parser(
@@ -117,7 +123,7 @@ def main():
     elif args.command == "gnomad_covg":
         filter_reads_gnomad(args.covg_path, args.input, "/dev/stdout")
     elif args.command == "filter_nonref":
-        filter_nonref(args.input, args.output, args.sample, flank=args.flank)
+        filter_nonref(args.reference, args.input, args.output, args.sample, flank=args.flank, drop_noref=(not args.keep_noref))
     elif args.command == "refine_train":
         train_model(args.input, args.pbsv, args.output)
     elif args.command == "multiallelic":

@@ -35,7 +35,11 @@ def _write_non_ref_records(vcf_file, records, flank):
                 vcf_file.write(grouped_records[0])
 
 
-def filter_nonref(vcf_path: str, output_path: str, sample: str, flank=0):
+def _nonref_allele(allele: str) -> bool:
+    return not (allele.startswith("<") and allele.endswith(">")) and ("N" in allele.upper())
+
+
+def filter_nonref(fasta_path: str, vcf_path: str, output_path: str, sample: str, flank=0, drop_noref=False):
     with pysam.VariantFile(vcf_path) as src_vcf_file:
         src_vcf_file.subset_samples([sample])
 
@@ -53,6 +57,14 @@ def filter_nonref(vcf_path: str, output_path: str, sample: str, flank=0):
                     continue  # Skip variants with incomplete genotypes
 
                 variant_range = Variant.from_pysam(record).reference_region.expand(flank)
+                if drop_noref:
+                    # Drop any variants with N in the reference or the alleles
+                    if any(map(_nonref_allele, record.alleles)):
+                        continue
+                    ref_seq = _reference_sequence(fasta_path, variant_range)
+                    if "N" in ref_seq.upper():
+                        continue
+
                 if current_range is None:
                     current_range = variant_range
                     current_records = [record]

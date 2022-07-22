@@ -13,6 +13,20 @@ from . import npsv2_pb2
 from .utilities.callbacks import NModelCheckpoint
 from .utilities.sequence import as_scalar
 
+# https://github.com/tensorflow/tensorflow/issues/35634#issuecomment-665517890
+# class ReturnBestEarlyStopping(EarlyStopping):
+#     def __init__(self, **kwargs):
+#         super(ReturnBestEarlyStopping, self).__init__(**kwargs)
+
+#     def on_train_end(self, logs=None):
+#         if self.stopped_epoch > 0:
+#             if self.verbose > 0:
+#                 print(f'\nEpoch {self.stopped_epoch + 1}: early stopping')
+#         elif self.restore_best_weights:
+#             if self.verbose > 0:
+#                 print('Restoring model weights from the end of the best epoch.')
+#             self.model.set_weights(self.best_weights
+
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
     query_features, genotype_features = tensors
@@ -185,29 +199,32 @@ class GenotypingModel:
 
             restart_path = os.path.join(cfg.training.checkpoint_dir, "restart")
 
-            existing_checkpoints = []
-            if cfg.training.restart_from_checkpoint:
-                latest = tf.train.latest_checkpoint(restart_path)
-                if latest:
-                    existing_checkpoints.append(latest) # Ensure existing checkpoints are deleted if no longer needed
-                    epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
-                    if epoch:
-                        initial_epoch = int(epoch.group(1))
-                    logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
-                    self._model.load_weights(latest)
+            # existing_checkpoints = []
+            # if cfg.training.restart_from_checkpoint:
+            #     latest = tf.train.latest_checkpoint(restart_path)
+            #     if latest:
+            #         existing_checkpoints.append(latest) # Ensure existing checkpoints are deleted if no longer needed
+            #         epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
+            #         if epoch:
+            #             initial_epoch = int(epoch.group(1))
+            #         logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
+            #         self._model.load_weights(latest)
             
-            checkpoint_callback = NModelCheckpoint(
-                filepath=os.path.join(cfg.training.checkpoint_dir, "{epoch:04d}.ckpt"),
-                max_to_keep=1, # Only keep the most recent checkpoint
-                existing_checkpoints=existing_checkpoints,
-                save_weights_only=True,
-                verbose=1,
-            )
-            callbacks.append(checkpoint_callback)
+            # checkpoint_callback = NModelCheckpoint(
+            #     filepath=os.path.join(cfg.training.checkpoint_dir, "{epoch:04d}.ckpt"),
+            #     max_to_keep=1, # Only keep the most recent checkpoint
+            #     existing_checkpoints=existing_checkpoints,
+            #     save_weights_only=True,
+            #     verbose=1,
+            # )
+            # callbacks.append(checkpoint_callback)
     
-            if validation_dataset:
+            backup_callback = tf.keras.callbacks.BackupAndRestore(restart_path)
+            callbacks.append(backup_callback)
+
+            if cfg.training.save_best_validation_checkpoint and validation_dataset:
                 # TODO: Integrate the two checkpoint callbacks, so it keeps track of latest and best
-                best_path = os.path.join(cfg.training.checkpoint_dir, "best")
+                best_path = os.path.join(cfg.training.checkpoint_dir, "val_accuracy", "best")
                 best_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
                     filepath=best_path,
                     save_weights_only=True,
@@ -234,8 +251,9 @@ class GenotypingModel:
             validation_freq=cfg.training.validation_freq,
         )
 
-        if cfg.training.checkpoint_dir and validation_dataset:
-            self.model.load_weights(best_path)
+        if cfg.training.checkpoint_dir and cfg.training.save_best_validation_checkpoint and validation_dataset:
+            logging.info("Loading best model from: %s", best_path)
+            self._model.load_weights(best_path)
 
 
 

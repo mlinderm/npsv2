@@ -119,7 +119,7 @@ def _bwa_index_unload(shared_name: str, lock_file: str):
 
 def _bwa_index_load(reference, lock_file = "/var/tmp/npsv2/bwa.lock") -> typing.Optional[str]:
     # Create lock directory if it doesn't exist
-    os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+    os.makedirs(os.path.dirname(lock_file), mode=0o777, exist_ok=True)
     
     shared_name = os.path.basename(reference)
     while True:
@@ -188,7 +188,7 @@ def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference,
     # TODO: Adjust haplotype coverage based on normalization strategy
     shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
     stats_path_arg = f"-j {quote(stats_path)}" if stats_path else ""
-    phase_vcf_arg = f"-r {quote(str(region))} -v {quote(phase_vcf_path)}" if region and phase_vcf_path else ""
+    phase_vcf_arg = f"-r {quote(str(region))} -v {quote(phase_vcf_path)} -N {sample.name}" if region and phase_vcf_path else ""
 
     replicate_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
     replicate_bam.close()

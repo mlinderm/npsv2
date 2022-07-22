@@ -142,7 +142,7 @@ if [[ -z $SHAREDREF ]]; then
     SHAREDREF="$REFERENCE"
 fi
 
-if [[ -n "$PHASEDVCF" && (-z "$PHASE_REGION" || -z "$PHASE_SAMPLE") ]]; then
+if [[ -n "$PHASE_VCF" && (-z "$PHASE_REGION" || -z "$PHASE_SAMPLE") ]]; then
     >&2 echo "Error: Phase region and sample must be specified with phasing VCF"
     >&2 usage
     exit 1
@@ -192,7 +192,8 @@ do
     samtools view -S -u  - | \
     sambamba -q sort -t 1 -m 512MiB --tmpdir="$TMPDIR" -o "$ALIGNEDBAM" /dev/stdin
     
-    if [[ -n "$PHASED_VCF" ]]; then
+    if [[ -n "$PHASE_VCF" ]]; then
+        >&2 echo "Phasing with variants in ${PHASE_REGION}"
         whatshap haplotag \
             --tag-supplementary \
             --ignore-read-groups \

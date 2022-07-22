@@ -178,7 +178,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         #{ "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotag
     ]
 )
-class SingleDepthImageGeneratorExampeTest(unittest.TestCase):
+class SingleDepthImageGeneratorExampleTest(unittest.TestCase):
     """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
 
     bam_path = "/data/HG002-ready.bam"
