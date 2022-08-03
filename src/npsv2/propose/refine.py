@@ -211,13 +211,10 @@ def refine_vcf(
                         if cfg.refine.smooth_distances:
                             # Smooth by ID and SVLEN, so only the same putative SV are smoothed when the are multiple proposed lengths for the same
                             # original SV
-                            smoothed_calls = possible_calls.drop(["SV", "SVLEN", "HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"], axis=1).join(
-                                possible_calls
-                                    .sort_values(by=["POS"])
+                            smoothed_calls = possible_calls.sort_values(by=["POS"])
+                            smoothed_calls[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]] = (smoothed_calls
                                     .groupby(["SV", "SVLEN"])[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]]
-                                    .apply(lambda x: x.ewm(span=max(x.shape[0] // 10, 10), axis=0).mean())
-                                    .reset_index(level=[0, 1])
-                            )
+                                    .transform(lambda x: x.ewm(span=max(x.shape[0] // 10, 10), axis=0).mean()))
                             smoothed_calls[["HOMO_REF_PROB", "HET_PROB", "HOMO_ALT_PROB"]] = softmax(-smoothed_calls[["HOMO_REF_DIST", "HET_DIST", "HOMO_ALT_DIST"]], axis=1)
                             possible_calls = smoothed_calls
                             # TODO: Update GT based on smoothed distances?
