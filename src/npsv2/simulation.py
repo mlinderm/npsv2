@@ -143,6 +143,9 @@ def _bwa_index_load(reference, lock_file = "/var/tmp/npsv2/bwa.lock") -> typing.
 
                 # Write reference counts to lock file    
                 _write_lock_file(lock, current_counts)
+                
+                os.chmod(lock_file, 0o666) # Ensure others can write to the lock file
+                
                 # Register handler to unload reference when no longer needed
                 atexit.register(_bwa_index_unload, shared_name, lock_file)
             logging.info("Released lock on %s", lock_file)

@@ -157,7 +157,7 @@ do
     fi
     # Generate synthetic reads reads1.fq and reads2.fq. art_illumina use time in seconds for seed which can result in identical seeds for data.
     READS_PREFIX=$TMPDIR/reads.synth${s}
-    art_illumina -q -i "$FASTA" -o "$READS_PREFIX" -sam -ss "$PROFILE" -l "$LENGTH" -f "$COVERAGE" -p -m "$FRAGMEAN" -s "$FRAGSD" -sp -rs $(od -An -tu4 -N4 /dev/urandom) 1>&2
+    art_illumina -q -i "$FASTA" -o "$READS_PREFIX" -sam -na -ss "$PROFILE" -l "$LENGTH" -f "$COVERAGE" -p -m "$FRAGMEAN" -s "$FRAGSD" -sp -rs $(od -An -tu4 -N4 /dev/urandom) 1>&2
     
     # If SNV haplotyping used, there might be contigs with "_hap[0-1]" append, remove the suffix from sequence entries and read contigs 
     awk '/^@/ { $2=gensub(/_hap[0-1]$/, "", 1, $2); print; } !/^@/ { $3=gensub(/_hap[0-1]$/, "", 1, $3); print; }' "${READS_PREFIX}.sam" | uniq > "${READS_PREFIX}.sam.tmp"
