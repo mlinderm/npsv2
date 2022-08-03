@@ -165,11 +165,11 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
 )
 @parameterized_class(
     [
-        { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz") }, # Presentation example
+        # { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz"), "snv_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.snvs.vcf.gz") }, # Presentation example
         # { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
         # { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
         # { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
-        # { "vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
+        { "vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
         # { "vcf_path": os.path.join(FILE_DIR, "1_900011_900086_DEL.vcf.gz")},  # Offset (PBSV)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
@@ -223,6 +223,53 @@ class SingleDepthImageGeneratorExampleTest(unittest.TestCase):
         images.example_to_image(
             self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True
         )
+
+
+@unittest.skipUnless(
+    os.path.exists("/data/human_g1k_v37.fasta")
+    and bwa_index_loaded("/data/human_g1k_v37.fasta")
+    and os.path.exists("/data/HG002-ready.bam"),
+    "Reference genome or HG002 sequencing data not available",
+)
+@parameterized_class(
+    [
+        { "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") }, # Haplotag
+    ]
+)
+class RealignmentBAMExampleTest(unittest.TestCase):
+    """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
+
+    bam_path = "/data/HG002-ready.bam"
+    snv_path = "null"
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+                "generator=single_depth",
+                "reference=/data/human_g1k_v37.fasta",
+                "shared_reference={}".format(os.path.basename("/data/human_g1k_v37.fasta")),
+                f"pileup.snv_vcf_input={self.snv_path}",
+                f"pileup.save_realignment_bam_dir={RESULT_DIR}",
+            ]
+        )
+        self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
+        self.sample = Sample(
+            "HG002",
+            mean_coverage=25.46,
+            mean_insert_size=573.1,
+            std_insert_size=164.2,
+            sequencer="HS25",
+            read_length=148,
+        )
+        
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_example_single_image(self):
+        example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=False))
 
 
 class VCFExampleGenerateTest(unittest.TestCase):

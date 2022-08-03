@@ -1,4 +1,5 @@
 #include <limits>
+#include <pybind11/stl.h>
 
 #include "realigner.hpp"
 
@@ -354,6 +355,20 @@ FragmentRealigner::FragmentRealigner(const std::string& fasta_path, const Breakp
       alt_indexes_[i].SetIUPACSequence(next_sequence);
     }
   }
+
+  if (kwargs && kwargs.contains("alt_alignment_paths")) {
+    auto alt_alignment_paths = py::cast<std::vector<std::string> >(kwargs["alt_alignment_paths"]);
+    pyassert(alt_alignment_paths.size() == NumAltAlleles(), "Number of alternate alignment paths must match the number of alleles");
+    alt_writers_.reserve(NumAltAlleles());
+    for (int i = 0; i < NumAltAlleles(); i++) {
+      alt_writers_.emplace_back(sl::BAM);
+      alt_writers_.back().Open(alt_alignment_paths[i]);
+      alt_writers_.back().SetHeader(AltHeader(i));
+      alt_writers_.back().WriteHeader();
+    }
+  }
+ 
+  
 }
 
 namespace {
@@ -422,6 +437,13 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
       auto & best_pair = alt_realignment.BestPair();
       auto alt_score = best_pair.Score();
       auto alt_quality = LogProbToPhredQual(alt_score - total_log_prob[i], 40);
+      
+      // Optionally save alternate alignments if desired
+      if (alt_writers_.size() > 0 && alt_writers_[i].IsOpen()) {
+        alt_writers_[i].WriteRecord(*best_pair.Left());
+        alt_writers_[i].WriteRecord(*best_pair.Right());
+      }
+      
       if (isnan(max_alt_score) || alt_score >= max_alt_score) {
         max_alt_score = alt_score;
         max_alt_quality = alt_quality;
