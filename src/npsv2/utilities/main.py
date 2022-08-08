@@ -115,7 +115,6 @@ def main():
         "--flank", help="Expand variants by flank during merging", default=0,
     )
 
-
     args = parser.parse_args()
     logging.basicConfig(level=args.loglevel)
     if args.command == "gc_covg":

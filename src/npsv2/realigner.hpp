@@ -4,6 +4,7 @@
 
 #include "SeqLib/BWAWrapper.h"
 #include "SeqLib/BamReader.h"
+#include "SeqLib/BamWriter.h"
 
 namespace py = pybind11;
 namespace sl = SeqLib;
@@ -49,6 +50,9 @@ class RealignedReadPair {
   bool IsValid() const { return left_ || right_; }
   score_type Score() const { return score_; }
   score_type MaxPossibleScore() const { return max_score_; }
+
+  const sl::BamRecord* Left() const { return left_; }
+  const sl::BamRecord* Right() const { return right_; }
 
   bool operator<(const RealignedReadPair& other) const { return score_ < other.score_; }
   bool operator>(const RealignedReadPair& other) const { return score_ > other.score_; }
@@ -117,6 +121,7 @@ class IndexedSequence {
 
 class FragmentRealigner {
   typedef std::vector<IndexedSequence> AltIndexesSequence;
+  typedef std::vector<sl::BamWriter> BamWriters;
  public:  
   typedef std::vector<std::tuple<std::string, std::string, std::string, std::string>> BreakpointList;
   typedef std::tuple<double, bool, double, double, bool, double> RealignTuple;
@@ -133,6 +138,8 @@ class FragmentRealigner {
   InsertSizeDistribution insert_size_dist_;
   IndexedSequence ref_index_;
   AltIndexesSequence alt_indexes_;
+
+  BamWriters alt_writers_;
 
   sl::BamHeader RefHeader() const { return ref_index_.Header(); }
   sl::BamHeader AltHeader(int index) const { return alt_indexes_[index].Header(); }

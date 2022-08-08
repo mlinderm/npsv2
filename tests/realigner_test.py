@@ -113,8 +113,11 @@ class RealignerTest(unittest.TestCase):
             fragment_mean=self.params.fragment_mean,
             fragment_sd=self.params.fragment_sd,
             offset=0,  # Conversion already performed by pySAM
+            alt_alignment_paths=[os.path.join(self.tempdir.name, "realignment.bam")],
         )
-        #print(results)
+        
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir.name, "realignment.bam")))
+
 
     def test_realign_reads(self):
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")

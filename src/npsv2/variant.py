@@ -108,12 +108,13 @@ def _phased_reference_sequence(reference_fasta: str, region: Range, snv_vcf_path
             if not call.phased:
                 continue
             
+            # TODO: Do we want this restriction?
             ps = call.get("PS", None)
             if ps is not None:
                 phase_sets.add(ps)
-            if len(phase_sets) > 1:
-                return (ref_seq, ref_seq)
-
+            #if len(phase_sets) > 1:
+            #    return (ref_seq, ref_seq)
+            print(record)
             ref_seq_index = record.start - region.start
             alleles = call.alleles
             assert len(alleles) == 2
@@ -366,7 +367,7 @@ class Variant(object):
                     print(line, file=allele_fasta)
             elif not index_mode:
                 # Only write header without sequence if not in index mode (i.e. simulation mode)
-                 print(f">{contig}", file=allele_fasta)
+                print(f">{contig}", file=allele_fasta)
 
         # Flatten alt_contig if only a single alternate allele
         return allele_fasta.name, ref_contig, (alt_contig[0] if self.num_alt == 1 else alt_contig)

@@ -37,7 +37,7 @@ def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
 
 
-def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str=None, alleles: typing.AbstractSet[int]={1}):
+def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str=None, alleles: typing.AbstractSet[int]={1}, realignment_bam_dir: str=None):
     with tempfile.TemporaryDirectory() as dir:
         # Generate index fasta with contigs filtered by alleles. The fasta should include the reference sequence and the 
         # sequence of the alternate alleles specified in `alleles`
@@ -50,6 +50,10 @@ def _realigner(variant, sample: Sample, reference, flank=1000, snv_vcf_path: str
             iupac_fasta_path, *_ = variant.synth_fasta(reference_fasta=reference, alleles=fasta_alleles, dir=dir, flank=flank, ref_contig=ref_contig, alt_contig=alt_contig, snv_vcf_path=snv_vcf_path, index_mode=True)
             addl_args["iupac_fasta_path"] = iupac_fasta_path
         
+        if realignment_bam_dir:
+            addl_args["alt_alignment_paths"] = [os.path.join(realignment_bam_dir, f"{variant.name}_{i}.bam") for i in range(len(alleles))]
+            shutil.copy(fasta_path, os.path.join(realignment_bam_dir, f"{variant.name}.fasta"))
+
         # Convert breakpoints to list of tuples (of strings) to be passed into the C++ side
         ref_breakpoints = variant.ref_breakpoints(flank, contig=ref_contig)
         if variant.num_alt == 1:
@@ -396,10 +400,10 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
     # Construct realigner once for all images for this variant, and if rendering match/mismatch bases, 
     # obtain relevant reference sequence for this variant, including IUPAC bases if SNV data is provided
     if cfg.pileup.get("render_snv", False):
-        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, snv_vcf_path=cfg.pileup.snv_vcf_input, alleles=alleles)
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, snv_vcf_path=cfg.pileup.snv_vcf_input, alleles=alleles, realignment_bam_dir=cfg.pileup.save_realignment_bam_dir)
         ref_seq = _reference_sequence(cfg.reference, example_regions, snv_vcf_path=cfg.pileup.snv_vcf_input)
     else:
-        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, alleles=alleles)
+        realigner = _realigner(variant, sample, reference=cfg.reference, flank=cfg.pileup.realigner_flank, alleles=alleles, realignment_bam_dir=cfg.pileup.save_realignment_bam_dir)
         ref_seq = None
    
     # Construct image for "real" data

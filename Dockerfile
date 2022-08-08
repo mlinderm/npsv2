@@ -10,6 +10,8 @@ RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   cmake \
   curl \
   gawk \
+  jellyfish \
+  python3-dna-jellyfish \
   libbz2-dev \
   liblzma-dev \
   protobuf-compiler \
