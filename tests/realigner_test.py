@@ -1,10 +1,11 @@
 import argparse, os, tempfile, unittest
-from collections import Counter
+from collections import Counter, defaultdict
 from unittest.mock import patch
 import pysam
 from npsv2.variant import Variant
 from npsv2.realigner import (
     FragmentRealigner,
+    _read_realignment,
     realign_fragment,
     AlleleAssignment,
     test_score_alignment,
@@ -117,7 +118,10 @@ class RealignerTest(unittest.TestCase):
         )
         
         self.assertTrue(os.path.exists(os.path.join(self.tempdir.name, "realignment.bam")))
-
+        
+        read_scores = results[6]
+        self.assertGreater(read_scores[0], read_scores[2], "Read 1 should be assigned to the reference allele")
+        self.assertAlmostEqual(read_scores[1], read_scores[3], "Read 2 is equally aligned to both alleles")
 
     def test_realign_reads(self):
         fasta_path = os.path.join(FILE_DIR, "1_899922_899992_DEL.fasta")
@@ -141,9 +145,24 @@ class RealignerTest(unittest.TestCase):
         realigner = FragmentRealigner(fasta_path, breakpoints, self.params.fragment_mean, self.params.fragment_sd)
 
         allele_counts = Counter()
+        allele_strand = defaultdict(int)
         for fragment in fragments:
-            realignment = realign_fragment(realigner, fragment, assign_delta=1.0)
+            realignment, read1_realignment, read2_realignment = realign_fragment(realigner, fragment, assign_delta=1.0)
             allele_counts[realignment.allele] += 1
+            
+            allele_strand[(read1_realignment.allele, fragment.read1.is_forward)] += 1
+            if fragment.read2:
+                 allele_strand[(read2_realignment.allele, fragment.read2.is_forward)] += 1
 
         self.assertEqual(allele_counts[AlleleAssignment.REF], 12)
         self.assertEqual(allele_counts[AlleleAssignment.ALT], 8)
+
+        # Example strand bias test...
+        from scipy.stats import fisher_exact
+        strand_bias = ([
+            [allele_strand[(AlleleAssignment.REF, True)], allele_strand[(AlleleAssignment.REF, False)]],
+            [allele_strand[(AlleleAssignment.ALT, True)], allele_strand[(AlleleAssignment.ALT, False)]]
+        ])
+        odds, p = fisher_exact(strand_bias)
+        self.assertGreater(p, 0.05)
+       

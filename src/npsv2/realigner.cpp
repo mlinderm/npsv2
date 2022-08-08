@@ -222,7 +222,7 @@ std::ostream& operator<<(std::ostream& os, const RealignedReadPair& pair) {
 namespace {
 
 void RealignRead(const IndexedSequence& index, const sl::BamRecord& read, sl::BamRecordVector& alignments,
-                 int quality_offset) {
+                 int quality_offset, uint16_t addl_flags=0) {
   const std::string read_seq(read.Sequence());
   const std::string base_qualities(read.Qualities(quality_offset));
   const std::string& ref_seq(index.IUPACSequence());
@@ -233,6 +233,7 @@ void RealignRead(const IndexedSequence& index, const sl::BamRecord& read, sl::Ba
     auto log_prob = ScoreAlignment(read_seq, base_qualities, ref_seq, alignment);
     AddDoubleTag(alignment, "as", log_prob);
     AddDoubleTag(alignment, "ms", max_log_prob);
+    alignment.shared_pointer()->core.flag |= addl_flags;
   }
 }
 
@@ -243,10 +244,10 @@ RealignedFragment::RealignedFragment(const sl::BamRecord& read1, const sl::BamRe
                                      int quality_offset)
     : total_log_prob_(std::numeric_limits<score_type>::lowest()) {
   pyassert(!read1.isEmpty(), "Fragment needs to include at least on read");
-  RealignRead(index, read1, read1_alignments_, quality_offset);
+  RealignRead(index, read1, read1_alignments_, quality_offset, BAM_FREAD1);
 
   if (!read2.isEmpty()) {
-    RealignRead(index, read2, read2_alignments_, quality_offset);
+    RealignRead(index, read2, read2_alignments_, quality_offset, BAM_FREAD2);
   }
 
   // Construct and score possible alignment pairs
@@ -375,6 +376,8 @@ namespace {
   std::string ToString(const sl::GenomicRegion& region, const sl::BamHeader& header) {
     return region.ChrName(header) + ":" + std::to_string(region.pos1) + "-" + std::to_string(region.pos2);
   }
+
+  int ReadIndex(const sl::BamRecord& read) { return read.FirstFlag() ? 0 : 1; }
 }
 
 FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::string& name, const std::string& read1_seq,
@@ -405,10 +408,6 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
   RealignedFragment ref_realignment(read1, read2, ref_index_, insert_size_dist_);
   std::vector<RealignedFragment::score_type> total_log_prob(NumAltAlleles(), ref_realignment.TotalLogProb());
 
-  // if (read1.Qname() == "HISEQ1:18:H8VC6ADXX:2:1111:14992:77166") {
-  //   std::cerr << ref_realignment.BestPair() << std::endl;
-  // }
-
   std::vector<RealignedFragment> alt_realignments;
   for (int i = 0; i < NumAltAlleles(); i++) {
     // Realign the fragment to this alternate allele
@@ -416,17 +415,22 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
     total_log_prob[i] = LogSumPow(total_log_prob[i], alt_realignments.back().TotalLogProb());
   }
 
+  // Store the score for each read in fragment
+  std::vector<RealignedFragment::score_type> read_scores(4, 0);
+
   RealignedFragment::score_type ref_score = NAN, ref_quality = 0;
   bool ref_breakpoint_overlap = false;
   if (ref_realignment.HasBestPair()) {
     auto & best_pair = ref_realignment.BestPair();
     ref_score = best_pair.Score();
-    
+    // ref_quality = ref_realignment.TotalLogProb();
     auto fragment_region = best_pair.FragmentRegion();
     for (int i = 0; i < NumAltAlleles(); i++) {
       ref_breakpoint_overlap |= fragment_region.GetOverlap(breakpoints_[i][0]) == GenomicRegionOverlap::ContainsArg;
       ref_breakpoint_overlap |= fragment_region.GetOverlap(breakpoints_[i][1]) == GenomicRegionOverlap::ContainsArg;
     }
+    read_scores[ReadIndex(*best_pair.Left())] = GetDoubleTag(*best_pair.Left(), "as");
+    read_scores[ReadIndex(*best_pair.Right())] = GetDoubleTag(*best_pair.Right(), "as");
   }
 
   RealignedFragment::score_type max_alt_score = NAN, max_alt_quality = 0;
@@ -453,12 +457,15 @@ FragmentRealigner::RealignTuple FragmentRealigner::RealignReadPair(const std::st
         max_alt_breakpoint_overlap = 
           (fragment_region.GetOverlap(breakpoints_[i][2]) == GenomicRegionOverlap::ContainsArg) ||
           (fragment_region.GetOverlap(breakpoints_[i][3]) == GenomicRegionOverlap::ContainsArg);
-      }
+
+        read_scores[2 + ReadIndex(*best_pair.Left())] = GetDoubleTag(*best_pair.Left(), "as");
+        read_scores[2 + ReadIndex(*best_pair.Right())] = GetDoubleTag(*best_pair.Right(), "as");
+      }      
     }
   }
-  
+
   return std::make_tuple(ref_quality, ref_breakpoint_overlap, ref_score,
-                         max_alt_quality, max_alt_breakpoint_overlap, max_alt_score);
+                         max_alt_quality, max_alt_breakpoint_overlap, max_alt_score, read_scores);
 }
 
 namespace test {

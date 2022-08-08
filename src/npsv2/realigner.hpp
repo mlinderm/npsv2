@@ -124,7 +124,7 @@ class FragmentRealigner {
   typedef std::vector<sl::BamWriter> BamWriters;
  public:  
   typedef std::vector<std::tuple<std::string, std::string, std::string, std::string>> BreakpointList;
-  typedef std::tuple<double, bool, double, double, bool, double> RealignTuple;
+  typedef std::tuple<double, bool, double, double, bool, double, std::vector<double> > RealignTuple;
 
   FragmentRealigner(const std::string& fasta_path, const BreakpointList& breakpoints, double insert_size_mean, double insert_size_std, py::kwargs kwargs);
 

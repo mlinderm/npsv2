@@ -7,8 +7,8 @@ pileup:
   render_snv: true
   match_base_pixel: ${pileup.aligned_base_pixel}
   mismatch_base_pixel: 192
-  haplotag_reads: true
-  haplotag_sim: true
-  image_channels: [0, 1, 2, 3, 4, 5, 6, 7]
+  haplotag_reads: false
+  haplotag_sim: false
+  image_channels: [0, 1, 2, 3, 4, 5, 6, 8]
 simulation:
   chrom_norm_covg: true

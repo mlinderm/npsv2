@@ -156,6 +156,49 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         np.testing.assert_allclose(hap_coverages, np.array([1.0, 0.5, 1.0]) * 1.5 * self.sample.mean_coverage)
 
 
+@unittest.skipUnless(
+    os.path.exists("/data/human_g1k_v37.fasta")
+    and bwa_index_loaded("/data/human_g1k_v37.fasta")
+    and os.path.exists("/data/HG002-ready.bam"),
+    "Reference genome or HG002 sequencing data not available",
+)
+class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
+    bam_path = "/data/HG002-ready.bam"
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+                "generator=single_depth_read",
+                "reference=/data/human_g1k_v37.fasta",
+                "shared_reference={}".format(os.path.basename("/data/human_g1k_v37.fasta")),
+                "simulation.replicates=1",
+            ]
+        )
+        self.generator = hydra.utils.instantiate(self.cfg.generator, self.cfg)
+        self.sample = Sample(
+            "HG002",
+            mean_coverage=25.46,
+            mean_insert_size=573.1,
+            std_insert_size=164.2,
+            sequencer="HS25",
+            read_length=148,
+        )
+        
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_strand_bias(self):
+        # os.path.join(FILE_DIR, "1_63838141_63838217_DEL.vcf"),
+        example = next(images.make_vcf_examples(self.cfg, os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz"), self.bam_path, self.sample, simulate=True))
+        self.assertEqual(images._example_image_shape(example), (100, 300, 8))
+       
+        png_path = os.path.join(self.tempdir.name, "test.channel.png")
+        images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True)
+        self.assertTrue(os.path.exists(png_path))
+
 #@unittest.skip("Development only")
 @unittest.skipUnless(
     os.path.exists("/data/human_g1k_v37.fasta")
@@ -219,7 +262,7 @@ class SingleDepthImageGeneratorExampleTest(unittest.TestCase):
 
     def test_example_channel_image(self):
         example = next(images.make_vcf_examples(self.cfg, self.vcf_path, self.bam_path, self.sample, simulate=True))
-        png_path = "test.channel.png" #os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".channel.png")
+        png_path = os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".channel.png")
         images.example_to_image(
             self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True
         )
@@ -237,8 +280,6 @@ class SingleDepthImageGeneratorExampleTest(unittest.TestCase):
     ]
 )
 class RealignmentBAMExampleTest(unittest.TestCase):
-    """Generate example images for presentations, etc. Requires reference genome, b37 HG002 BAM, etc."""
-
     bam_path = "/data/HG002-ready.bam"
     snv_path = "null"
 

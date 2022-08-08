@@ -1,4 +1,5 @@
 import datetime, functools, itertools, math, logging, os, random, shutil, subprocess, sys, tempfile, typing
+from collections import defaultdict
 from dataclasses import dataclass, field
 from shlex import quote
 import numpy as np
@@ -30,8 +31,9 @@ MAPQ_CHANNEL = 4
 STRAND_CHANNEL = 5
 BASEQ_CHANNEL = 6
 PHASE_CHANNEL = 7
+READ_ALLELE_CHANNEL = 8
 
-MAX_NUM_CHANNELS = 8
+MAX_NUM_CHANNELS = 9
 
 def _fragment_zscore(sample: Sample, fragment_length: int, fragment_delta=0):
     return (fragment_length + fragment_delta - sample.mean_insert_size) / sample.std_insert_size
@@ -130,7 +132,7 @@ class ImageGenerator:
     def _allele_pixel(self, realignment: AlleleRealignment):
         if self._cfg.pileup.binary_allele:
             return self._allele_to_pixel[realignment.allele]
-        elif realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
+        elif realignment is None or realignment.ref_quality is None or math.isnan(realignment.ref_quality) or realignment.alt_quality is None or math.isnan(realignment.alt_quality):
             return 0
         else:
             return np.clip((realignment.alt_quality - realignment.ref_quality) / self._cfg.pileup.max_alleleq * self._cfg.pileup.allele_pixel_range + self._cfg.pileup.amb_allele_pixel, 1, MAX_PIXEL_VALUE)
@@ -284,7 +286,7 @@ class SingleDepthImageGenerator(SingleImageGenerator):
             # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
             # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
             if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
-                realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+                realignment, read1_realignment, read2_realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
 
                 # Prefer possible alternate alleles (i.e. the best "alt") vs. reference straddlers
                 ref_zscore, alt_zscore = None, None  # Best is defined as closest to zero
@@ -306,11 +308,14 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
                 # otherwise be represented)
                 add_insert = self._cfg.pileup.insert_bases and not fragment.reads_overlap(regions)
-                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore, phase_tag=self._cfg.pileup.phase_tag)
+                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore, phase_tag=self._cfg.pileup.phase_tag, read1_realignment=read1_realignment, read2_realignment=read2_realignment)
 
         # Add variant strip at the top of the image, clipping out the variant region
         if self._cfg.pileup.variant_band_height > 0:
             self._add_variant_strip(variant, sample, pileup, regions, image_tensor)
+
+        # Read level statistics
+        allele_strand = defaultdict(int)
 
         # Add pileup bases to the image (downsample reads based on simple coverage-based heuristic)
         row_idxs = np.full((regions.length,), self._cfg.pileup.variant_band_height)
@@ -326,12 +331,22 @@ class SingleDepthImageGenerator(SingleImageGenerator):
                 image_tensor[row_idxs[col_slice], col_idxs, STRAND_CHANNEL] = self._strand_to_pixel[read.strand]
                 image_tensor[row_idxs[col_slice], col_idxs, BASEQ_CHANNEL] = self._qual_pixel(read.baseq(read_slice), self._cfg.pileup.max_baseq)
                 image_tensor[row_idxs[col_slice], col_idxs, PHASE_CHANNEL] = self._phase_pixel(read.phase)             
+                image_tensor[row_idxs[col_slice], col_idxs, READ_ALLELE_CHANNEL] = self._allele_pixel(read.read_allele) 
 
                 # Increment the 'current' row for the bases we just added to the pileup, overwrite the last row if we exceed
                 # the maximum coverage
                 row_idxs[col_slice] = np.clip(row_idxs[col_slice] + 1, self._cfg.pileup.variant_band_height, image_height - 1) 
 
-
+            # Compute other read metrics
+            if read.read_allele is not None:
+                allele_strand[(read.read_allele.allele, read.strand)] += 1
+        
+        # TODO: Add additional attributes to ndarray, e.g., https://numpy.org/doc/stable/user/basics.subclassing.html#simple-example-adding-an-extra-attribute-to-ndarray
+        # from scipy.stats import fisher_exact
+        # print(fisher_exact([
+        #     [allele_strand[(AlleleAssignment.REF, Strand.POSITIVE)], allele_strand[(AlleleAssignment.REF, Strand.NEGATIVE)]],
+        #     [allele_strand[(AlleleAssignment.ALT, Strand.POSITIVE)], allele_strand[(AlleleAssignment.ALT, Strand.NEGATIVE)]]
+        # ]))
         return image_tensor
 
 

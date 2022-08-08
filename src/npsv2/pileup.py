@@ -1,7 +1,7 @@
 import itertools, logging, random, sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import NamedTuple
+from typing import Optional, Tuple
 import pysam
 from intervaltree import Interval
 from .range import Range
@@ -104,12 +104,9 @@ def _refine_base_alignment(base: str, ref: str):
 
 @dataclass
 class AlleleRealignment:
-    ref_quality: int = None
-    alt_quality: int = None
+    ref_quality: Optional[int] = None
+    alt_quality: Optional[int] = None
     allele: AlleleAssignment = AlleleAssignment.AMB
-    # breakpoint: bool
-    # quality: float = 0
-    # normalized_score: float = 0
 
 
 class Fragment(object):
@@ -270,13 +267,14 @@ def _region_columns(region: Range, render_region: Range):
 
 # TODO: Consolidate these Pileup classes with a common base class
 class PileupRead:
-    def __init__(self, read: pysam.AlignedSegment, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase_tag: str="HP"):
+    def __init__(self, read: pysam.AlignedSegment, allele: AlleleRealignment, ref_zscore: float, alt_zscore: float, phase_tag: str="HP", read_allele=AlleleRealignment()):
         self._read = read
         self.region = _read_region(read, read.cigartuples)
         self.allele = allele
         self.ref_zscore = ref_zscore
         self.alt_zscore = alt_zscore
         self.phase = self._read.get_tag(phase_tag) if self._read.has_tag(phase_tag) else None
+        self.read_allele = read_allele
 
     @property
     def read_start(self):
@@ -295,7 +293,7 @@ class PileupRead:
 
 
 class PileupInsert:
-    def __init__(self, region: Range, allele: AlleleAssignment, ref_zscore: float, alt_zscore: float, phase: int = None):
+    def __init__(self, region: Range, allele, ref_zscore: float, alt_zscore: float, phase: int = None):
         self.region = region
         self.allele = allele
         self.ref_zscore = ref_zscore
@@ -303,6 +301,7 @@ class PileupInsert:
         self.mapq = None
         self.strand = None
         self.phase = phase
+        self.read_allele = None
 
     @property
     def read_start(self):
@@ -357,11 +356,11 @@ class ReadPileup:
             if overlap.length > 0:
                 reads.append(PileupInsert(overlap, **attributes))
 
-    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str=None, phase_tag = "HP", **attributes):
+    def add_fragment(self, fragment: Fragment, add_insert=False, ref_seq: str=None, phase_tag = "HP", read1_realignment=AlleleRealignment(), read2_realignment=AlleleRealignment(), **attributes):
         if fragment.read1:
-            read1 = self.add_read(fragment.read1, phase_tag=phase_tag, **attributes)
+            read1 = self.add_read(fragment.read1, phase_tag=phase_tag, read_allele=read1_realignment, **attributes)
         if fragment.read2:
-            read2 = self.add_read(fragment.read2, phase_tag=phase_tag, **attributes)
+            read2 = self.add_read(fragment.read2, phase_tag=phase_tag, read_allele=read2_realignment, **attributes)
         if add_insert and fragment.is_properly_paired:
             # Phasing information passes through to insert bases
             assert read1.phase == read2.phase, "Phasing specification doesn't match between reads in pair"

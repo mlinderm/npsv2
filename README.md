@@ -23,6 +23,7 @@ To manually install and run NPSV from the source, you will need the following de
 * bcftools
 * goleft
 * htslib (i.e., tabix and bgzip)
+* jellyfish (with Python bindings)
 * samblaster
 * sambamba
 * samtools
