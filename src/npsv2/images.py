@@ -17,6 +17,7 @@ from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
 from .sample import Sample
+from npsv2 import pileup
 
 
 MAX_PIXEL_VALUE = 254.0  # Adapted from DeepVariant
@@ -653,7 +654,7 @@ def _example_sim_images(example):
     return image_data
 
 
-def _extract_metadata_from_first_example(filename):
+def _extract_metadata_from_first_example(filename, pileup_image_channels=None):
     raw_example = next(
         iter(tf.data.TFRecordDataset(filenames=filename, compression_type=_filename_to_compression(filename)))
     )
@@ -664,6 +665,9 @@ def _extract_metadata_from_first_example(filename):
     if replicates > 0:
         assert ac == 3, "Incorrect number of genotypes in simulated data"
         assert image_shape == tuple(sim_image_shape), "Simulated and actual image shapes don't match"
+    if pileup_image_channels:
+        assert len(pileup_image_channels) <= image_shape[-1], "More channels requested than available"
+        image_shape = image_shape[:-1] + (len(pileup_image_channels),)
 
     return image_shape, replicates
 
@@ -707,13 +711,13 @@ def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulat
     features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, **kwargs)
 
 
-def load_example_dataset(filenames, with_label=False, with_simulations=False, num_parallel_reads=None) -> tf.data.Dataset:
+def load_example_dataset(filenames, with_label=False, with_simulations=False, num_parallel_reads=None, pileup_image_channels=None) -> tf.data.Dataset:
     if isinstance(filenames, str):
         filenames = [filenames]
     assert len(filenames) > 0
 
     # Extract image shape from the first example
-    shape, replicates = _extract_metadata_from_first_example(filenames[0])
+    shape, replicates = _extract_metadata_from_first_example(filenames[0], pileup_image_channels=pileup_image_channels)
 
     proto_features = {
         "variant/encoded": tf.io.FixedLenFeature(shape=(), dtype=tf.string),
@@ -742,6 +746,11 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False, nu
         }
         if with_simulations:
             features["sim/images"] = tf.io.parse_tensor(parsed_features["sim/images/encoded"], tf.uint8)
+
+        if pileup_image_channels:
+            features["image"] = tf.gather(features["image"], indices=list(pileup_image_channels), axis=-1)
+            if with_simulations:
+                features["sim/images"] = tf.gather(features["sim/images"], indices=list(pileup_image_channels), axis=-1)
 
         if with_label:
             return features, parsed_features["label"]

@@ -1,0 +1,14 @@
+# @package _global_
+generator:
+  _target_: npsv2.images.SingleDepthImageGenerator
+pileup:
+  discrete_mapq: true
+  insert_bases: true
+  render_snv: true
+  match_base_pixel: ${pileup.aligned_base_pixel}
+  mismatch_base_pixel: 192
+  haplotag_reads: false
+  haplotag_sim: false
+  image_channels: [0, 1, 2, 3, 4, 5, 6]
+simulation:
+  chrom_norm_covg: true

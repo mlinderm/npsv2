@@ -134,11 +134,11 @@ def main(cfg: DictConfig) -> None:
 
         _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])
 
-        image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
+        image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0], pileup_image_channels=cfg.pileup.image_channels)
         model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path, weights=cfg.training.initial_weights)
 
-        dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads)
-        validation_dataset = load_example_dataset(validation_tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads) if validation_tfrecords_paths else None
+        dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads, pileup_image_channels=cfg.pileup.image_channels)
+        validation_dataset = load_example_dataset(validation_tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads, pileup_image_channels=cfg.pileup.image_channels) if validation_tfrecords_paths else None
         model.fit(cfg, dataset, validation_dataset=validation_dataset)
     
         model_path = os.path.join(os.getcwd(), "model.h5")
