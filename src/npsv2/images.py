@@ -17,6 +17,7 @@ from . import npsv2_pb2
 from .realigner import FragmentRealigner, realign_fragment, AlleleRealignment
 from .simulation import RandomVariants, simulate_variant_sequencing, augment_samples
 from .sample import Sample
+from .propose.propose import propose_region
 
 
 MAX_PIXEL_VALUE = 254.0  # Adapted from DeepVariant
@@ -329,8 +330,70 @@ class SingleDepthImageGenerator(SingleImageGenerator):
 
         return image_tensor
 
+class RegionImageGenerator(SingleImageGenerator):
+    def __init__(self, cfg):
+        super().__init__(cfg)
 
+    def image_regions(self, variant, left_bound, right_bound) -> Range:
+        variant_region = image_region(self._cfg, variant.reference_region)
+        variant_region.start = left_bound
+        variant_region.end = right_bound
+        return variant_region
 
+    def _generate(self, variant, read_path, sample: Sample, regions, realigner, ref_seq: str = None, alleles: typing.AbstractSet[int]={1}, **kwargs):
+        assert ref_seq is None or len(ref_seq) == regions.length
+
+        image_height, _, _ = self.image_shape
+        image_tensor = np.zeros((image_height, regions.length, MAX_NUM_CHANNELS), dtype=np.uint8)
+
+        fragments = _fetch_reads(read_path, regions.expand(self._cfg.pileup.fetch_flank), reference=self._cfg.reference)
+
+        # Construct the pileup from the fragments, realigning fragments to assign reads to the reference and alternate alleles
+        pileup = ReadPileup(regions)
+
+        for fragment in fragments:
+            # At present we render reads based on the original alignment so we only realign (and track) fragments that could overlap
+            # the image window. If we render "insert" bases, then we look if any part of the fragment overlaps the region
+            if fragment.fragment_overlaps(regions, read_overlap_only=not self._cfg.pileup.insert_bases):
+                realignment = realign_fragment(realigner, fragment, assign_delta=self._cfg.pileup.assign_delta)
+
+                # Prefer possible alternate alleles (i.e. the best "alt") vs. reference straddlers
+                ref_zscore = _fragment_zscore(sample, fragment.fragment_length)
+                alt_zscore = None
+                for length_change in variant.length_change(allele=None):
+                    allele_alt_zscore = _fragment_zscore(sample, fragment.fragment_length, fragment_delta=length_change)
+                    if alt_zscore is None or abs(allele_alt_zscore) < abs(alt_zscore):
+                        alt_zscore = allele_alt_zscore     
+
+                # Render "insert" bases for overlapping fragments without reads in the region (and thus would not
+                # otherwise be represented)
+                # how to change ref_zscore and alt_zscore
+                add_insert = self._cfg.pileup.insert_bases and not fragment.reads_overlap(regions)
+                pileup.add_fragment(fragment, add_insert=add_insert, ref_seq=ref_seq, allele=realignment, ref_zscore=ref_zscore, alt_zscore=alt_zscore, phase_tag=self._cfg.pileup.phase_tag)
+
+        # Add variant strip at the top of the image, clipping out the variant region
+        if self._cfg.pileup.variant_band_height > 0:
+            self._add_variant_strip(variant, sample, pileup, regions, image_tensor)
+
+        # Add pileup bases to the image (downsample reads based on simple coverage-based heuristic)
+        row_idxs = np.full((regions.length,), self._cfg.pileup.variant_band_height)
+        max_reads = (regions.length * (image_height - self._cfg.pileup.variant_band_height)) // sample.read_length
+        for read in pileup.overlapping_reads(regions, max_reads=max_reads):
+            for col_slice, aligned, read_slice in pileup.read_columns(regions, read, ref_seq):
+                col_idxs = range(col_slice.start, col_slice.stop)
+                image_tensor[row_idxs[col_slice], col_idxs, ALIGNED_CHANNEL] = self._align_pixel(aligned)
+                image_tensor[row_idxs[col_slice], col_idxs, MAPQ_CHANNEL] = self._mapq_pixel(read.mapq)
+                image_tensor[row_idxs[col_slice], col_idxs, REF_PAIRED_CHANNEL] = self._zscore_pixel(read.ref_zscore)
+                image_tensor[row_idxs[col_slice], col_idxs, ALT_PAIRED_CHANNEL] = self._zscore_pixel(read.alt_zscore)
+                image_tensor[row_idxs[col_slice], col_idxs, STRAND_CHANNEL] = self._strand_to_pixel[read.strand]
+                image_tensor[row_idxs[col_slice], col_idxs, BASEQ_CHANNEL] = self._qual_pixel(read.baseq(read_slice), self._cfg.pileup.max_baseq)
+                image_tensor[row_idxs[col_slice], col_idxs, PHASE_CHANNEL] = self._phase_pixel(read.phase)             
+
+                # Increment the 'current' row for the bases we just added to the pileup, overwrite the last row if we exceed
+                # the maximum coverage
+                row_idxs[col_slice] = np.clip(row_idxs[col_slice] + 1, self._cfg.pileup.variant_band_height, image_height - 1) 
+
+        return image_tensor
 
 def _genotype_to_label(genotype, alleles: typing.AbstractSet[int]={1}):
     # TODO: Handle no-calls
@@ -380,6 +443,125 @@ def _haplotag_reads(reference: str, sample: Sample, read_path: str, vcf_path: st
         raise RuntimeError(f"Failed to haplotag read file")
     pysam.index(tagged_bam.name)
     return tagged_bam.name
+
+
+def make_variant_region_example(cfg, variant: Variant, record, read_path: str, repeat_bed_path: str, sample: Sample, label=None, simulate=True, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}, addl_features={}):
+    assert 1 <= len(alleles) <= min(variant.num_alt, 2)
+
+    if generator is None:
+        generator = hydra.utils.instantiate(cfg.generator, cfg=cfg)
+    if cfg.simulation.sample_ref and random_variants is None:
+        random_variants = RandomVariants(cfg.reference, cfg.simulation.sample_exclude_bed)
+
+    example_regions = propose_region(cfg, variant, record, repeat_bed_path)
+    if not example_regions:
+        exit(0)
+    # Construct realigner once for all images for this variant, and if rendering match/mismatch bases, 
+    # obtain relevant reference sequence for this variant, including IUPAC bases if SNV data is provided
+    if cfg.pileup.get("render_snv", False):
+        ref_seq = _reference_sequence(cfg.reference, example_regions, snv_vcf_path=cfg.pileup.snv_vcf_input)
+    else:
+        ref_seq = None
+   
+    # Construct image for "real" data
+    image_tensor = generator.generate(
+        variant, read_path, sample, regions=example_regions, ref_seq=ref_seq,
+    )
+
+    feature = {
+        "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
+        "image/shape": _int_feature(image_tensor.shape),
+        "image/encoded": _bytes_feature(tf.io.serialize_tensor(image_tensor)),
+        #"id/encoded": _bytes_feature(tf.io.serialize_tensor([record.id]))
+    }
+
+    replicates = cfg.simulation.replicates # set to 1 in config
+    if simulate and cfg.simulation.replicates > 0:
+        # A 5/6-D tensor for simulated images (AC, REPLICATES) + (WINDOWS?, ROW, COLS, CHANNELS)
+        feature["sim/images/shape"] = _int_feature((1, replicates) + image_tensor.shape)
+
+        # Generate synthetic training images Hom. ref only
+        ac_encoded_images = [None]
+    
+        # If we are augmenting the simulated data, use the provided statistics for the first example, so it
+        # will hopefully be similar to the real data and then augment the remaining replicates
+        if cfg.simulation.augment:
+            repl_samples = augment_samples(sample, replicates, keep_original=True)
+        else:
+            repl_samples = [sample] * cfg.simulation.replicates
+
+        allele_count = 0 # hom. ref
+        with tempfile.TemporaryDirectory() as tempdir:
+            # Generate the FASTA file for this zygosity
+            fasta_alleles = [0, 0] # hom. ref
+            
+            if cfg.pileup.haplotag_sim and cfg.pileup.snv_vcf_input:
+                # Generate fasta with multiple haplotypes containing phased SNVs to enable on-the-fly phasing of simulated
+                # reads with whatshap
+                haplotypes = len(fasta_alleles) # Number of distinct haplotypes in FASTA
+                fasta_path, *_= variant.phase_synth_fasta(
+                    reference_fasta=cfg.reference,
+                    snv_vcf_path=cfg.pileup.snv_vcf_input,
+                    sample=sample.name,
+                    alleles=fasta_alleles,
+                    flank=cfg.pileup.realigner_flank,
+                    dir=tempdir,
+                )
+            else:
+                haplotypes = len(set(fasta_alleles)) # Number of distinct haplotypes in FASTA
+                fasta_path, *_ = variant.synth_fasta(
+                    reference_fasta=cfg.reference, alleles=fasta_alleles, flank=cfg.pileup.realigner_flank, dir=tempdir
+                )
+
+            # Generate and image synthetic bam files
+            repl_encoded_images = []
+            
+            sim_replicates = replicates if not cfg.simulation.sample_ref else 0         
+            for i, repl_sample in enumerate(repl_samples[:sim_replicates]):
+                try:
+                    sample_coverage = repl_sample.chrom_mean_coverage(variant.contig) if cfg.simulation.chrom_norm_covg else repl_sample.mean_coverage
+                    replicate_bam_path = simulate_variant_sequencing(
+                        fasta_path,
+                        sample_coverage / haplotypes,
+                        repl_sample,
+                        reference=cfg.reference,
+                        shared_reference=cfg.shared_reference,
+                        dir=tempdir,
+                        stats_path=cfg.stats_path if cfg.simulation.gc_norm_covg else None,
+                        region=example_regions.expand(cfg.pileup.realigner_flank),
+                        phase_vcf_path=cfg.pileup.snv_vcf_input if cfg.pileup.haplotag_sim else None,
+                    )
+                except ValueError:
+                    logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)
+                    raise
+
+                synth_image_tensor = generator.generate(variant, replicate_bam_path, repl_sample, regions=example_regions, ref_seq=ref_seq)
+                repl_encoded_images.append(synth_image_tensor)
+
+                if not OmegaConf.is_missing(cfg.simulation, "save_sim_bam_dir"):
+                    sim_bam_path=os.path.join(cfg.simulation.save_sim_bam_dir, f"{variant.name}_{allele_count}_{i}.bam")
+                    shutil.copy(replicate_bam_path, sim_bam_path)
+                    shutil.copy(f"{replicate_bam_path}.bai", f"{sim_bam_path}.bai")
+
+            # Fill remaining images with sampled reference variants
+            if cfg.simulation.sample_ref:
+                for random_variant in random_variants.generate(variant, replicates - sim_replicates):          
+                    # TODO: Should we also render match/mismatch when sampling?
+                    random_variant_regions = generator.image_regions(random_variant)
+                    synth_image_tensor = generator.generate(random_variant, read_path, sample, regions=random_variant_regions)
+                    repl_encoded_images.append(synth_image_tensor)
+
+            # Stack all of the image replicates into a tensor
+            ac_encoded_images[allele_count] = np.stack(repl_encoded_images)
+
+        # Stack the replicated images for the 3 genotypes (0/0, 0/1, 1/1) into tensor
+        #sim_image_tensor = np.stack(ac_encoded_images)
+        sim_image_tensor = tf.cast(ac_encoded_images, dtype=tf.uint8)
+        feature[f"sim/images/encoded"] = _bytes_feature(tf.io.serialize_tensor(sim_image_tensor))
+    if label is not None:
+        feature["label"] = _int_feature([label])
+    
+    return tf.train.Example(features=tf.train.Features(feature=feature))
 
 
 def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}, addl_features={}):
@@ -522,6 +704,7 @@ def make_vcf_examples(
     cfg,
     vcf_path: str,
     read_path: str,
+    repeat_bed_path: str,
     sample: Sample,
     sample_or_label=None,
     region: str = None,
@@ -570,7 +753,12 @@ def make_vcf_examples(
                     continue
 
                 label = label_extractor(variant)
-                yield make_variant_example(cfg, variant, read_path, sample, label=label, generator=generator, random_variants=random_variants, **kwargs)
+                if cfg.pileup.region_example:
+                    # convert to training label 1 non hom.ref, 0 hom ref
+                    label = 1 if label > 0 else 0
+                    yield make_variant_region_example(cfg, variant, record, read_path, repeat_bed_path, sample, label=label, generator=generator, random_variants=random_variants, **kwargs)
+                else:
+                    yield make_variant_example(cfg, variant, read_path, sample, label=label, generator=generator, random_variants=random_variants, **kwargs)
            
 
 
@@ -589,6 +777,7 @@ def vcf_to_tfrecords(
     sample: Sample,
     sample_or_label=None,
     simulate=False,
+    repeat_bed_path=None,
     progress_bar=False,
 ):
     with tempfile.TemporaryDirectory() as ray_dir:
@@ -605,7 +794,7 @@ def vcf_to_tfrecords(
             except RuntimeError:
                 pass
             
-            yield from make_vcf_examples(cfg, vcf_path, read_path, sample, sample_or_label=sample_or_label, simulate=simulate, num_shards=num_shards, index=index)
+            yield from make_vcf_examples(cfg, vcf_path, read_path, repeat_bed_path, sample, sample_or_label=sample_or_label, simulate=simulate, num_shards=num_shards, index=index)
 
         # Create parallel iterators. We use a partial wrapper because the generator alone can't be be pickled.
         # There is a warning due to an internal exception bubbling up that seems to have to do with changes
@@ -632,7 +821,7 @@ def _example_image(example):
 
 
 def _example_image_shape(example):
-    return tuple(example.features.feature["image/shape"].int64_list.value)
+    return
 
 
 def _example_label(example):
@@ -667,7 +856,34 @@ def _extract_metadata_from_first_example(filename):
 
     return image_shape, replicates
 
+def homref_features_to_image(cfg, features, out_path: str, with_simulations=False, margin=10, max_replicates=1, render_channels=False):
+    generator = hydra.utils.instantiate(cfg.generator, cfg)
 
+    image_tensor = features["image"]
+    real_image = generator.render(image_tensor, render_channels=render_channels)
+
+    _, replicates, *_ = features["sim/images"].shape if with_simulations and "sim/images" in features else (3, 0)
+    if replicates > 0:
+        width, height = real_image.size
+        replicates = min(replicates, max_replicates)
+
+        image = Image.new(real_image.mode,  (width + 2 * (width + margin), height + replicates * (height + margin)))
+        image.paste(real_image, (width + margin, 0))
+
+        synth_tensor = features["sim/images"]
+        ac = 0 # hom. ref
+        for repl in range(replicates):
+            synth_image_tensor = synth_tensor[ac, repl]
+            synth_image = generator.render(synth_image_tensor, render_channels=render_channels)
+
+            coord = (ac * (width + margin), (repl + 1) * (height + margin))
+            image.paste(synth_image, coord)
+    else:
+        image = real_image
+
+    image.save(out_path)
+
+# the orginal features_to_image
 def features_to_image(cfg, features, out_path: str, with_simulations=False, margin=10, max_replicates=1, render_channels=False):
     generator = hydra.utils.instantiate(cfg.generator, cfg)
 
@@ -696,15 +912,17 @@ def features_to_image(cfg, features, out_path: str, with_simulations=False, marg
     image.save(out_path)
 
 
-def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulations=False, **kwargs):
+def example_to_image(cfg, example: tf.train.Example, out_path: str, with_simulations=False, homRefOnly=False, **kwargs):
     features = {
         "image": _example_image(example),
     }
     _, replicates, *_ = _example_sim_images_shape(example)
     if with_simulations and replicates > 0:
         features["sim/images"] = _example_sim_images(example)
-    
-    features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, **kwargs)
+    if homRefOnly:
+        homref_features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, **kwargs)
+    else:
+        features_to_image(cfg, features, out_path, with_simulations=with_simulations and replicates > 0, **kwargs)
 
 
 def load_example_dataset(filenames, with_label=False, with_simulations=False, num_parallel_reads=None) -> tf.data.Dataset:

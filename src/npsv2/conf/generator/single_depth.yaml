@@ -8,3 +8,4 @@ pileup:
   mismatch_base_pixel: 192
   haplotag_reads: true
   haplotag_sim: true
+  repeat_bed_path: "/storage/mlinderman/ngs/resources/annotations/simple_repeats.hg38.bed.gz"

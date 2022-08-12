@@ -509,4 +509,3 @@ class JointEmbeddingsModel(SimulatedEmbeddingsModel):
             .batch(cfg.training.variants_per_batch)
             .prefetch(tf.data.experimental.AUTOTUNE)  # Newer versions: tf.data.AUTOTUNE
         )
-

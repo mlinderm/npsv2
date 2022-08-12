@@ -80,6 +80,7 @@ def main(cfg: DictConfig) -> None:
             sample,
             sample_or_label=cfg.sample,
             simulate=cfg.simulation.replicates > 0,
+            repeat_bed_path = cfg.pileup.repeat_bed_path,
             progress_bar=True,
         )
 

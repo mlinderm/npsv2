@@ -38,6 +38,17 @@ class ProposeTestSuite(unittest.TestCase):
         )
         self.assertTrue(os.path.exists(output_path))
 
+    # @unittest.skipUnless(
+    #     os.path.exists("/storage/mlinderman/ngs/resources/annotations/simple_repeats.b37.bed.gz"),
+    #     "Reference genome not available",
+    # )
+    # def test_propose_region(self):
+    #     output_path = os.path.join(self.tempdir.name, "test.npy")
+    #     propose.propose_region(
+    #         self.cfg, os.path.join(FILE_DIR, "propose_input.vcf"), output_path, "/storage/mlinderman/ngs/resources/annotations/simple_repeats.b37.bed.gz"
+    #     )
+    #     self.assertTrue(os.path.exists(output_path))
+
 
 class RefineTestSuite(unittest.TestCase):
     def setUp(self):

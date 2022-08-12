@@ -10,6 +10,64 @@ from ..variant import Variant, _reference_sequence
 from ..range import Range
 from ..utilities.vcf import index_variant_file, bcftools_format
 
+def propose_region(cfg, variant: Variant, record, repeats_bed_path: str) -> Range:
+    """Generate region proposal for variants in a VCF file."""
+    # Setup repeats file
+    simple_repeats_bed = pysam.TabixFile(repeats_bed_path)
+
+    # if not variant.is_deletion:
+    #     # Only deletions currently supported
+    #     print("variant is deletion")
+    #     return None
+
+    # if not variant.is_biallelic():
+    #     # We currently only generate proposals for biallelic SVs
+    #     print("variant is biallelic")
+    #     return None
+
+    length_change = abs(variant.length_change())
+    # if length_change > cfg.refine.max_propose_length:
+    #     print("variant exceed maximum length")
+    #     return None
+
+    repeats = list(simple_repeats_bed.fetch(region=str(variant.reference_region), parser=pysam.asTuple()))
+    if cfg.refine.use_refwidened and "REFWIDENED" in record.info:
+        # Use REFWIDENED field in GIAB VCF as though it were a repeat (and the variant the consensus sequence)
+        widened_region = Range.parse_literal(record.info["REFWIDENED"])
+        repeat = (
+            widened_region.contig,
+            widened_region.start,
+            widened_region.end,
+            length_change,
+            widened_region.length / length_change,
+            _reference_sequence(cfg.reference, variant.reference_region),
+        )
+        repeats.append(repeat)
+
+    # if not repeats:
+    #     print("variant has no repeat region")
+    #     return None
+
+    repeat_region = Range(variant.contig, variant.reference_region.start, variant.reference_region.end)
+    for repeat in repeats:
+        consensus_length = int(repeat[3])
+        
+        event_repeat_count = round(length_change / consensus_length)
+        if event_repeat_count == 0:
+            continue
+        
+        repeat_start = int(repeat[1]) - cfg.refine.peak_finding_flank
+        repeat_end = int(repeat[2]) + cfg.refine.peak_finding_flank
+        curr_region = Range(variant.contig, repeat_start, repeat_end)
+        repeat_region = repeat_region.union(curr_region)
+    # If size is less than some minimum size, pad out to minimum size
+    # add flank
+    repeat_region = repeat_region.expand(100)
+    if repeat_region.length < 300:
+        offset = 300 - repeat_region.length
+        repeat_region = repeat_region.expand((offset + 1) // 2, offset // 2)
+    return repeat_region
+
 
 def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, progress_bar=False):
     """Generate alternate representations for variants in a VCF file.

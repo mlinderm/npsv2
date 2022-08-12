@@ -62,6 +62,11 @@ class ImageGeneratorConfigTest(unittest.TestCase):
         generator = hydra.utils.instantiate(cfg.generator, cfg)
         self.assertIsInstance(generator, images.SingleDepthImageGenerator)
 
+    def test_instantiate_generator(self):
+        cfg = hydra.compose(config_name="config", overrides=["generator=region"])
+        generator = hydra.utils.instantiate(cfg.generator, cfg)
+        self.assertIsInstance(generator, images.RegionImageGenerator)
+
 
 class ImageRegionTest(unittest.TestCase):
     def setUp(self):
@@ -104,6 +109,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
             std_insert_size=164.2,
             read_length=148,
             chrom_normalized_coverage={"1": 1.5},
+            sequencer="HSXn",
         )
 
     def tearDown(self):
@@ -154,6 +160,33 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         self.assertEqual(mock_sim.call_count, 3, msg="Should be called for each genotype")
         hap_coverages = [call[0][1] for call in mock_sim.call_args_list]
         np.testing.assert_allclose(hap_coverages, np.array([1.0, 0.5, 1.0]) * 1.5 * self.sample.mean_coverage)
+
+    @unittest.skipUnless(
+        os.path.exists("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta")
+        and bwa_index_loaded("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta"),
+        "Reference genome or HG002 sequencing data not available",
+    )
+    # @patch("npsv2.images._reference_sequence", side_effect=_mock_reference_sequence)
+    # @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    # @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_variant_region(self):# , mock_sim, mock_var_ref, mock_images_ref):
+        cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+                "generator=region",
+                "reference={}".format("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta"), #os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+                "simulation.replicates=1",
+            ],
+        )
+        generator = hydra.utils.instantiate(cfg.generator, cfg)
+        self.assertIsInstance(generator, images.RegionImageGenerator)
+        left_flank, right_flank = 899806, 900100 # flack as input?
+        example = images.make_variant_region_example(
+            cfg, self.variant, self.bam_path, self.sample, simulate=True, generator=generator,
+        )
+        png_path = os.path.join("test.png")
+        images.example_to_image(cfg, example, png_path, with_simulations=True, homRefOnly=True, max_replicates=1, render_channels=True)
+        self.assertTrue(os.path.exists(png_path))
 
 
 #@unittest.skip("Development only")
@@ -293,7 +326,7 @@ class VCFExampleGenerateTest(unittest.TestCase):
         cfg = OmegaConf.merge(self.cfg, {"pileup": {"realigner_flank": 1}})
         dataset_path = os.path.join(self.tempdir.name, "test.tfrecords.gz")
         images.vcf_to_tfrecords(
-            cfg, self.vcf_path, self.bam_path, dataset_path, self.sample, sample_or_label="HG002", simulate=True,
+            cfg, self.vcf_path, self.bam_path, dataset_path, self.sample, sample_or_label="HG002", simulate=True
         )
 
         self.assertEqual(mock_ref.call_count, 4)
@@ -312,6 +345,68 @@ class VCFExampleGenerateTest(unittest.TestCase):
             png_path = os.path.join(self.tempdir.name, "test.png")
             images.features_to_image(self.cfg, features, png_path, with_simulations=True)
             self.assertTrue(os.path.exists(png_path))
+
+    @patch("npsv2.images._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.variant._reference_sequence", side_effect=_mock_reference_sequence)
+    @patch("npsv2.images.simulate_variant_sequencing", side_effect=_mock_simulate_variant_sequencing)
+    def test_vcf_to_region_tfrecords(self, mock_sim, mock_var_ref, mock_images_ref):
+        cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+                "generator=region",
+                "reference=placeholder.fasta",
+                "simulation.replicates=1",
+            ],
+        )
+        
+        #cfg = OmegaConf.merge(self.cfg, {"generator": "region", "pileup": {"realigner_flank": 1}})
+        dataset_path = os.path.join(self.tempdir.name, "test.tfrecords.gz")
+        images.vcf_to_tfrecords(
+            cfg, self.vcf_path, self.bam_path, dataset_path, self.sample, sample_or_label="HG002",
+        )
+
+        #self.assertEqual(mock_ref.call_count, 4)
+        # for args, _ in mock_ref.call_args_list:
+        #     self.assertEqual(args[1], Range("1", 899921, 899993))
+
+        self.assertTrue(os.path.exists(dataset_path))
+
+        # Load dataset with simulated data
+        dataset = images.load_example_dataset(dataset_path, with_label=True, with_simulations=False)
+        for features, label in dataset:
+            self.assertEqual(features["image"].shape, self.generator.image_shape)
+            self.assertEqual(label, 1)
+            #self.assertEqual(features["sim/images"].shape, (3, 1) + self.generator.image_shape)
+
+            png_path = os.path.join(self.tempdir.name, "test.png")
+            images.features_to_image(self.cfg, features, png_path, with_simulations=False)
+            self.assertTrue(os.path.exists(png_path))
+    
+    @unittest.skipUnless(
+        os.path.exists("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta")
+        and bwa_index_loaded("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta"),
+        "Reference genome or HG002 sequencing data not available",
+    )
+    def test_example_region_image_to_tfrecords(self):
+        cfg = hydra.compose(
+            config_name="config",
+            overrides=[
+                "generator=region",
+                "reference={}".format("/storage/mlinderman/projects/sv/npsv2-experiments/resources/human_g1k_v37.fasta"), #os.path.join(FILE_DIR, "1_896922_902998.fasta")),
+                "simulation.replicates=1",
+            ],
+        )
+        tfrecords_dir = "../region_image_model/tfrecords"
+        if not os.path.exists(tfrecords_dir):
+            os.makedirs(tfrecords_dir)  # creating TFRecords output folder
+        with tf.io.TFRecordWriter(
+            tfrecords_dir + "/file_1.tfrec"
+        ) as writer:
+            example = next(images.make_vcf_examples(cfg, self.vcf_path, self.bam_path, self.sample, sample_or_label="HG002", simulate=False))
+            writer.write(example.SerializeToString())
+        #png_path = os.path.join(RESULT_DIR, os.path.splitext(os.path.basename(self.vcf_path))[0] + ".png")
+        #images.example_to_image(cfg, example, png_path, with_simulations=False, max_replicates=1)
+        #self.assertTrue(os.path.exists(png_path))
 
 
 @unittest.skipUnless(
