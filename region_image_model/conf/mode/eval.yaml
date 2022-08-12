@@ -1,0 +1,14 @@
+command: eval
+
+batch_size: 64
+
+# I/O specific parameters
+save_embedding: false
+save_image: false
+
+eval_storage_dir: "/storage/yirans/npsv2/HG002_test_set/HG002_SVs_Tier1_v0.6.genotyped.passing.tier1and2.b37.DEL.images/generator=region,simulation.replicates=1"
+
+result_data_dir: "saved_data/test"
+result_output_dir: "results/test"
+
+model_path: "saved_models/deeper_wide_siamese_model"

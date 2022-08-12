@@ -1,0 +1,10 @@
+command: refine
+
+# I/O specific parameters
+save_embedding: false
+save_image: false
+
+result_data_dir: "saved_data/test"
+result_output_dir: "results/test"
+
+refine_data_path: "test_data/test5.tsv"

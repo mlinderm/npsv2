@@ -1,0 +1,14 @@
+command: train
+
+# training specific parameters
+learning_rate: 0.004
+batch_size: 128
+subset: 0 # > 0 will take a subset of the entire dataset for training
+epochs: 10
+shuffle_buffer: 1024
+
+training_storage_dir: "/storage/yirans/npsv2/region_model_training_set/freeze3.sv.alt.passing.training.hg38.DEL.images"
+training_storage_subdir: "generator=region,simulation.replicates=1"
+sample_names: ["HG00096","HG00171","HG00512","HG00513","HG00732","HG00864","HG01114","HG01505","HG01596","HG02011","HG02492","HG02587","HG02818","HG03009","HG03065","HG03125","HG03371","HG03486","HG03683","HG03732","NA12329","NA12878","NA12891","NA12892","NA18534","NA18939","NA19238","NA19239","NA19650","NA19983","NA20509","NA20847"]
+
+model_path: "saved_models/deeper_wide_siamese_model"
