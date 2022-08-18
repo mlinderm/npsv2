@@ -114,7 +114,8 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         image_tensor = self.generator.generate(self.variant, self.bam_path, self.sample)
         self.assertEqual(image_tensor.shape, (self.cfg.pileup.image_height, self.cfg.pileup.image_width, len(self.cfg.pileup.image_channels)))
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
-
+        self.assertIsNotNone(getattr(image_tensor, "fisher_strand", None))
+        
         png_path = os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
         image.save(png_path)
@@ -147,7 +148,6 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
 
         # Reconfigure chrom_norm_covg
         cfg = OmegaConf.merge(self.cfg, {"simulation": {"chrom_norm_covg": True}})
-        print(self.sample.chrom_mean_coverage("1"))
         images.make_variant_example(
             cfg, self.variant, self.bam_path, self.sample, simulate=True, generator=self.generator,
         )
@@ -194,7 +194,7 @@ class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
         # os.path.join(FILE_DIR, "1_63838141_63838217_DEL.vcf"),
         example = next(images.make_vcf_examples(self.cfg, os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz"), self.bam_path, self.sample, simulate=True))
         self.assertEqual(images._example_image_shape(example), (100, 300, 8))
-       
+        self.assertGreater(images._example_addl_attribute(example, "addl/fisher_strand"), 0.0)
         png_path = os.path.join(self.tempdir.name, "test.channel.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True)
         self.assertTrue(os.path.exists(png_path))

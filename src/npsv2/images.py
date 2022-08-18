@@ -10,6 +10,7 @@ from tqdm import tqdm
 import ray
 import hydra
 from omegaconf import OmegaConf
+from scipy.stats import fisher_exact
 
 from .variant import Variant, _reference_sequence
 from .range import Range
@@ -80,6 +81,20 @@ def _fetch_reads(read_path: str, fetch_region: Range, reference: str = None) -> 
 
             fragments.add_read(read)
     return fragments
+
+# https://numpy.org/doc/stable/user/basics.subclassing.html#simple-example-adding-an-extra-attribute-to-ndarray
+class AnnotatedArray(np.ndarray):
+    def __new__(cls, input_array, fisher_strand=None):
+        obj = np.asarray(input_array).view(cls)
+        # Genomic attributes
+        obj.fisher_strand = fisher_strand
+
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self.fisher_strand = getattr(obj, 'fisher_strand', None)
 
 
 class ImageGenerator:
@@ -210,10 +225,11 @@ class SingleImageGenerator(ImageGenerator):
         image_tensor[:self._cfg.pileup.variant_band_height, :, REF_PAIRED_CHANNEL] = self._zscore_pixel(ref_zscore)
         image_tensor[:self._cfg.pileup.variant_band_height, :, ALT_PAIRED_CHANNEL] = self._zscore_pixel(alt_zscore)
                         
-        image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250
+        image_tensor[:self._cfg.pileup.variant_band_height, :, ALLELE_CHANNEL] = 250 # TODO: Create reference alignment object...
         image_tensor[:self._cfg.pileup.variant_band_height, :, STRAND_CHANNEL] = self._strand_to_pixel[Strand.POSITIVE]
         image_tensor[:self._cfg.pileup.variant_band_height, :, BASEQ_CHANNEL] = self._qual_pixel(self._cfg.pileup.variant_baseq, self._cfg.pileup.max_baseq)    
         image_tensor[:self._cfg.pileup.variant_band_height, :, PHASE_CHANNEL] = self._phase_pixel(None)
+        image_tensor[:self._cfg.pileup.variant_band_height, :, READ_ALLELE_CHANNEL] = 250 
 
         # Clip out the region containing the variant
         for col_slice in pileup.region_columns(region, variant.reference_region):
@@ -231,9 +247,6 @@ class SingleImageGenerator(ImageGenerator):
         elif isinstance(regions, str):
             regions = Range.parse_literal(regions)
 
-        image_height, _, num_channels = self.image_shape
-        image_tensor = np.zeros((image_height, regions.length, num_channels), dtype=np.uint8)
-
         if realigner is None:
             realigner = _realigner(variant, sample, reference=self._cfg.reference, flank=self._cfg.pileup.realigner_flank, alleles=alleles)
 
@@ -243,7 +256,10 @@ class SingleImageGenerator(ImageGenerator):
         if image_tensor.shape != self.image_shape:
             # resize converts to float directly (however convert_image_dtype assumes floats are in [0-1]) so
             # we use cast instead
-            image_tensor = tf.cast(tf.image.resize(image_tensor[:,:,self._cfg.pileup.image_channels], self.image_shape[:2]), dtype=tf.uint8).numpy()
+            image_tensor = AnnotatedArray(
+                tf.cast(tf.image.resize(image_tensor[:,:,self._cfg.pileup.image_channels], self.image_shape[:2]), dtype=tf.uint8).numpy(),
+                fisher_strand=image_tensor.fisher_strand
+            )
 
         return image_tensor
 
@@ -341,13 +357,12 @@ class SingleDepthImageGenerator(SingleImageGenerator):
             if read.read_allele is not None:
                 allele_strand[(read.read_allele.allele, read.strand)] += 1
         
-        # TODO: Add additional attributes to ndarray, e.g., https://numpy.org/doc/stable/user/basics.subclassing.html#simple-example-adding-an-extra-attribute-to-ndarray
-        # from scipy.stats import fisher_exact
-        # print(fisher_exact([
-        #     [allele_strand[(AlleleAssignment.REF, Strand.POSITIVE)], allele_strand[(AlleleAssignment.REF, Strand.NEGATIVE)]],
-        #     [allele_strand[(AlleleAssignment.ALT, Strand.POSITIVE)], allele_strand[(AlleleAssignment.ALT, Strand.NEGATIVE)]]
-        # ]))
-        return image_tensor
+       
+        _, pvalue = fisher_exact([
+            [allele_strand[(AlleleAssignment.REF, Strand.POSITIVE)], allele_strand[(AlleleAssignment.REF, Strand.NEGATIVE)]],
+            [allele_strand[(AlleleAssignment.ALT, Strand.POSITIVE)], allele_strand[(AlleleAssignment.ALT, Strand.NEGATIVE)]]
+        ])
+        return AnnotatedArray(image_tensor, fisher_strand=-10.0*math.log10(pvalue))
 
 
 
@@ -438,6 +453,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
         "image/shape": _int_feature(image_tensor.shape),
         "image/encoded": _bytes_feature(tf.io.serialize_tensor(image_tensor)),
+        "addl/fisher_strand": _float_feature([getattr(image_tensor, "fisher_strand", 0.0)])
     }
 
     if label is not None:
@@ -653,6 +669,10 @@ def _example_image(example):
 
 def _example_image_shape(example):
     return tuple(example.features.feature["image/shape"].int64_list.value)
+
+
+def _example_addl_attribute(example, attr):
+    return float(example.features.feature[attr].float_list.value[0])
 
 
 def _example_label(example):

@@ -18,7 +18,6 @@ RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   python3-dev \
   python3-pip \
   python3-pkgconfig \
-  python3-setuptools \
   samtools \
   tabix \
   unzip \
@@ -27,7 +26,6 @@ RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   apt-get clean -y && \
   rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --upgrade pip wheel
 
 RUN mkdir -p /opt/samblaster \
     && curl -SL https://github.com/GregoryFaust/samblaster/releases/download/v.0.1.26/samblaster-v.0.1.26.tar.gz \
@@ -46,7 +44,8 @@ RUN curl -SL https://github.com/brentp/goleft/releases/download/v0.2.4/goleft_li
 ADD . /opt/npsv2
 
 # Install npsv dependencies
-RUN pip3 install -r /opt/npsv2/requirements.txt
+RUN python3 -m pip install --no-cache-dir setuptools==57.5.0
+RUN python3 -m pip install --no-cache-dir -r /opt/npsv2/requirements.txt
 
 # Install npsv
 WORKDIR /opt/npsv2
