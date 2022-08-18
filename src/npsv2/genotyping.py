@@ -107,6 +107,7 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
         dst_header.add_line('##FORMAT=<ID=DS,Number=G,Type=Float,Description="Distance between real and simulated data">')
         dst_header.add_line('##FORMAT=<ID=DHFFC,Number=A,Type=Float,Description="Ratio between mean coverage in the event and the flanks">')
         dst_header.add_line('##FORMAT=<ID=FS,Number=A,Type=Integer,Description="Phred-scaled probability of Fisher exact test for strand bias">')
+        dst_header.add_line('##FORMAT=<ID=SOR,Number=A,Type=Float,Description="Strand odds ratio">')
 
         ordered_samples = []
         for name, sample in samples.items():
@@ -203,6 +204,7 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                     vcf_distances = np.ones(distance_len, dtype=np.float32)
                     dhffc = [None] * variant.num_alt
                     fisher_strand = [None] * variant.num_alt
+                    strand_orientation_bias = [None] * variant.num_alt
                     for mask, example in zip(allele_masks, mask_examples):
                         example_variant = images._example_variant(example)
                         assert example_variant.start == variant.start and example_variant.end == variant.end, "Mismatch VCF variant and result from threading"
@@ -226,6 +228,7 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                                 vcf_distances[genotype_field_index(gt)] = distances[i]
                             dhffc[next(iter(mask)) - 1] = images._example_addl_attribute(example, "addl/DHFFC")
                             fisher_strand[next(iter(mask)) - 1] = int(images._example_addl_attribute(example, "addl/fisher_strand"))
+                            strand_orientation_bias[next(iter(mask)) - 1] = images._example_addl_attribute(example, "addl/strand_orientation_bias")
                         elif len(mask) == 2:
                             # For multiple alleles we only care about AC=2 (compound het. distance)
                             vcf_distances[genotype_field_index(mask)] = distances[2] 
@@ -237,8 +240,9 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
                     dst_samples.append({
                         "GT": allele_indices_from_genotype_field_index(gt_index, variant.num_alt, PLOIDY),
                         "DS": vcf_distances.round(4).tolist(),
-                        "DHFFC": dhffc,
+                        "DHFFC": np.round(dhffc, 3,).tolist(),
                         "FS": fisher_strand,
+                        "SOR": np.round(strand_orientation_bias, 3).tolist(),
                     })
 
                     if evaluate and sample_name in eval_samples:

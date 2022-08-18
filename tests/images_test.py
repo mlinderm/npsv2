@@ -115,6 +115,7 @@ class SingleDepthImageGeneratorClassTest(unittest.TestCase):
         self.assertEqual(image_tensor.shape, (self.cfg.pileup.image_height, self.cfg.pileup.image_width, len(self.cfg.pileup.image_channels)))
         self.assertEqual(image_tensor.shape, self.generator.image_shape)
         self.assertIsNotNone(getattr(image_tensor, "fisher_strand", None))
+        self.assertIsNotNone(getattr(image_tensor, "strand_orientation_bias", None))
         
         png_path = os.path.join(self.tempdir.name, "test.png")
         image = self.generator.render(image_tensor)
@@ -192,9 +193,14 @@ class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
 
     def test_strand_bias(self):
         # os.path.join(FILE_DIR, "1_63838141_63838217_DEL.vcf"),
-        example = next(images.make_vcf_examples(self.cfg, os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz"), self.bam_path, self.sample, simulate=True))
+        # os.path.join(FILE_DIR, "1_67808460_67808624_DEL.vcf.gz")
+        # os.path.join(FILE_DIR, "3_192673319_192673387_DEL.vcf")
+        example = next(images.make_vcf_examples(self.cfg, os.path.join(FILE_DIR, "4_142630156_142630208_DEL.vcf"), self.bam_path, self.sample, simulate=True))
         self.assertEqual(images._example_image_shape(example), (100, 300, 8))
         self.assertGreater(images._example_addl_attribute(example, "addl/fisher_strand"), 0.0)
+        self.assertGreater(images._example_addl_attribute(example, "addl/strand_orientation_bias"), 0.0)
+        
+        print(images._example_addl_attribute(example, "addl/strand_orientation_bias"))
         png_path = os.path.join(self.tempdir.name, "test.channel.png")
         images.example_to_image(self.cfg, example, png_path, with_simulations=True, max_replicates=1, render_channels=True)
         self.assertTrue(os.path.exists(png_path))

@@ -84,17 +84,35 @@ def _fetch_reads(read_path: str, fetch_region: Range, reference: str = None) -> 
 
 # https://numpy.org/doc/stable/user/basics.subclassing.html#simple-example-adding-an-extra-attribute-to-ndarray
 class AnnotatedArray(np.ndarray):
-    def __new__(cls, input_array, fisher_strand=None):
+    def __new__(cls, input_array, fisher_strand=None, strand_orientation_bias=None):
         obj = np.asarray(input_array).view(cls)
         # Genomic attributes
         obj.fisher_strand = fisher_strand
+        obj.strand_orientation_bias = strand_orientation_bias
 
         return obj
 
     def __array_finalize__(self, obj):
         if obj is None:
             return
-        self.fisher_strand = getattr(obj, 'fisher_strand', None)
+        self.fisher_strand = getattr(obj, "fisher_strand", None)
+        self.strand_orientation_bias = getattr(obj, "strand_orientation_bias", None)
+
+def _fisher_strand(table):
+     _, pvalue = fisher_exact(table)
+     return -10.0*math.log10(pvalue)
+
+
+def _strand_orientation_bias(table, pseudo=1):
+    table = np.array(table) + pseudo
+   
+    symmetric_ratio = (table[0,0] * table[1,1]) / (table[0,1] * table[1,0])
+    symmetric_ratio += 1/symmetric_ratio
+
+    allele_ratio = np.log(np.min(table, axis=1) / np.max(table, axis=1))
+   
+    return math.log(symmetric_ratio) + allele_ratio[0] - allele_ratio[1]
+
 
 
 class ImageGenerator:
@@ -258,7 +276,8 @@ class SingleImageGenerator(ImageGenerator):
             # we use cast instead
             image_tensor = AnnotatedArray(
                 tf.cast(tf.image.resize(image_tensor[:,:,self._cfg.pileup.image_channels], self.image_shape[:2]), dtype=tf.uint8).numpy(),
-                fisher_strand=image_tensor.fisher_strand
+                fisher_strand=image_tensor.fisher_strand,
+                strand_orientation_bias=image_tensor.strand_orientation_bias,
             )
 
         return image_tensor
@@ -357,12 +376,15 @@ class SingleDepthImageGenerator(SingleImageGenerator):
             if read.read_allele is not None:
                 allele_strand[(read.read_allele.allele, read.strand)] += 1
         
-       
-        _, pvalue = fisher_exact([
+        strand_contingency = [
             [allele_strand[(AlleleAssignment.REF, Strand.POSITIVE)], allele_strand[(AlleleAssignment.REF, Strand.NEGATIVE)]],
             [allele_strand[(AlleleAssignment.ALT, Strand.POSITIVE)], allele_strand[(AlleleAssignment.ALT, Strand.NEGATIVE)]]
-        ])
-        return AnnotatedArray(image_tensor, fisher_strand=-10.0*math.log10(pvalue))
+        ]
+        return AnnotatedArray(
+            image_tensor,
+            fisher_strand=_fisher_strand(strand_contingency),
+            strand_orientation_bias=_strand_orientation_bias(strand_contingency),
+        )
 
 
 
@@ -453,7 +475,8 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         "variant/encoded": _bytes_feature([variant.as_proto().SerializeToString()]),
         "image/shape": _int_feature(image_tensor.shape),
         "image/encoded": _bytes_feature(tf.io.serialize_tensor(image_tensor)),
-        "addl/fisher_strand": _float_feature([getattr(image_tensor, "fisher_strand", 0.0)])
+        "addl/fisher_strand": _float_feature([getattr(image_tensor, "fisher_strand", 0.0)]),
+        "addl/strand_orientation_bias": _float_feature([getattr(image_tensor, "strand_orientation_bias", 0.0)]),
     }
 
     if label is not None:
