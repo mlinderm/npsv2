@@ -127,9 +127,8 @@ def main(cfg: DictConfig) -> None:
         if cfg.training.validation_split and len(validation_tfrecords_paths) == 0 and len(tfrecords_paths) > 1:
             # Construct validation datasets from input files
             random.shuffle(tfrecords_paths)
-            split_index = int(len(tfrecords_paths) * cfg.training.validation_split)
-            logging.info("Using random selection of %d input files for validation", split_index)
-            validation_tfrecords_paths, tfrecords_paths = tfrecords_paths[:split_index], tfrecords_paths[split_index:]
+            logging.info("Using random selection of %d input files for validation", cfg.training.validation_split)
+            validation_tfrecords_paths, tfrecords_paths = tfrecords_paths[:cfg.training.validation_split], tfrecords_paths[cfg.training.validation_split:]
             logging.info("Using %s for validation", ",".join(validation_tfrecords_paths))
 
         _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])

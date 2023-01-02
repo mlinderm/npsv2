@@ -5,10 +5,10 @@ log_dir: null
 shuffle: 1000
 variants_per_batch: 64
 checkpoint_dir: null
-restart_from_checkpoint: false
 validation_freq: 1
 validation_input: null
 contrastive_margin: 1.0
 initial_weights: null
 save_best_validation_checkpoint: false
 validation_split: null
+steps_per_epoch: null

@@ -11,6 +11,7 @@ import ray
 import hydra
 from omegaconf import OmegaConf
 from scipy.stats import fisher_exact
+from google.protobuf import descriptor_pb2
 
 from .variant import Variant, _reference_sequence
 from .range import Range
@@ -823,3 +824,49 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False, nu
     num_parallel_calls = num_parallel_reads if num_parallel_reads is None or num_parallel_reads == tf.data.experimental.AUTOTUNE else min(len(filenames), num_parallel_reads)
     return tf.data.Dataset.from_tensor_slices(filenames).interleave(lambda filename: tf.data.TFRecordDataset(filename, compression_type=compression).map(_process_input, num_parallel_calls=1), cycle_length=len(filenames), num_parallel_calls=num_parallel_calls)
 
+
+def flatten(filenames, output_filename, num_parallel_reads=None):
+    file_descriptor_set = descriptor_pb2.FileDescriptorSet()
+    npsv2_pb2.DESCRIPTOR.CopyToProto(file_descriptor_set.file.add())
+    descriptor_source = b'bytes://' + file_descriptor_set.SerializeToString()
+        
+
+    dataset = load_example_dataset(filenames, with_label=True, with_simulations=True, num_parallel_reads=num_parallel_reads)
+    with tf.io.TFRecordWriter(output_filename, _filename_to_compression(output_filename)) as file_writer:
+        for features, real_label in tqdm(dataset, desc="Flattening images"):
+            _, [contig, start, end, svtype] = tf.io.decode_proto(
+                features["variant/encoded"],
+                "npsv2.StructuralVariant",
+                ["contig", "start", "end", "svtype"],
+                [tf.string, tf.int64, tf.int64, tf.int32], # svtype is an enum
+                descriptor_source=descriptor_source,
+            )
+            key = f"{tf.squeeze(contig).numpy().decode('utf-8')}_{tf.squeeze(start)}_{tf.squeeze(end)}_{npsv2_pb2.StructuralVariant.Type.Name(tf.squeeze(svtype))}"
+ 
+            real_features = {
+                "key": _bytes_feature([key.encode('utf-8')]),
+                "variant/encoded": _bytes_feature(features["variant/encoded"]),
+                "label": _int_feature([real_label]),
+                "image/shape": _int_feature(features["image"].shape),
+                "image/encoded": _bytes_feature(tf.io.serialize_tensor(features["image"])),
+                "simulated": _int_feature([0]),
+            }
+            
+            real_example = tf.train.Example(features=tf.train.Features(feature=real_features))
+            file_writer.write(real_example.SerializeToString()) 
+
+            replicates = features["sim/images"].shape[1]
+            for sim_label in range(0, 3):
+                for replicate in range(replicates):
+                    sim_features = {
+                        "key": _bytes_feature([f"{key}_{sim_label}_{replicate}".encode('utf-8')]),
+                        "variant/encoded": _bytes_feature(features["variant/encoded"]),
+                        "label": _int_feature([sim_label]),
+                        "image/shape": _int_feature(features["sim/images"].shape[2:]),
+                        "image/encoded": _bytes_feature(tf.io.serialize_tensor(features["sim/images"][sim_label, replicate])),
+                        "simulated": _int_feature([1]),
+                    }
+                    sim_example = tf.train.Example(features=tf.train.Features(feature=sim_features))
+                    file_writer.write(sim_example.SerializeToString()) 
+
+            

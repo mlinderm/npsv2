@@ -2,6 +2,7 @@ import argparse, logging
 from ..simulation import filter_reads_gc, filter_reads_gnomad
 from ..multiallelic import filter_nonref, merge_into_multiallelic
 from ..propose.refine import train_model
+from ..images import flatten
 
 def main():
     parser = argparse.ArgumentParser(
@@ -115,6 +116,16 @@ def main():
         "--flank", help="Expand variants by flank during merging", default=0,
     )
 
+    parser_flatten = subparsers.add_parser(
+        "flatten", help="Flatten TF record files to just contain labeled images"
+    )
+    parser_flatten.add_argument(
+         "-i", "--input", help="Input TF records file", type=str, required=True
+    )
+    parser_flatten.add_argument(
+        "-o", "--output", help="Output TF records file", type=str, required=True
+    )
+
     args = parser.parse_args()
     logging.basicConfig(level=args.loglevel)
     if args.command == "gc_covg":
@@ -127,6 +138,9 @@ def main():
         train_model(args.input, args.pbsv, args.output)
     elif args.command == "multiallelic":
         merge_into_multiallelic(args.input, args.output, args.reference, flank=args.flank)
+    elif args.command == "flatten":
+        flatten(args.input, args.output)
+
 
 if __name__ == "__main__":
     main()

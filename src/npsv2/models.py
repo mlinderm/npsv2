@@ -197,28 +197,7 @@ class GenotypingModel:
         if cfg.training.checkpoint_dir:
             logging.info("Saving checkpoints to %s", cfg.training.checkpoint_dir)
 
-            restart_path = os.path.join(cfg.training.checkpoint_dir, "restart")
-
-            # existing_checkpoints = []
-            # if cfg.training.restart_from_checkpoint:
-            #     latest = tf.train.latest_checkpoint(restart_path)
-            #     if latest:
-            #         existing_checkpoints.append(latest) # Ensure existing checkpoints are deleted if no longer needed
-            #         epoch = re.search(r"(\d+)\.ckpt", os.path.basename(latest))
-            #         if epoch:
-            #             initial_epoch = int(epoch.group(1))
-            #         logging.info("Restarting training from %s checkpoint at epoch %d", latest, initial_epoch)
-            #         self._model.load_weights(latest)
-            
-            # checkpoint_callback = NModelCheckpoint(
-            #     filepath=os.path.join(cfg.training.checkpoint_dir, "{epoch:04d}.ckpt"),
-            #     max_to_keep=1, # Only keep the most recent checkpoint
-            #     existing_checkpoints=existing_checkpoints,
-            #     save_weights_only=True,
-            #     verbose=1,
-            # )
-            # callbacks.append(checkpoint_callback)
-    
+            restart_path = os.path.join(cfg.training.checkpoint_dir, "restart")    
             backup_callback = tf.keras.callbacks.BackupAndRestore(restart_path)
             callbacks.append(backup_callback)
 
@@ -239,14 +218,18 @@ class GenotypingModel:
         if cfg.training.log_dir:
             log_dir = os.path.join(cfg.training.log_dir, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
             logging.info("Logging TensorBoard data to: %s", log_dir)
-            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, write_graph=False, histogram_freq=1, profile_batch=(10,15))
+            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, write_graph=False)
             callbacks.append(tensorboard_callback)
+
+        if cfg.training.steps_per_epoch is not None:
+            training_dataset = training_dataset.repeat()
 
         self._model.fit(
             training_dataset,
             validation_data=validation_dataset,
             initial_epoch=initial_epoch,
             epochs=cfg.training.epochs,
+            steps_per_epoch=cfg.training.steps_per_epoch,
             callbacks=callbacks,
             validation_freq=cfg.training.validation_freq,
         )

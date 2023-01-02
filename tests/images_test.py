@@ -214,11 +214,11 @@ class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
 )
 @parameterized_class(
     [
-        # { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz"), "snv_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.snvs.vcf.gz") }, # Presentation example
+        { "vcf_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.vcf.gz"), "snv_path": os.path.join(FILE_DIR, "12_22129565_22130387_DEL.snvs.vcf.gz") }, # Presentation example
         # { "vcf_path": os.path.join(FILE_DIR, "2_1521325_1521397_DEL.vcf.gz") }, # Undercall
         # { "vcf_path": os.path.join(FILE_DIR, "21_46906303_46906372_DEL.vcf.gz") }, # Overcall
         # { "vcf_path": os.path.join(FILE_DIR, "4_898004_898094_DEL.vcf.gz") }, # Overcall
-        { "vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
+        # { "vcf_path": os.path.join(FILE_DIR, "1_899922_899992_DEL.vcf.gz")},  # Offset (GIAB)
         # { "vcf_path": os.path.join(FILE_DIR, "1_900011_900086_DEL.vcf.gz")},  # Offset (PBSV)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)

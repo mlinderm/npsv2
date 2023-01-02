@@ -114,7 +114,7 @@ def _phased_reference_sequence(reference_fasta: str, region: Range, snv_vcf_path
                 phase_sets.add(ps)
             #if len(phase_sets) > 1:
             #    return (ref_seq, ref_seq)
-            print(record)
+
             ref_seq_index = record.start - region.start
             alleles = call.alleles
             assert len(alleles) == 2
