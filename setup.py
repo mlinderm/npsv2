@@ -177,7 +177,7 @@ setup(
     packages=find_packages("src"),
     package_dir={"": "src"},
     include_package_data=True,
-    package_data={"": ["etc/*"]},
+    package_data={"": ["etc/*", "conf/*.yaml", "conf/**/*.yaml"]},
     ext_modules=[CMakeExtension("npsv2/npsv2r")],
     cmdclass=dict(build_ext=SeqLibCMakeBuild, protobuf=BuildProtobuf),
     zip_safe=False,

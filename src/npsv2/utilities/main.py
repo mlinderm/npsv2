@@ -125,6 +125,9 @@ def main():
     parser_flatten.add_argument(
         "-o", "--output", help="Output TF records file", type=str, required=True
     )
+    parser_flatten.add_argument(
+        "--real_only", help="Only save real data (not simulations)", action="store_true"
+    )
 
     args = parser.parse_args()
     logging.basicConfig(level=args.loglevel)
@@ -139,7 +142,7 @@ def main():
     elif args.command == "multiallelic":
         merge_into_multiallelic(args.input, args.output, args.reference, flank=args.flank)
     elif args.command == "flatten":
-        flatten(args.input, args.output)
+        flatten(args.input, args.output, real_only=args.real_only)
 
 
 if __name__ == "__main__":

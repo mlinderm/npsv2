@@ -180,7 +180,8 @@ class Variant(object):
             elif all(map(lambda l: l == 0, svlen)):
                 svtype = "SUB"
             else:
-                raise ValueError("Inconsistent variant types")
+                svtype = "DEL"
+                #raise ValueError("Inconsistent variant types")
         if svtype.startswith("DEL"):
             return DeletionVariant(record)
         elif svtype.startswith("INS"):

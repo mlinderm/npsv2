@@ -208,7 +208,8 @@ int32_t RealignedReadPair::InsertSize() const {
 bool RealignedReadPair::Concordant() const {
   if (left_->ChrID() != right_->ChrID()) return false;
 
-  // TODO: Check orientation
+  // Since reads are transformed to forward strand, the expected orientation is FF or RR
+  if (left_->ReverseFlag() != right_->ReverseFlag()) return false;
 
   return true;
 }

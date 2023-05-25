@@ -825,7 +825,7 @@ def load_example_dataset(filenames, with_label=False, with_simulations=False, nu
     return tf.data.Dataset.from_tensor_slices(filenames).interleave(lambda filename: tf.data.TFRecordDataset(filename, compression_type=compression).map(_process_input, num_parallel_calls=1), cycle_length=len(filenames), num_parallel_calls=num_parallel_calls)
 
 
-def flatten(filenames, output_filename, num_parallel_reads=None):
+def flatten(filenames, output_filename, num_parallel_reads=None, real_only=False):
     file_descriptor_set = descriptor_pb2.FileDescriptorSet()
     npsv2_pb2.DESCRIPTOR.CopyToProto(file_descriptor_set.file.add())
     descriptor_source = b'bytes://' + file_descriptor_set.SerializeToString()
@@ -854,6 +854,9 @@ def flatten(filenames, output_filename, num_parallel_reads=None):
             
             real_example = tf.train.Example(features=tf.train.Features(feature=real_features))
             file_writer.write(real_example.SerializeToString()) 
+
+            if real_only:
+                continue
 
             replicates = features["sim/images"].shape[1]
             for sim_label in range(0, 3):
