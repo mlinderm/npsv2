@@ -2,7 +2,6 @@ import datetime, logging, os, re, sys, tempfile, typing
 import collections.abc
 from omegaconf import OmegaConf
 import tensorflow as tf
-import tensorflow_addons as tfa
 from tensorflow.keras import layers
 from tensorflow.keras.initializers import RandomNormal
 from tensorflow.keras.regularizers import l2
@@ -12,6 +11,7 @@ from .images import load_example_dataset, _extract_metadata_from_first_example, 
 from . import npsv2_pb2
 from .utilities.callbacks import NModelCheckpoint
 from .utilities.sequence import as_scalar
+from .utilities.losses import contrastive_loss
 
 # https://github.com/tensorflow/tensorflow/issues/35634#issuecomment-665517890
 # class ReturnBestEarlyStopping(EarlyStopping):
@@ -423,7 +423,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
             y_true = tf.dtypes.cast(tf.reshape(y_true, (-1,)), y_pred.dtype)
             y_pred = tf.reshape(y_pred, (-1,))
             weights = y_true * 1.5 + (1.0 - y_true) * 0.75  # There are always 2x more incorrect genotype pairs
-            return tfa.losses.contrastive_loss(y_true, y_pred, margin=cfg.training.contrastive_margin) * weights
+            return contrastive_loss(y_true, y_pred, margin=cfg.training.contrastive_margin) * weights
 
         # TODO: Add precision/recall
         self._model.compile(

@@ -176,7 +176,7 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
         # to avoid conflicts between clusters running on the same node.
         logging.info("Initializing ray with %d threads", cfg.threads)
         # TODO: Seem to run into memory issues starting multiple clusters. Set memory based on allocation?
-        ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=output_dir, ignore_reinit_error=True, include_dashboard=False, object_store_memory=8*1024*1024*1024, _redis_max_memory=1024*1024*1024)
+        ray.init(num_cpus=cfg.threads, num_gpus=0, _temp_dir=output_dir, ignore_reinit_error=True, include_dashboard=False)
 
         unsorted_output_path = os.path.join(output_dir, "genotypes.vcf.gz")
         with pysam.VariantFile(unsorted_output_path, mode="wz", header=dst_header) as dst_vcf_file:

@@ -10,6 +10,7 @@ RUN apt-get -qq update && apt-get install --no-install-recommends -yq \
   cmake \
   curl \
   gawk \
+  git \
   jellyfish \
   python3-dna-jellyfish \
   libbz2-dev \
@@ -43,10 +44,10 @@ RUN curl -SL https://github.com/brentp/goleft/releases/download/v0.2.4/goleft_li
 
 ADD . /opt/npsv2
 
-# Install npsv dependencies
+# Install dependencies
 RUN python3 -m pip install --no-cache-dir setuptools==57.5.0
 RUN python3 -m pip install --no-cache-dir -r /opt/npsv2/requirements.txt
 
-# Install npsv
+# Install npsv2
 WORKDIR /opt/npsv2
 RUN python3 setup.py install

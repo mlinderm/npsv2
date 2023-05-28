@@ -58,7 +58,15 @@ The NPSV-deep package installs the `npsv2` executable, which executes the differ
 
 ### Prerequisites
 
-NPSV-deep requires the reference genome and these examples, in particular, require the "b37" reference.
+NPSV-deep requires the reference genome and these examples, in particular, require the "b37" reference. To obtain and index those files from within the Docker container:
+
+```plaintext
+cd /data
+curl ftp://ftp.ncbi.nlm.nih.gov/1000genomes/ftp/technical/reference/human_g1k_v37.fasta.gz -o human_g1k_v37.fasta.gz
+gunzip human_g1k_v37.fasta.gz
+bwa index human_g1k_v37.fasta
+samtools faidx human_g1k_v37.fasta
+```
 
 ### Basic Workflow
 
@@ -77,9 +85,14 @@ npsv2 command=genotype \
     load_reference=true
 ```
 
-This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.gz` (determined by the output parameter) with the genotypes. The input variant is derived from the Genome-in-a-Bottle SV dataset; NPSV successfully genotypes this variant as homozygous alternate.
+This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.gz` (determined by the output parameter) with the genotypes. The input variant is derived from the Genome-in-a-Bottle SV dataset; NPSV successfully genotypes this variant as homozygous alternate. The genotype is determined from the minimum index of the `DS` field, the distances between the actual and simulated data for each possible genotype. Note that due to random variation in simulation different runs will produce slightly different distances.
 
-The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion) if it has not already been loaded. 
+```plaintext
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
+12	22129565	HG2_PB_SVrefine2Falcon2Bionano_6426	CAGGGGCATACTGTGAAGAACTTGACCTCTAATTAATAGCTAAGGCCGATCCTAAGAGAGCCAATTGTGGGAGATTGTCAGCTACTATATTCCTCATAGCTGGGTAGAAAGCCCTCTTGAAGGAAGATCTGAGCAGTACATCTTAGTGTCTGTCACAGACACACAGAGCTTGGATGACTCAAAAAAAGAAAAAGAGAAATAATTCTTCTGATTCTAAATATGTAACCCTCATTCCCTGAGGCGCAGTACTTCAAATTTAAGAACAAAGTTATAAAAACAACTAGTTAAGAAAAAAAGATCTGTAATCCTACTTACTCCTCAAGCAATATAACCCCCAGAAGTTCTTCTCGAGTAAATTTATGAATATCCAGTGGGTGTCTCACAAGAGTTCTAATAACATGCTGTTGACTACCATCGGGGATTCTACCAATTTTCCTATCTCCTAATCTAGATCACTGGATAATGTGTCTAATTGCTCCTAAGTTAAGAGTGGTAGCTATGCCAAACCATTGGCAGTTTCACTTCCCAGACACTACTCCTGAGGATGCTACATAGCCCAAGACTGAGGGTTCTGACTTCTATTCAGGGGTTCTGATGTTTTATATCCAGAGAATACAAGGCACTGAAATCAGCATTTTATCATTTTATCAATAACACAACTCATCAACATTGCTAACATTCTGTCCCTGTGTCATCAATGTCATCACTTCTAAGAGGACTCAATGTCTCATGAAGGTTATAGAACAACAGCTTTTTGAGATTTTACTTACTTTTTTGTTGCAGCTTTCTTGCTCTCAGATTGAGAATGGCTGGTCTAATTGAT	C	20	PASS	ClusterIDs=HG2_10X_SVrefine210Xhap12_9132:HG2_PB_PB10Xdip_7025:HG2_PB_PB10Xdip_7024:HG3_PB_pbsv_12731:HG4_PB_pbsv_13042:HG2_PB_pbsv_13047:HG3_PB_SVrefine2Falcon1Dovetail_7887:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumClusterSVs=15;ExactMatchIDs=HG2_10X_SVrefine210Xhap12_9132:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumExactMatchSVs=9;ClusterMaxShiftDist=0.00488102;ClusterMaxSizeDiff=0.00487211;ClusterMaxEditDist=0.00854179;PBcalls=12;Illcalls=2;TenXcalls=1;CGcalls=0;PBexactcalls=6;Illexactcalls=2;TenXexactcalls=1;CGexactcalls=0;HG2count=9;HG3count=4;HG4count=2;NumTechs=3;NumTechsExact=3;SVLEN=-822;DistBack=4675;DistForward=-689;DistMin=-689;DistMinlt1000=TRUE;MultiTech=TRUE;MultiTechExact=TRUE;SVTYPE=DEL;sizecat=300to999;DistPASSHG2gt49Minlt1000=FALSE;DistPASSMinlt1000=FALSE;MendelianError=FALSE;HG003_GT=1/1;HG004_GT=1/1;TRall=TRUE;TRgt100=TRUE;TRgt10k=FALSE;segdup=FALSE;REPTYPE=CONTRAC;BREAKSIMLENGTH=823;REFWIDENED=12:22129566-22131210	GT:DS:DHFFC:FS:SOR	1/1:0.9457,0.9968,0.0977:0.371:0:0.693
+```
+
+*Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion) if it has not already been loaded. 
 
 ### Preprocessing to create a "stats" file
 

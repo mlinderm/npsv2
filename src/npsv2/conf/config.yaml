@@ -1,7 +1,7 @@
 defaults:
   - pileup
   - simulation: augmented
-  - generator: single_depth
+  - generator: single_depth_phaseread
   - model: joint_embeddings
   - training
   - optional model_training: ${model}

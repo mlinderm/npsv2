@@ -1,0 +1,595 @@
+Submodule bwa contains modified content
+diff --git a/bwa/Makefile b/bwa/Makefile
+index 478aec8..6164a87 100644
+--- a/bwa/Makefile
++++ b/bwa/Makefile
+@@ -1,6 +1,6 @@
+ CC=			gcc
+ #CC=			clang --analyze
+-CFLAGS=		-g -Wall -Wno-unused-function -O2
++CFLAGS=		-g -Wall -Wno-unused-function -O2 -fPIC -Wno-unused-result
+ WRAP_MALLOC=-DUSE_MALLOC_WRAPPERS
+ AR=			ar
+ DFLAGS=		-DHAVE_PTHREAD $(WRAP_MALLOC)
+@@ -77,7 +77,7 @@ example.o: bwamem.h bwt.h bntseq.h bwa.h kseq.h malloc_wrap.h
+ fastmap.o: bwa.h bntseq.h bwt.h bwamem.h kvec.h malloc_wrap.h utils.h kseq.h
+ is.o: malloc_wrap.h
+ kopen.o: malloc_wrap.h
+-kstring.o: kstring.h malloc_wrap.h
++kstring.o: kstring.h neon_sse.h malloc_wrap.h
+ ksw.o: ksw.h malloc_wrap.h
+ main.o: kstring.h malloc_wrap.h utils.h
+ malloc_wrap.o: malloc_wrap.h
+diff --git a/bwa/ksw.c b/bwa/ksw.c
+index 9793e5e..60ef641 100644
+--- a/bwa/ksw.c
++++ b/bwa/ksw.c
+@@ -26,7 +26,11 @@
+ #include <stdlib.h>
+ #include <stdint.h>
+ #include <assert.h>
++#if defined __SSE2__
+ #include <emmintrin.h>
++#elif defined __ARM_NEON
++#include "neon_sse.h"
++#endif
+ #include "ksw.h"
+ 
+ #ifdef USE_MALLOC_WRAPPERS
+@@ -108,6 +112,11 @@ kswq_t *ksw_qinit(int size, int qlen, const uint8_t *query, int m, const int8_t
+ 	return q;
+ }
+ 
++#if defined __ARM_NEON
++// This macro implicitly uses each function's `zero` local variable
++#define _mm_slli_si128(a, n) (vextq_u8(zero, (a), 16 - (n)))
++#endif
++
+ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del, int _o_ins, int _e_ins, int xtra) // the first gap costs -(_o+_e)
+ {
+ 	int slen, i, m_b, n_b, te = -1, gmax = 0, minsc, endsc;
+@@ -115,6 +124,7 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
+ 	__m128i zero, oe_del, e_del, oe_ins, e_ins, shift, *H0, *H1, *E, *Hmax;
+ 	kswr_t r;
+ 
++#if defined __SSE2__
+ #define __max_16(ret, xx) do { \
+ 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 8)); \
+ 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 4)); \
+@@ -123,6 +133,14 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
+     	(ret) = _mm_extract_epi16((xx), 0) & 0x00ff; \
+ 	} while (0)
+ 
++// Given entries with arbitrary values, return whether they are all 0x00
++#define allzero_16(xx) (_mm_movemask_epi8(_mm_cmpeq_epi8((xx), zero)) == 0xffff)
++
++#elif defined __ARM_NEON
++#define __max_16(ret, xx) (ret) = vmaxvq_u8((xx))
++#define allzero_16(xx) (vmaxvq_u8((xx)) == 0)
++#endif
++
+ 	// initialization
+ 	r = g_defr;
+ 	minsc = (xtra&KSW_XSUBO)? xtra&0xffff : 0x10000;
+@@ -143,7 +161,7 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
+ 	}
+ 	// the core loop
+ 	for (i = 0; i < tlen; ++i) {
+-		int j, k, cmp, imax;
++		int j, k, imax;
+ 		__m128i e, h, t, f = zero, max = zero, *S = q->qp + target[i] * slen; // s is the 1st score vector
+ 		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
+ 		h = _mm_slli_si128(h, 1); // h=H(i-1,-1); << instead of >> because x64 is little-endian
+@@ -182,8 +200,7 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
+ 				_mm_store_si128(H1 + j, h);
+ 				h = _mm_subs_epu8(h, oe_ins);
+ 				f = _mm_subs_epu8(f, e_ins);
+-				cmp = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_subs_epu8(f, h), zero));
+-				if (UNLIKELY(cmp == 0xffff)) goto end_loop16;
++				if (UNLIKELY(allzero_16(_mm_subs_epu8(f, h)))) goto end_loop16;
+ 			}
+ 		}
+ end_loop16:
+@@ -236,12 +253,20 @@ kswr_t ksw_i16(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_de
+ 	__m128i zero, oe_del, e_del, oe_ins, e_ins, *H0, *H1, *E, *Hmax;
+ 	kswr_t r;
+ 
++#if defined __SSE2__
+ #define __max_8(ret, xx) do { \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 8)); \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 4)); \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 2)); \
+     	(ret) = _mm_extract_epi16((xx), 0); \
+ 	} while (0)
++// Given entries all either 0x0000 or 0xffff, return whether they are all 0x0000
++ #define allzero_0f_8(xx) (!_mm_movemask_epi8((xx)))
++
++ #elif defined __ARM_NEON
++ #define __max_8(ret, xx) (ret) = vmaxvq_s16(vreinterpretq_s16_u8((xx)))
++ #define allzero_0f_8(xx) (vmaxvq_u16(vreinterpretq_u16_u8((xx))) == 0)
++ #endif
+ 
+ 	// initialization
+ 	r = g_defr;
+@@ -267,7 +292,7 @@ kswr_t ksw_i16(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_de
+ 		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
+ 		h = _mm_slli_si128(h, 2);
+ 		for (j = 0; LIKELY(j < slen); ++j) {
+-			h = _mm_adds_epi16(h, *S++);
++			h = _mm_adds_epi16(h, _mm_load_si128(S++));
+ 			e = _mm_load_si128(E + j);
+ 			h = _mm_max_epi16(h, e);
+ 			h = _mm_max_epi16(h, f);
+@@ -290,7 +315,7 @@ kswr_t ksw_i16(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_de
+ 				_mm_store_si128(H1 + j, h);
+ 				h = _mm_subs_epu16(h, oe_ins);
+ 				f = _mm_subs_epu16(f, e_ins);
+-				if(UNLIKELY(!_mm_movemask_epi8(_mm_cmpgt_epi16(f, h)))) goto end_loop8;
++				if(UNLIKELY(allzero_0f_8(_mm_cmpgt_epi16(f, h)))) goto end_loop8;
+ 			}
+ 		}
+ end_loop8:
+diff --git a/bwa/neon_sse.h b/bwa/neon_sse.h
+new file mode 100644
+index 0000000..bf9d2a6
+--- /dev/null
++++ b/bwa/neon_sse.h
+@@ -0,0 +1,33 @@
++#ifndef NEON_SSE_H
++#define NEON_SSE_H
++
++#include <arm_neon.h>
++
++typedef uint8x16_t __m128i;
++
++static inline __m128i _mm_load_si128(const __m128i *ptr) { return vld1q_u8((const uint8_t *) ptr); }
++static inline __m128i _mm_set1_epi32(int n) { return vreinterpretq_u8_s32(vdupq_n_s32(n)); }
++static inline void _mm_store_si128(__m128i *ptr, __m128i a) { vst1q_u8((uint8_t *) ptr, a); }
++
++static inline __m128i _mm_adds_epu8(__m128i a, __m128i b) { return vqaddq_u8(a, b); }
++static inline __m128i _mm_max_epu8(__m128i a, __m128i b) { return vmaxq_u8(a, b); }
++static inline __m128i _mm_set1_epi8(int8_t n) { return vreinterpretq_u8_s8(vdupq_n_s8(n)); }
++static inline __m128i _mm_subs_epu8(__m128i a, __m128i b) { return vqsubq_u8(a, b); }
++
++#define M128I(a)  vreinterpretq_u8_s16((a))
++#define UM128I(a) vreinterpretq_u8_u16((a))
++#define S16(a)    vreinterpretq_s16_u8((a))
++#define U16(a)    vreinterpretq_u16_u8((a))
++
++static inline __m128i _mm_adds_epi16(__m128i a, __m128i b) { return M128I(vqaddq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_cmpgt_epi16(__m128i a, __m128i b) { return UM128I(vcgtq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_max_epi16(__m128i a, __m128i b) { return M128I(vmaxq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_set1_epi16(int16_t n) { return vreinterpretq_u8_s16(vdupq_n_s16(n)); }
++static inline __m128i _mm_subs_epu16(__m128i a, __m128i b) { return UM128I(vqsubq_u16(U16(a), U16(b))); }
++
++#undef M128I
++#undef UM128I
++#undef S16
++#undef U16
++
++#endif
+\ No newline at end of file
+diff --git a/bwa/rle.h b/bwa/rle.h
+index 0d59484..4f8946d 100644
+--- a/bwa/rle.h
++++ b/bwa/rle.h
+@@ -30,7 +30,7 @@ extern "C" {
+  *** 43+3 codec ***
+  ******************/
+ 
+-const uint8_t rle_auxtab[8];
++extern const uint8_t rle_auxtab[8];
+ 
+ #define RLE_MIN_SPACE 18
+ #define rle_nptr(block) ((uint16_t*)(block))
+Submodule fermi-lite contains modified content
+diff --git a/fermi-lite/Makefile b/fermi-lite/Makefile
+index 4929693..6e05c5b 100644
+--- a/fermi-lite/Makefile
++++ b/fermi-lite/Makefile
+@@ -1,5 +1,5 @@
+ CC=			gcc
+-CFLAGS=		-g -Wall -O2 -Wno-unused-function #-fno-inline-functions -fno-inline-functions-called-once
++CFLAGS=		-g -Wall -O2 -Wno-unused-function #-fno-inline-functions -fno-inline-functions-called-once -Wno-unused-result -Wno-unused-but-set-variable
+ CPPFLAGS=
+ INCLUDES=	
+ OBJS=		kthread.o misc.o \
+@@ -35,7 +35,7 @@ bseq.o: fml.h kseq.h
+ bubble.o: mag.h kstring.h fml.h kvec.h f_ksw.h internal.h khash.h
+ example.o: fml.h
+ htab.o: htab.h kmer.h khash.h
+-f_ksw.o: f_ksw.h
++f_ksw.o: f_ksw.h neon_sse.h
+ mag.o: mag.h kstring.h fml.h kvec.h internal.h kseq.h khash.h ksort.h
+ misc.o: internal.h fml.h kstring.h rle.h mrope.h rope.h rld0.h mag.h kvec.h
+ misc.o: htab.h kmer.h khash.h
+diff --git a/fermi-lite/f_ksw.c b/fermi-lite/f_ksw.c
+index cd4e169..56956a0 100644
+--- a/fermi-lite/f_ksw.c
++++ b/fermi-lite/f_ksw.c
+@@ -25,7 +25,11 @@
+ 
+ #include <stdlib.h>
+ #include <stdint.h>
++#if defined __SSE2__
+ #include <emmintrin.h>
++#elif defined __ARM_NEON
++#include "neon_sse.h"
++#endif
+ #include "f_ksw.h"
+ 
+ #ifdef __GNUC__
+@@ -103,6 +107,11 @@ f_kswq_t *f_ksw_qinit(int size, int qlen, const uint8_t *query, int m, const int
+ 	return q;
+ }
+ 
++#if defined __ARM_NEON
++// This macro implicitly uses each function's `zero` local variable
++#define _mm_slli_si128(a, n) (vextq_u8(zero, (a), 16 - (n)))
++#endif
++
+ f_kswr_t f_ksw_u8(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int _gape, int xtra) // the first gap costs -(_o+_e)
+ {
+ 	int slen, i, m_b, n_b, te = -1, gmax = 0, minsc, endsc;
+@@ -110,6 +119,7 @@ f_kswr_t f_ksw_u8(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int _
+ 	__m128i zero, gapoe, gape, shift, *H0, *H1, *E, *Hmax;
+ 	f_kswr_t r;
+ 
++#if defined __SSE2__
+ #define __max_16(ret, xx) do { \
+ 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 8)); \
+ 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 4)); \
+@@ -117,6 +127,13 @@ f_kswr_t f_ksw_u8(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int _
+ 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 1)); \
+     	(ret) = _mm_extract_epi16((xx), 0) & 0x00ff; \
+ 	} while (0)
++// Given entries with arbitrary values, return whether they are all 0x00
++#define allzero_16(xx) (_mm_movemask_epi8(_mm_cmpeq_epi8((xx), zero)) == 0xffff)
++
++#elif defined __ARM_NEON
++#define __max_16(ret, xx) (ret) = vmaxvq_u8((xx))
++#define allzero_16(xx) (vmaxvq_u8((xx)) == 0)
++#endif
+ 
+ 	// initialization
+ 	r = f_g_defr;
+@@ -136,7 +153,7 @@ f_kswr_t f_ksw_u8(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int _
+ 	}
+ 	// the core loop
+ 	for (i = 0; i < tlen; ++i) {
+-		int j, k, cmp, imax;
++		int j, k, imax;
+ 		__m128i e, h, f = zero, max = zero, *S = q->qp + target[i] * slen; // s is the 1st score vector
+ 		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
+ 		h = _mm_slli_si128(h, 1); // h=H(i-1,-1); << instead of >> because x64 is little-endian
+@@ -174,8 +191,7 @@ f_kswr_t f_ksw_u8(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int _
+ 				_mm_store_si128(H1 + j, h);
+ 				h = _mm_subs_epu8(h, gapoe);
+ 				f = _mm_subs_epu8(f, gape);
+-				cmp = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_subs_epu8(f, h), zero));
+-				if (UNLIKELY(cmp == 0xffff)) goto end_loop16;
++				if (UNLIKELY(allzero_16(_mm_subs_epu8(f, h)))) goto end_loop16;
+ 			}
+ 		}
+ end_loop16:
+@@ -227,12 +243,20 @@ f_kswr_t f_ksw_i16(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int
+ 	__m128i zero, gapoe, gape, *H0, *H1, *E, *Hmax;
+ 	f_kswr_t r;
+ 
++#if defined __SSE2__
+ #define __max_8(ret, xx) do { \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 8)); \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 4)); \
+ 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 2)); \
+     	(ret) = _mm_extract_epi16((xx), 0); \
+ 	} while (0)
++// Given entries all either 0x0000 or 0xffff, return whether they are all 0x0000
++ #define allzero_0f_8(xx) (!_mm_movemask_epi8((xx)))
++
++ #elif defined __ARM_NEON
++ #define __max_8(ret, xx) (ret) = vmaxvq_s16(vreinterpretq_s16_u8((xx)))
++ #define allzero_0f_8(xx) (vmaxvq_u16(vreinterpretq_u16_u8((xx))) == 0)
++ #endif
+ 
+ 	// initialization
+ 	r = f_g_defr;
+@@ -256,7 +280,7 @@ f_kswr_t f_ksw_i16(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int
+ 		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
+ 		h = _mm_slli_si128(h, 2);
+ 		for (j = 0; LIKELY(j < slen); ++j) {
+-			h = _mm_adds_epi16(h, *S++);
++			h = _mm_adds_epi16(h, _mm_load_si128(S++));
+ 			e = _mm_load_si128(E + j);
+ 			h = _mm_max_epi16(h, e);
+ 			h = _mm_max_epi16(h, f);
+@@ -278,7 +302,7 @@ f_kswr_t f_ksw_i16(f_kswq_t *q, int tlen, const uint8_t *target, int _gapo, int
+ 				_mm_store_si128(H1 + j, h);
+ 				h = _mm_subs_epu16(h, gapoe);
+ 				f = _mm_subs_epu16(f, gape);
+-				if(UNLIKELY(!_mm_movemask_epi8(_mm_cmpgt_epi16(f, h)))) goto end_loop8;
++				if(UNLIKELY(allzero_0f_8(_mm_cmpgt_epi16(f, h)))) goto end_loop8;
+ 			}
+ 		}
+ end_loop8:
+diff --git a/fermi-lite/neon_sse.h b/fermi-lite/neon_sse.h
+new file mode 100644
+index 0000000..bf9d2a6
+--- /dev/null
++++ b/fermi-lite/neon_sse.h
+@@ -0,0 +1,33 @@
++#ifndef NEON_SSE_H
++#define NEON_SSE_H
++
++#include <arm_neon.h>
++
++typedef uint8x16_t __m128i;
++
++static inline __m128i _mm_load_si128(const __m128i *ptr) { return vld1q_u8((const uint8_t *) ptr); }
++static inline __m128i _mm_set1_epi32(int n) { return vreinterpretq_u8_s32(vdupq_n_s32(n)); }
++static inline void _mm_store_si128(__m128i *ptr, __m128i a) { vst1q_u8((uint8_t *) ptr, a); }
++
++static inline __m128i _mm_adds_epu8(__m128i a, __m128i b) { return vqaddq_u8(a, b); }
++static inline __m128i _mm_max_epu8(__m128i a, __m128i b) { return vmaxq_u8(a, b); }
++static inline __m128i _mm_set1_epi8(int8_t n) { return vreinterpretq_u8_s8(vdupq_n_s8(n)); }
++static inline __m128i _mm_subs_epu8(__m128i a, __m128i b) { return vqsubq_u8(a, b); }
++
++#define M128I(a)  vreinterpretq_u8_s16((a))
++#define UM128I(a) vreinterpretq_u8_u16((a))
++#define S16(a)    vreinterpretq_s16_u8((a))
++#define U16(a)    vreinterpretq_u16_u8((a))
++
++static inline __m128i _mm_adds_epi16(__m128i a, __m128i b) { return M128I(vqaddq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_cmpgt_epi16(__m128i a, __m128i b) { return UM128I(vcgtq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_max_epi16(__m128i a, __m128i b) { return M128I(vmaxq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_set1_epi16(int16_t n) { return vreinterpretq_u8_s16(vdupq_n_s16(n)); }
++static inline __m128i _mm_subs_epu16(__m128i a, __m128i b) { return UM128I(vqsubq_u16(U16(a), U16(b))); }
++
++#undef M128I
++#undef UM128I
++#undef S16
++#undef U16
++
++#endif
+\ No newline at end of file
+diff --git a/fermi-lite/rle.h b/fermi-lite/rle.h
+index 0d59484..4f8946d 100644
+--- a/fermi-lite/rle.h
++++ b/fermi-lite/rle.h
+@@ -30,7 +30,7 @@ extern "C" {
+  *** 43+3 codec ***
+  ******************/
+ 
+-const uint8_t rle_auxtab[8];
++extern const uint8_t rle_auxtab[8];
+ 
+ #define RLE_MIN_SPACE 18
+ #define rle_nptr(block) ((uint16_t*)(block))
+diff --git a/SeqLib/ssw.h b/SeqLib/ssw.h
+index 685ecf3..f60bcc2 100644
+--- a/SeqLib/ssw.h
++++ b/SeqLib/ssw.h
+@@ -14,7 +14,6 @@
+ #include <stdio.h>
+ #include <stdint.h>
+ #include <string.h>
+-#include <emmintrin.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 925738b..2d243a1 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -1,6 +1,6 @@
+ noinst_LIBRARIES = libseqlib.a
+ 
+-libseqlib_a_CPPFLAGS = -I../ -I../htslib -Wno-sign-compare
++libseqlib_a_CPPFLAGS = -I../ -I../htslib -Wno-sign-compare -flax-vector-conversions
+ 
+ libseqlib_a_SOURCES =   FastqReader.cpp BFC.cpp ReadFilter.cpp SeqPlot.cpp jsoncpp.cpp ssw_cpp.cpp ssw.c \
+ 			GenomicRegion.cpp RefGenome.cpp BamWriter.cpp BamReader.cpp \
+diff --git a/src/neon_sse.h b/src/neon_sse.h
+new file mode 100644
+index 0000000..4531ab4
+--- /dev/null
++++ b/src/neon_sse.h
+@@ -0,0 +1,114 @@
++#ifndef NEON_SSE_H
++#define NEON_SSE_H
++
++#include <arm_neon.h>
++
++typedef uint8x16_t __m128i;
++
++static inline __m128i _mm_load_si128(const __m128i *ptr) { return vld1q_u8((const uint8_t *) ptr); }
++static inline __m128i _mm_set1_epi32(int n) { return vreinterpretq_u8_s32(vdupq_n_s32(n)); }
++static inline void _mm_store_si128(__m128i *ptr, __m128i a) { vst1q_u8((uint8_t *) ptr, a); }
++
++static inline __m128i _mm_adds_epu8(__m128i a, __m128i b) { return vqaddq_u8(a, b); }
++static inline __m128i _mm_max_epu8(__m128i a, __m128i b) { return vmaxq_u8(a, b); }
++static inline __m128i _mm_set1_epi8(int8_t n) { return vreinterpretq_u8_s8(vdupq_n_s8(n)); }
++static inline __m128i _mm_subs_epu8(__m128i a, __m128i b) { return vqsubq_u8(a, b); }
++
++#define M128I(a)  vreinterpretq_u8_s16((a))
++#define UM128I(a) vreinterpretq_u8_u16((a))
++#define S16(a)    vreinterpretq_s16_u8((a))
++#define U16(a)    vreinterpretq_u16_u8((a))
++
++static inline __m128i _mm_adds_epi16(__m128i a, __m128i b) { return M128I(vqaddq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_cmpgt_epi16(__m128i a, __m128i b) { return UM128I(vcgtq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_max_epi16(__m128i a, __m128i b) { return M128I(vmaxq_s16(S16(a), S16(b))); }
++static inline __m128i _mm_set1_epi16(int16_t n) { return vreinterpretq_u8_s16(vdupq_n_s16(n)); }
++static inline __m128i _mm_subs_epu16(__m128i a, __m128i b) { return UM128I(vqsubq_u16(U16(a), U16(b))); }
++
++#undef M128I
++#undef UM128I
++#undef S16
++#undef U16
++
++// Adapted from SS2NEON
++
++/*
++** The MIT license:
++**
++** Permission is hereby granted, free of charge, to any person obtaining a copy
++** of this software and associated documentation files (the "Software"), to deal
++** in the Software without restriction, including without limitation the rights
++** to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++** copies of the Software, and to permit persons to whom the Software is furnished
++** to do so, subject to the following conditions:
++**
++** The above copyright notice and this permission notice shall be included in all
++** copies or substantial portions of the Software.
++
++** THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++** IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++** FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++** AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
++** WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++** CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++*/
++
++#define vreinterpretq_m128i_u8(x) \
++	vreinterpretq_s32_u8(x)
++
++#define vreinterpretq_m128i_u16(x) \
++	vreinterpretq_s32_u16(x)
++
++#define vreinterpretq_u8_m128i(x) \
++	vreinterpretq_u8_s32(x)
++
++#define vreinterpretq_s8_m128i(x) \
++	vreinterpretq_s8_s32(x)
++
++#define vreinterpretq_s16_m128i(x) \
++	vreinterpretq_s16_s32(x)
++
++
++static inline __m128i _mm_cmpeq_epi8 (__m128i a, __m128i b) {
++	return vreinterpretq_m128i_u8(vceqq_s8(vreinterpretq_s8_m128i(a), vreinterpretq_s8_m128i(b)));
++}
++
++static inline __m128i _mm_cmpeq_epi16 (__m128i a, __m128i b) {
++	return vreinterpretq_m128i_u16(vceqq_s16(vreinterpretq_s16_m128i(a), vreinterpretq_s16_m128i(b)));
++}
++
++// NEON does not provide a version of this function, here is an article about some ways to repro the results.
++// http://stackoverflow.com/questions/11870910/sse-mm-movemask-epi8-equivalent-method-for-arm-neon
++// Creates a 16-bit mask from the most significant bits of the 16 signed or unsigned 8-bit integers in a and zero extends the upper bits. https://msdn.microsoft.com/en-us/library/vstudio/s090c8fk(v=vs.100).aspx
++static inline int _mm_movemask_epi8(__m128i _a) {
++	uint8x16_t input = vreinterpretq_u8_m128i(_a);
++	static const int8_t __attribute__((aligned(16))) xr[8] = { -7, -6, -5, -4, -3, -2, -1, 0 };
++	uint8x8_t mask_and = vdup_n_u8(0x80);
++	int8x8_t mask_shift = vld1_s8(xr);
++
++	uint8x8_t lo = vget_low_u8(input);
++	uint8x8_t hi = vget_high_u8(input);
++
++	lo = vand_u8(lo, mask_and);
++	lo = vshl_u8(lo, mask_shift);
++
++	hi = vand_u8(hi, mask_and);
++	hi = vshl_u8(hi, mask_shift);
++
++	lo = vpadd_u8(lo, lo);
++	lo = vpadd_u8(lo, lo);
++	lo = vpadd_u8(lo, lo);
++
++	hi = vpadd_u8(hi, hi);
++	hi = vpadd_u8(hi, hi);
++	hi = vpadd_u8(hi, hi);
++
++	return ((hi[0] << 8) | (lo[0] & 0xFF));
++}
++
++#undef vreinterpretq_m128i_u8
++#undef vreinterpretq_m128i_u16
++#undef vreinterpretq_u8_m128i
++#undef vreinterpretq_s8_m128i
++#undef vreinterpretq_s16_m128i
++#endif
+\ No newline at end of file
+diff --git a/src/ssw.c b/src/ssw.c
+index 213d486..8336407 100644
+--- a/src/ssw.c
++++ b/src/ssw.c
+@@ -35,7 +35,11 @@
+  *
+  */
+ 
++#if defined __SSE2__
+ #include <emmintrin.h>
++#elif defined __ARM_NEON
++#include "neon_sse.h"
++#endif
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -113,6 +117,11 @@ static __m128i* qP_byte (const int8_t* read_num,
+ 	return vProfile;
+ }
+ 
++#if defined __ARM_NEON
++// This macro implicitly uses each function's `zero` local variable
++#define _mm_slli_si128(a, n) (vextq_u8(vZero, (a), 16 - (n)))
++#endif
++
+ /* Striped Smith-Waterman
+    Record the highest score of each reference position.
+    Return the alignment score and ending position of the best alignment, 2nd best alignment, etc.
+@@ -134,12 +143,21 @@ static alignment_end* sw_sse2_byte (const int8_t* ref,
+ 	 						 uint8_t bias,  /* Shift 0 point to a positive value. */
+ 							 int32_t maskLen) {
+ 
++#if defined __SSE2__
+ #define max16(m, vm) (vm) = _mm_max_epu8((vm), _mm_srli_si128((vm), 8)); \
+ 					  (vm) = _mm_max_epu8((vm), _mm_srli_si128((vm), 4)); \
+ 					  (vm) = _mm_max_epu8((vm), _mm_srli_si128((vm), 2)); \
+ 					  (vm) = _mm_max_epu8((vm), _mm_srli_si128((vm), 1)); \
+ 					  (m) = _mm_extract_epi16((vm), 0)
+ 
++// Given entries with arbitrary values, return whether they are all 0x00
++#define allzero_16(xx) (_mm_movemask_epi8(_mm_cmpeq_epi8((xx), vZero)) == 0xffff)
++
++#elif defined __ARM_NEON
++#define max16(ret, xx) (ret) = vmaxvq_u8((xx))
++#define allzero_16(xx) (vmaxvq_u8((xx)) == 0)
++#endif
++
+ 	uint8_t max = 0;		                     /* the max alignment score */
+ 	int32_t end_read = readLen - 1;
+ 	int32_t end_ref = -1; /* 0_based best alignment ending point; Initialized as isn't aligned -1. */
+@@ -376,11 +394,20 @@ static alignment_end* sw_sse2_word (const int8_t* ref,
+ 							 uint16_t terminate,
+ 							 int32_t maskLen) {
+ 
++#if defined __SSE2__
+ #define max8(m, vm) (vm) = _mm_max_epi16((vm), _mm_srli_si128((vm), 8)); \
+ 					(vm) = _mm_max_epi16((vm), _mm_srli_si128((vm), 4)); \
+ 					(vm) = _mm_max_epi16((vm), _mm_srli_si128((vm), 2)); \
+ 					(m) = _mm_extract_epi16((vm), 0)
+ 
++// Given entries all either 0x0000 or 0xffff, return whether they are all 0x0000
++ #define allzero_0f_8(xx) (!_mm_movemask_epi8((xx)))
++
++ #elif defined __ARM_NEON
++ #define max8(ret, xx) (ret) = vmaxvq_s16(vreinterpretq_s16_u8((xx)))
++ #define allzero_0f_8(xx) (vmaxvq_u16(vreinterpretq_u16_u8((xx))) == 0)
++ #endif
++
+ 	uint16_t max = 0;		                     /* the max alignment score */
+ 	int32_t end_read = readLen - 1;
+ 	int32_t end_ref = 0; /* 1_based best alignment ending point; Initialized as isn't aligned - 0. */
+diff --git a/src/Makefile.in b/src/Makefile.in
+index ded8719..e008f89 100644
+--- a/src/Makefile.in
++++ b/src/Makefile.in
+@@ -301,7 +301,7 @@ top_build_prefix = @top_build_prefix@
+ top_builddir = @top_builddir@
+ top_srcdir = @top_srcdir@
+ noinst_LIBRARIES = libseqlib.a
+-libseqlib_a_CPPFLAGS = -I../ -I../htslib -Wno-sign-compare
++libseqlib_a_CPPFLAGS = -I../ -I../htslib -Wno-sign-compare -flax-vector-conversions
+ libseqlib_a_SOURCES = FastqReader.cpp BFC.cpp ReadFilter.cpp SeqPlot.cpp jsoncpp.cpp ssw_cpp.cpp ssw.c \
+ 			GenomicRegion.cpp RefGenome.cpp BamWriter.cpp BamReader.cpp \
+ 			BWAWrapper.cpp BamRecord.cpp FermiAssembler.cpp BamHeader.cpp

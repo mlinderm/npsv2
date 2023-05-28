@@ -94,22 +94,22 @@ def file_replace(original_path, match_pattern, replace_pattern):
 
 class SeqLibCMakeBuild(CMakeBuild):
     def run(self):
-        # To link into a shared library we need to add the -fPIC and other flags to SeqLib dependencies
-        # before building. Adapted from SeqLib python package.
-        bwa_makefile_path = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "lib" , "seqlib", "bwa", "Makefile"
-        )
-        file_find_or_append(bwa_makefile_path, r"^CFLAGS\s*=.*$", ["-fPIC","-Wno-unused-result"])
+        root_path = os.path.dirname(os.path.realpath(__file__))
+        seqlib_path =  os.path.join(root_path, "lib", "seqlib")
 
-        fermi_makefile_path = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "lib", "seqlib", "fermi-lite", "Makefile"
-        )
-        file_find_or_append(fermi_makefile_path, r"^CFLAGS\s*=.*$", ["-Wno-unused-result", "-Wno-unused-but-set-variable"])
+        # Check if we need to apply patch by trying to cleaning apply it in reverse
+        patched = subprocess.run(["git", "apply", "--check", "--reverse", os.path.join(root_path, "seqlib.patch")], cwd=seqlib_path)
+        if patched.returncode != 0:
+            # Reset submodules before applying patch
+            subprocess.check_call(
+                ["git","submodule","deinit","-f","lib/seqlib"], cwd=root_path
+            )
+            subprocess.check_call(
+                ["git","submodule","update","--recursive","--init"], cwd=root_path
+            )
 
-        for lib in ("bwa", "fermi-lite"):
-            file_replace(os.path.join(
-                os.path.dirname(os.path.realpath(__file__)), "lib" , "seqlib", lib, "rle.h"
-            ), r"^(const uint8_t rle_auxtab\[8\];)", r"extern \1")
+            # Apply patch
+            subprocess.check_call(["git","apply", "--verbose", os.path.join(root_path, "seqlib.patch")], cwd=seqlib_path)
 
         super().run()
 
@@ -162,7 +162,7 @@ with open("LICENSE") as f:
 setup(
     name="npsv2",
     version="0.1.0",
-    description="Non-parametric genotyper for structural variants",
+    description="NPSV-deep: Deep learning structural variant genotyper",
     long_description=readme,
     author="Michael Linderman",
     author_email="mlinderman@middlebury.edu",
@@ -186,6 +186,6 @@ setup(
         "Intended Audience :: Science/Research",
         "Topic :: Scientific/Engineering :: Bio-Informatics",
         "License :: OSI Approved :: Apache Software License",
-        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
     ],
 )
