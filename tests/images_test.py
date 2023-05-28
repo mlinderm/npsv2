@@ -208,8 +208,8 @@ class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
 #@unittest.skip("Development only")
 @unittest.skipUnless(
     os.path.exists("/data/human_g1k_v37.fasta")
-    and bwa_index_loaded("/data/human_g1k_v37.fasta")
-    and os.path.exists("/data/HG002-ready.bam"),
+    and bwa_index_loaded("/data/human_g1k_v37.fasta"),
+    #and os.path.exists("/data/HG002-ready.bam"),
     "Reference genome or HG002 sequencing data not available",
 )
 @parameterized_class(
@@ -223,8 +223,10 @@ class SingleDepthImageGeneratorStrandTest(unittest.TestCase):
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1865644_1866241_DEL.vcf")},  # Offset (GIAB)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866394_1867006_DEL.vcf")},  # Offset (Proposal)
         #{ "vcf_path": os.path.join(FILE_DIR, "1_1866396_1867023_DEL.vcf")},  # Offset (PBSV)
-        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") }, # Haplotag
-        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotag
+        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180130_126180259_DEL.vcf"), "bam_path": os.path.join(FILE_DIR, "5_126843428_126845322.bam") }, # Haplotagged
+        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "bam_path": os.path.join(FILE_DIR, "5_126843428_126845322.bam") },
+        #{ "vcf_path": os.path.join(FILE_DIR, "5_126180060_126180189_DEL.vcf"), "snv_path": os.path.join(FILE_DIR, "5_126843428_126845322.freeze3.snv.alt.b37.vcf.gz") },  # Haplotagged
+
     ]
 )
 class SingleDepthImageGeneratorExampleTest(unittest.TestCase):
