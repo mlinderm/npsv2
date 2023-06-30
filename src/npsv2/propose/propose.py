@@ -152,7 +152,6 @@ def propose_vcf(cfg, vcf_path: str, output_path: str, repeats_bed_path: str, pro
                             )
 
             for proposed_record in proposed_variants.values():
-                print(proposed_record)
                 dst_vcf_file.write(proposed_record)
 
 

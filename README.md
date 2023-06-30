@@ -94,14 +94,13 @@ This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.g
 12	22129565	HG2_PB_SVrefine2Falcon2Bionano_6426	CAGGGGCATACTGTGAAGAACTTGACCTCTAATTAATAGCTAAGGCCGATCCTAAGAGAGCCAATTGTGGGAGATTGTCAGCTACTATATTCCTCATAGCTGGGTAGAAAGCCCTCTTGAAGGAAGATCTGAGCAGTACATCTTAGTGTCTGTCACAGACACACAGAGCTTGGATGACTCAAAAAAAGAAAAAGAGAAATAATTCTTCTGATTCTAAATATGTAACCCTCATTCCCTGAGGCGCAGTACTTCAAATTTAAGAACAAAGTTATAAAAACAACTAGTTAAGAAAAAAAGATCTGTAATCCTACTTACTCCTCAAGCAATATAACCCCCAGAAGTTCTTCTCGAGTAAATTTATGAATATCCAGTGGGTGTCTCACAAGAGTTCTAATAACATGCTGTTGACTACCATCGGGGATTCTACCAATTTTCCTATCTCCTAATCTAGATCACTGGATAATGTGTCTAATTGCTCCTAAGTTAAGAGTGGTAGCTATGCCAAACCATTGGCAGTTTCACTTCCCAGACACTACTCCTGAGGATGCTACATAGCCCAAGACTGAGGGTTCTGACTTCTATTCAGGGGTTCTGATGTTTTATATCCAGAGAATACAAGGCACTGAAATCAGCATTTTATCATTTTATCAATAACACAACTCATCAACATTGCTAACATTCTGTCCCTGTGTCATCAATGTCATCACTTCTAAGAGGACTCAATGTCTCATGAAGGTTATAGAACAACAGCTTTTTGAGATTTTACTTACTTTTTTGTTGCAGCTTTCTTGCTCTCAGATTGAGAATGGCTGGTCTAATTGAT	C	20	PASS	ClusterIDs=HG2_10X_SVrefine210Xhap12_9132:HG2_PB_PB10Xdip_7025:HG2_PB_PB10Xdip_7024:HG3_PB_pbsv_12731:HG4_PB_pbsv_13042:HG2_PB_pbsv_13047:HG3_PB_SVrefine2Falcon1Dovetail_7887:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumClusterSVs=15;ExactMatchIDs=HG2_10X_SVrefine210Xhap12_9132:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumExactMatchSVs=9;ClusterMaxShiftDist=0.00488102;ClusterMaxSizeDiff=0.00487211;ClusterMaxEditDist=0.00854179;PBcalls=12;Illcalls=2;TenXcalls=1;CGcalls=0;PBexactcalls=6;Illexactcalls=2;TenXexactcalls=1;CGexactcalls=0;HG2count=9;HG3count=4;HG4count=2;NumTechs=3;NumTechsExact=3;SVLEN=-822;DistBack=4675;DistForward=-689;DistMin=-689;DistMinlt1000=TRUE;MultiTech=TRUE;MultiTechExact=TRUE;SVTYPE=DEL;sizecat=300to999;DistPASSHG2gt49Minlt1000=FALSE;DistPASSMinlt1000=FALSE;MendelianError=FALSE;HG003_GT=1/1;HG004_GT=1/1;TRall=TRUE;TRgt100=TRUE;TRgt10k=FALSE;segdup=FALSE;REPTYPE=CONTRAC;BREAKSIMLENGTH=823;REFWIDENED=12:22129566-22131210	GT:DS:DHFFC:FS:SOR	1/1:0.9457,0.9968,0.0977:0.371:0:0.693
 ```
 
-*Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion) if it has not already been loaded. 
+*Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion). 
 
-A more typical example incorporates phased SNVs via the `pileup.snv_vcf_input` parameter, e.g.,
+A more typical example incorporates phased SNVs into the pileup image generation via the `pileup.snv_vcf_input` parameter, e.g.,
 
 ```plaintext
 npsv2 command=genotype \
     reference=/data/human_g1k_v37.fasta \
-    model.model_path=tests/results/model.h5 \
     input=tests/data/12_22129565_22130387_DEL.vcf.gz \
     reads=tests/data/12_22127565_22132387.bam \
     stats_path=tests/data/stats.json \
@@ -156,19 +155,20 @@ To generate possible alternate representations, use the `propose` sub-command fo
 
 ```plaintext
 npsv2 command=propose \
-    reference=data/human_g1k_v37.fasta \
+    reference=/data/human_g1k_v37.fasta \
     refine.simple_repeats_path=/data/simple_repeats.b37.bed.gz \
-    input=tests/data/1_1865644_1866241_DEL.vcf.gz \
+    input=tests/data/1_1865644_1866241_DEL.vcf \
     output=tests/results/1_1865644_1866241_DEL.propose.vcf.gz \
     refine.all_alignments=true
 ```
 
-The `tests/results/1_1865644_1866241_DEL.propose.vcf.gz` file contains the original SV along with the proposed alternative descriptions (linked by the "INFO/ORIGINAL" field).
+The `tests/results/1_1865644_1866241_DEL.propose.vcf.gz` file contains the original SV along with the proposed alternative descriptions (linked by the "INFO/ORIGINAL" field). Since we specified `refine.all_alignments=true`, the proposer will generate all possible start positions for the SV within the repetitive region, ~2200 variants. That can be reduced with read support filtering via the `filter` subcommand. Alternately, not setting `all_alignments` will use small maximum number of proposals based on realigning the putative SV within the repeat.
 
-Then genotype the expanded set of putative variant.
+Then genotype the expanded set of putative variant. Mulitple threads are recommend (see below), since we are genotyping numerous SVs.
 
 ```plaintext
 npsv2 command=genotype \
+    threads=4 \
     reference=/data/human_g1k_v37.fasta \
     input=tests/results/1_1865644_1866241_DEL.propose.vcf.gz \
     reads=tests/data/1_1861644_1871561.bam \
@@ -185,14 +185,13 @@ npsv2 command=refine \
     output=tests/results/1_1865644_1866241_DEL.propose.npsv2.refine.vcf.gz
 ```
 
-When reviewing the pileup, the GIAB SV description appears to be "left shifted" from the true location as estimated from long-read sequencing data (approximately 1:1866429-1867023). NPSV (and other tools) incorrectly genotype the original SV description as homozygous reference. The NPSV proposal algorithm selects the alternative description where the actual data is most similar to simulated data for non-reference genotypes. The VCF calls produced by `refine` (shown below for this example) contain the alternate and original genotypes and PLs, the alternate and original Mahalanobis distance (smaller is better) and the alternate SV description. For this variant, `refine` selects 1:1866388-1867000 as the best SV description. The minimum non-reference distance for that SV description is 8.0, compared to 570.1 for the original description. The alternate SV description is correctly genotyped as heterozygous. 
+When reviewing the pileup, the GIAB SV description appears to be "left shifted" from the true location as estimated from long-read sequencing data (approximately 1:1866429-1867023). NPSV-deep (and other tools) incorrectly genotype the original SV description as homozygous reference. The SV refine algorithm selects the alternative description where the actual data is most similar to simulated data for non-reference genotypes. The VCF entries produced by `refine` (shown below for this example) contain the alternate and original genotypes, the alternate and original distances (smaller is better) and the alternate SV description. For this variant, `refine` selects 1:1866441-1867038 as the best SV description. The alternate SV description is correctly genotyped as heterozygous. 
 
 ```
-
+GT:DS:DHFFC:FS:SOR:ALTS:OGT:ODS:CL	0/1:0.642001,0.196222,0.844626:0.447:9:2.825:2205:0/0:0.0597,0.8897,0.9322:1866441_1867038
 ```
 
 Note that due to the random simulations the distances will differ between runs.
-
 
 ## FAQ
 

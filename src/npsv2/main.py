@@ -57,6 +57,12 @@ def _get_file(cfg: DictConfig, path_or_url: str) -> str:
         # Attempt to use cached copy or download from URL
         return tf.keras.utils.get_file(origin=path_or_url, cache_subdir="models", cache_dir=cfg.cache_dir)
 
+def _normalize_fname(str_or_bytes: typing.Union[bytes, str]) -> str:
+    """Normalize string or bytes to string"""
+    if isinstance(str_or_bytes, bytes):
+        return str_or_bytes.decode("utf-8")
+    else:
+        return str_or_bytes
 
 # Resolvers for use with Hydra
 OmegaConf.register_new_resolver("len", lambda x: len(x))
@@ -195,10 +201,10 @@ def main(cfg: DictConfig) -> None:
                         split_file.write(record)
                 for split_file in split_input.values():
                     split_file.close()
-                    index_variant_file(split_file.filename)
+                    index_variant_file(_normalize_fname(split_file.filename))
 
             # Create corresponding model files
-            type_input = {kind : (split_input[kind].filename, os.path.join(split_input_dir, f"{kind}.genotypes.vcf.gz"), model_path) for kind, model_path in cfg.model.model_path.items()}
+            type_input = {kind : (_normalize_fname(split_input[kind].filename), os.path.join(split_input_dir, f"{kind}.genotypes.vcf.gz"), model_path) for kind, model_path in cfg.model.model_path.items()}
         else:
             # Make sure input path is absolute
             type_input = {"ALL": (hydra.utils.to_absolute_path(cfg.input), output, cfg.model.model_path)}
@@ -206,8 +212,8 @@ def main(cfg: DictConfig) -> None:
         # Make sure other paths are absolute
         _make_paths_absolute(cfg, ["pileup.snv_vcf_input", "cache_dir"])
         
-        # Create cache direcotry if doesn't exists, otherwise get_file won't use it
-        if not OmegaConf.is_missing(cfg, "cache_dir"):
+        # Create cache directory if it doesn't exists, otherwise get_file won't use it
+        if cfg.cache_dir:
             os.makedirs(cfg.cache_dir, mode=0o775, exist_ok=True)
 
         for kind, (input_path, output_path, model_path) in type_input.items():
