@@ -435,10 +435,22 @@ def _haplotag_reads(reference: str, sample: Sample, read_path: str, vcf_path: st
     haplotag_result = subprocess.run(whatshap_commandline, shell=True, stderr=subprocess.PIPE)
     if haplotag_result.returncode != 0 or not os.path.exists(tagged_bam.name):
         print(haplotag_result.stderr)
+        print(region)
         raise RuntimeError(f"Failed to haplotag read file")
     pysam.index(tagged_bam.name)
     return tagged_bam.name
 
+def _downsample_reads(read_path: str, region: Range, dir, downsample: float=1.0) -> str:
+    downsampled_bam = tempfile.NamedTemporaryFile(delete=False, suffix=".bam", dir=dir)
+    downsampled_bam.close()
+
+    samtools_commandline = f"samtools view -b -o {quote(downsampled_bam.name)} -s {downsample} {quote(read_path)} {region}"
+    samtools_result = subprocess.run(samtools_commandline, shell=True, stderr=subprocess.PIPE)
+    if samtools_result.returncode != 0 or not os.path.exists(downsampled_bam.name):
+        print(samtools_result.stderr)
+        raise RuntimeError(f"Failed to downsample read file")
+    pysam.index(downsampled_bam.name)
+    return downsampled_bam.name
 
 def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, label=None, simulate=False, generator=None, random_variants=None, alleles: typing.AbstractSet[int]={1}, addl_features={}):
     assert 1 <= len(alleles) <= min(variant.num_alt, 2)
@@ -460,16 +472,18 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
         ref_seq = None
    
     # Construct image for "real" data
-    if cfg.pileup.haplotag_reads and cfg.pileup.snv_vcf_input:
-        # Haplotag reads on the fly using whatshap
-        with tempfile.TemporaryDirectory() as tempdir:
-            tagged_read_path = _haplotag_reads(cfg.reference, sample, read_path, cfg.pileup.snv_vcf_input, example_regions.expand(cfg.pileup.fetch_flank), tempdir)
-            image_tensor = generator.generate(
-                variant, tagged_read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
-            )
-    else:
+    with tempfile.TemporaryDirectory() as tempdir:
+        local_read_path = read_path
+        if cfg.pileup.downsample < 1.0:
+            # Downsample reads if specified
+            local_read_path = _downsample_reads(local_read_path, example_regions.expand(cfg.pileup.fetch_flank), tempdir, downsample=cfg.pileup.downsample)
+
+        if cfg.pileup.haplotag_reads and cfg.pileup.snv_vcf_input:
+            # Haplotag reads on the fly using whatshap
+            local_read_path = _haplotag_reads(cfg.reference, sample, local_read_path, cfg.pileup.snv_vcf_input, example_regions.expand(cfg.pileup.fetch_flank), tempdir)
+
         image_tensor = generator.generate(
-            variant, read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
+            variant, local_read_path, sample, realigner=realigner, regions=example_regions, ref_seq=ref_seq,
         )
 
     feature = {
@@ -536,7 +550,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                         sample_coverage = repl_sample.chrom_mean_coverage(variant.contig) if cfg.simulation.chrom_norm_covg else repl_sample.mean_coverage
                         replicate_bam_path = simulate_variant_sequencing(
                             fasta_path,
-                            sample_coverage / haplotypes,
+                            (sample_coverage * cfg.pileup.downsample) / haplotypes,
                             repl_sample,
                             reference=cfg.reference,
                             shared_reference=cfg.shared_reference,
@@ -544,6 +558,7 @@ def make_variant_example(cfg, variant: Variant, read_path: str, sample: Sample, 
                             stats_path=cfg.stats_path if cfg.simulation.gc_norm_covg else None,
                             region=example_regions.expand(cfg.pileup.realigner_flank),
                             phase_vcf_path=cfg.pileup.snv_vcf_input if cfg.pileup.haplotag_sim else None,
+                            aligner=cfg.pileup.aligner,
                         )
                     except ValueError:
                         logging.error("Failed to synthesize data for %s with AC=%d", str(variant), allele_count)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, logging, os, random, re, subprocess, sys, tempfile, typing
+import argparse, json, logging, os, random, re, subprocess, shutil, sys, tempfile, typing
 from omegaconf import ListConfig, DictConfig, OmegaConf
 import hydra
 import tensorflow as tf
@@ -49,15 +49,23 @@ def _make_paths_absolute(cfg: DictConfig, keys: typing.Iterable[str]):
             OmegaConf.update(cfg, key, hydra.utils.to_absolute_path(OmegaConf.select(cfg, key)))
 
 
+def _get_file(cfg: DictConfig, path_or_url: str) -> str:
+    """Download file from URL if not found locally or already cached"""
+    if os.path.exists(path_or_url):
+        return hydra.utils.to_absolute_path(path_or_url)
+    else:
+        # Attempt to use cached copy or download from URL
+        return tf.keras.utils.get_file(origin=path_or_url, cache_subdir="models", cache_dir=cfg.cache_dir)
+
+
 # Resolvers for use with Hydra
 OmegaConf.register_new_resolver("len", lambda x: len(x))
 OmegaConf.register_new_resolver("swap_ext", lambda path, old_ext, new_ext: re.sub(old_ext + "$", new_ext, path))
 OmegaConf.register_new_resolver("strip_ext", lambda path: os.path.splitext(path)[0])
 OmegaConf.register_new_resolver("escape", lambda path: str(path).replace("[","").replace("]","").replace(", ","_")) 
 
-@hydra.main(config_path="conf", config_name="config")
+@hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg), file=sys.stderr)
     if cfg.command == "images":
         from .images import vcf_to_tfrecords
         from .sample import Sample, sample_name_from_bam
@@ -134,7 +142,7 @@ def main(cfg: DictConfig) -> None:
         _make_paths_absolute(cfg, ["model.model_path", "training.log_dir", "training.checkpoint_dir"])
 
         image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0], pileup_image_channels=cfg.pileup.image_channels)
-        model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path, weights=cfg.training.initial_weights)
+        model = hydra.utils.instantiate(cfg.model, image_shape, replicates, model_path=cfg.model.model_path, weights=cfg.training.initial_weights, base_trainable=cfg.training.initial_weights is None or cfg.training.base_trainable)
 
         dataset = load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads, pileup_image_channels=cfg.pileup.image_channels)
         validation_dataset = load_example_dataset(validation_tfrecords_paths, with_label=True, with_simulations=True, num_parallel_reads=cfg.threads, pileup_image_channels=cfg.pileup.image_channels) if validation_tfrecords_paths else None
@@ -144,81 +152,14 @@ def main(cfg: DictConfig) -> None:
         logging.info("Saving model in: %s", model_path)
         model.save(model_path)
 
-    elif cfg.command == "evaluate":
-        import numpy as np
-        import pandas as pd
-        from .images import _extract_metadata_from_first_example, load_example_dataset
-        from . import npsv2_pb2
-
-        _configure_gpu()
-
-        tfrecords_paths = [cfg.input] if isinstance(cfg.input, str) else cfg.input
-        tfrecords_paths = [hydra.utils.to_absolute_path(p) for p in tfrecords_paths]
-
-        _make_paths_absolute(cfg, ["model.model_path"])
-
-        image_shape, replicates = _extract_metadata_from_first_example(tfrecords_paths[0])
-        model = hydra.utils.instantiate(cfg.model, image_shape, 1)
-
-        errors = 0
-        rows = []
-        for features, original_label in load_example_dataset(tfrecords_paths, with_label=True, with_simulations=True):
-            #print(features)
-            if original_label is None:
-                continue  # Skip invalid genotypes
-                
-            # Extract metadata for the variant
-            variant_proto = npsv2_pb2.StructuralVariant.FromString(features.pop("variant/encoded").numpy())
-            
-            # Predict genotype
-            dataset = tf.data.Dataset.from_tensors((features, original_label))
-            genotypes, distances, *_  = model.predict(cfg, dataset)
-
-            # if tf.math.argmax(genotypes, axis=1) != original_label.numpy() and original_label.numpy() == 0:
-            # #if tf.math.argmax(genotypes, axis=1) == 0 and  original_label.numpy() == 1:
-            #     print(variant_proto, genotypes, distances)
-            #     errors += 1
-            # if errors == 10:
-            #     break
-
-            # if tf.math.argmax(genotypes, axis=1) != original_label:
-            #     print(variant_proto, genotypes)
-
-            # Construct the DataFrame rows
-            rows.append(pd.DataFrame({
-                "SVLEN": variant_proto.svlen,
-                "LABEL": original_label.numpy(),
-                "AC": tf.math.argmax(genotypes, axis=1),
-            }))
-
-        table = pd.concat(rows, ignore_index=True)
-        table["AC"] = pd.Categorical(table["AC"], categories=[0, 1, 2])
-        table["LABEL"] = pd.Categorical(table["LABEL"], categories=[0, 1, 2])
-        table["MATCH"] = table.LABEL == table.AC
-
-        # Print various metrics
-        confusion_matrix = pd.crosstab(table.LABEL, table.AC, rownames=["Truth"], colnames=["Test"], margins=True, dropna=False)
-
-        gt_conc = (confusion_matrix.loc[0, 0] + confusion_matrix.loc[1, 1] + confusion_matrix.loc[2, 2]) / confusion_matrix.loc["All", "All"] #np.mean(table.MATCH)
-        nr_conc = (confusion_matrix.loc[0, 0] + confusion_matrix.loc[[1, 2], [1, 2]].to_numpy().sum()) / confusion_matrix.loc["All", "All"] # np.mean((table.LABEL != 0) == (table.AC != 0))
-        print(f"Accuracy - Genotype concordance: {gt_conc:.3}, Non-reference Concordance: {nr_conc:.3}")
-
-        tp = confusion_matrix.loc[[1, 2], [1, 2]].to_numpy().sum()
-        fp = confusion_matrix.loc[[0], [1, 2]].to_numpy().sum()
-        fn = confusion_matrix.loc[[1, 2], [0]].to_numpy().sum()
-        precision = tp / (tp + fp)
-        recall = tp / (tp + fn)
-        f1 = 2 * tp / (2 * tp + fp + fn)
-        print(f"Event classification - Precision: {precision:.3}, Recall: {recall:.3}, F1: {f1:.3}")
-        
-        print(confusion_matrix)
-
-        svlen_bins = pd.cut(np.abs(table.SVLEN), [50, 100, 300, 1000, np.iinfo(np.int32).max], right=False)
-        print(table.groupby(svlen_bins)["MATCH"].mean())
-
     elif cfg.command == "genotype":
         from .sample import Sample, sample_name_from_bam
+        from .variant import Variant
+        import pysam
+        import pysam.bcftools as bcftools
+        from .utilities.vcf import index_variant_file, bcftools_format
         from .genotyping import genotype_vcf
+        import pysam.bcftools as bcftools
 
         _check_shared_reference(cfg)
 
@@ -233,27 +174,68 @@ def main(cfg: DictConfig) -> None:
             reads_path = hydra.utils.to_absolute_path(reads_path)
             samples[sample_name_from_bam(reads_path)].bam = reads_path
        
-        # Make sure model path (and other paths) are absolute
-        model_paths = [hydra.utils.to_absolute_path(path) for path in _as_list(cfg.model.model_path)]
-        _make_paths_absolute(cfg, ["pileup.snv_vcf_input"])
-
         # If no output file is specified, create a fixed file in the Hydra output directory
         if OmegaConf.is_missing(cfg, "output"):
             output = "genotypes.vcf.gz"
         else:
             output = hydra.utils.to_absolute_path(cfg.output)
 
-        genotype_vcf(
-            cfg,
-            hydra.utils.to_absolute_path(cfg.input),
-            samples,
-            model_paths,
-            output,
-            progress_bar=True,
-            evaluate=cfg.concordance,
-            region=cfg.region,
-        )
+        # model_path can be a single file, list, or dictionary keyed by variant type. For specific types
+        # split out variants into separate files
+        if isinstance(cfg.model.model_path, (dict, DictConfig)):
+            # Split out variants by type
+            logging.info("Splitting input VCF into %s SVs. All other variants types will be skipped", ",".join(cfg.model.model_path.keys()))
+            split_input_dir = tempfile.mkdtemp()
+            with pysam.VariantFile(hydra.utils.to_absolute_path(cfg.input)) as src_vcf_file:
+                split_input = {kind: pysam.VariantFile(os.path.join(split_input_dir, f"{kind}.vcf.gz"), mode="wz", header=src_vcf_file.header) for kind in cfg.model.model_path}
+                for record in src_vcf_file:
+                    variant = Variant.from_pysam(record)
+                    split_file = split_input.get(variant.type)
+                    if split_file:  # TODO: Replace with walrus operator
+                        split_file.write(record)
+                for split_file in split_input.values():
+                    split_file.close()
+                    index_variant_file(split_file.filename)
+
+            # Create corresponding model files
+            type_input = {kind : (split_input[kind].filename, os.path.join(split_input_dir, f"{kind}.genotypes.vcf.gz"), model_path) for kind, model_path in cfg.model.model_path.items()}
+        else:
+            # Make sure input path is absolute
+            type_input = {"ALL": (hydra.utils.to_absolute_path(cfg.input), output, cfg.model.model_path)}
+
+        # Make sure other paths are absolute
+        _make_paths_absolute(cfg, ["pileup.snv_vcf_input", "cache_dir"])
+        
+        # Create cache direcotry if doesn't exists, otherwise get_file won't use it
+        if not OmegaConf.is_missing(cfg, "cache_dir"):
+            os.makedirs(cfg.cache_dir, mode=0o775, exist_ok=True)
+
+        for kind, (input_path, output_path, model_path) in type_input.items():
+            logging.info("Genotyping %s variants", kind)
+            model_paths = [_get_file(cfg, path_or_url) for path_or_url in _as_list(model_path)]
+
+            # Since setting the models may change the type of the configuration, we perform the merge here to override the type
+            local_cfg = cfg.copy()
+            OmegaConf.update(local_cfg, "model.model_path", model_paths, merge=False)
+
+            genotype_vcf(
+                local_cfg,
+                input_path,
+                samples,
+                model_paths,
+                output_path,
+                progress_bar=True,
+                evaluate=cfg.concordance,
+                region=cfg.region,
+            )
     
+        # Merge and cleanup type specific files
+        if isinstance(cfg.model.model_path, (dict, DictConfig)):
+            logging.info("Merging output files into %s", output)
+            bcftools.concat("-O", bcftools_format(output), "-o", output, "--allow-overlaps", *[type_path for _, type_path, _ in type_input.values()], catch_stdout=False)
+            index_variant_file(output)
+            shutil.rmtree(split_input_dir)
+
     elif cfg.command == "propose":
         from .propose.propose import propose_vcf
 

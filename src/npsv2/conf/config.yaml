@@ -8,16 +8,39 @@ defaults:
   - refine
   - command: genotype
   - _self_
+  - override hydra/help: custom_help
 
+# Mimic Hydra <= 1.1, but changing the working directory to the output directory
+hydra:
+  job:
+    chdir: true
+
+# Threads to use for multi-threaded commands
 threads: 1
 
+# Path to reference FASTA file
 reference: ???
+
+# If the BWA index is already pre-loaded into shared memory, specify the reference name
 shared_reference: null
+
+# Automatically load and unload the BWA index into shared memory
 load_reference: false
+
+# Path to stats file created by the preprocess command
 stats_path: ???
 
+# Input VCF file
 input: ???
+
+# Input alignment file (BAM, CRAM)
 reads: ???
+
+# Output file for this command
 output: ???
 
+# Name of the sample
 sample: null
+
+# Root path to download pre-trained models. Defaults to Keras cache dir: ~/.keras
+cache_dir: null

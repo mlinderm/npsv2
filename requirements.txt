@@ -6,7 +6,7 @@ tqdm
 tensorflow>=2.8, <2.9; platform_machine == "x86_64"
 tensorflow-aarch64>=2.8, <2.9; platform_machine == "aarch64"
 ray>=1.2.0
-hydra-core>=1.1
+hydra-core>=1.2
 intervaltree
 dataclasses
 scipy>=1.2.0

@@ -7,13 +7,13 @@ min_consensus_length: 4
 peak_finding_flank: 5
 all_alignments: false
 max_proposals: 10
-use_refwidened: false
+use_refwidened: true
 group_variants: true
 variant_group_flank: 0
 include_orig_ref_min_overlap: 1
 include_orig_ref: false
 refine_nonref_orig: true
-smooth_distances: false
+smooth_distances: true
 
 # Filtering
 reference_jf_path: null

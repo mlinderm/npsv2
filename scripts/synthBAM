@@ -9,6 +9,7 @@ STATSPATH=
 PHASE_REGION=
 PHASE_VCF=
 PHASE_SAMPLE=
+ALIGNER=bwa
 
 COVERAGE=20
 FRAGMEAN=400
@@ -54,10 +55,11 @@ Options:
   -v FILE       Phased VCF (if specified, phasing region and phasing sample must be specified), default: undefined
   -r string     Region for phasing, default: undefined
   -N string     Sample in phased VCF, default: undefined
+  -a string     Aligner to use, default: $ALIGNER
 EOF
 }
 
-while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:j:g:r:v:N:" Option
+while getopts "hR:S:c:m:s:t:l:p:z:i:p:n:j:g:r:v:N:a:" Option
 do
     case $Option in
         R)
@@ -104,6 +106,9 @@ do
             ;;
         N)
             PHASE_SAMPLE=$OPTARG
+            ;;
+        a)
+            ALIGNER=$OPTARG
             ;;
         h)
             usage
@@ -176,6 +181,11 @@ do
             -R "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
             "$SHAREDREF" \
             /dev/stdin
+    elif [[ "$ALIGNER" == "novo" ]]; then
+        # There doesn't appear to be a way to force the index to remain in memory
+        novoalign -d "${REFERENCE}.novo" -F STDFQ -t 400 --Q2Off -c 10 -i PE "${FRAGMEAN%.*},${FRAGSD%.*}" \
+            -o SAM "@RG\tID:synth${s}\tSM:${SM}\tLB:synth${s}\tPL:illumina\tPU:ART" \
+            -f "${READS_PREFIX}1.fq" "${READS_PREFIX}2.fq" 
     else
         # bwa mem -Y -v 1 -I "${FRAGMEAN},${FRAGSD}" \
         bwa mem -c 250 -M -v 1 -I "${FRAGMEAN},${FRAGSD}" \

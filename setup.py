@@ -96,7 +96,7 @@ class SeqLibCMakeBuild(CMakeBuild):
     def run(self):
         root_path = os.path.dirname(os.path.realpath(__file__))
         seqlib_path =  os.path.join(root_path, "lib", "seqlib")
-
+        print(root_path, file=sys.stderr)
         # Check if we need to apply patch by trying to cleaning apply it in reverse
         patched = subprocess.run(["git", "apply", "--check", "--reverse", os.path.join(root_path, "seqlib.patch")], cwd=seqlib_path)
         if patched.returncode != 0:

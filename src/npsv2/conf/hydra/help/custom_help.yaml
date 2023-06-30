@@ -1,0 +1,43 @@
+app_name: NPSV-deep
+
+# Help header, customize to describe your app to your users
+header: |-
+  == ${hydra.help.app_name} ==
+  Deep-learning based SV genotyper for short read sequencing data
+
+footer: |-
+  Configuration managed by Hydra (https://hydra.cc)
+  Use --hydra-help to view Hydra specific help
+
+template: |-
+  ${hydra.help.header}
+
+  Specify a command with `command=<command>`, e.g., command=genotype
+  Commands:
+    genotype: Genotype putative SVs in VCF file
+    preprocess: Prepare sequencing metrics for alignment file (BAM/CRAM)
+    
+    images: Generate pileup images for training purposes
+    train: Train deep neural network using previously generated images
+    
+    propose: Propose alternative SVs as part of SV refining workflow
+    filter: Filter proposed alternative SVs based on read support
+    refine: Update SV genotypes based on best alternative description
+
+    visualize: Render pileup images for debugging purposes
+
+  The main entry point for most usage will be `genotype`, which only has the
+  stats JSON file produced by the `preprocess` command as a prerequisite.
+
+  You specify arguments or override the configuration on the command line, e.g.,
+  
+  npsv2 command=genotype input=giab.vcf.gz reads=hg002.bam output=hg002.npsv2.vcf.gz stat_path=stats.json simulation.replicates=2
+  
+  The current configuration is below. You can override any of these values on
+  the command line by specifying their full hierarchical name (with dots). Parameters
+  are documented with comments within the package configuration directory.
+  -------
+  $CONFIG
+  -------
+
+  ${hydra.help.footer}

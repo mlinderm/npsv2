@@ -74,7 +74,6 @@ class EncoderTest(unittest.TestCase):
         embeddings, *_ = encoder.output_shape
         self.assertEqual(embeddings, (None, 2048))
 
-
     def test_type_specific(self):
         encoder = models._contrastive_encoder(
             (100, 300, 7),
@@ -86,6 +85,24 @@ class EncoderTest(unittest.TestCase):
         )
         self.assertEqual(encoder.name, "encoder")
         encoder.summary()
+
+    def test_imagenet_model(self):
+        encoder = models._contrastive_encoder(
+            (100, 300, 5),
+            normalize_embedding=False,
+            projection_size=[512],
+            normalize_projection=True,
+            batch_normalize_projection=True,
+            weights="imagenet",
+            base_trainable=False,
+        )
+        self.assertEqual(encoder.name, "encoder")
+
+        embeddings, *_ = encoder.output_shape
+        encoder.summary()
+        embeddings, _, projections = encoder.output_shape
+        self.assertEqual(embeddings, (None, 2048))
+        self.assertEqual(projections, (None, 512))
 
 
 #@unittest.skip("Development only")

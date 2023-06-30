@@ -12,3 +12,4 @@ initial_weights: null
 save_best_validation_checkpoint: false
 validation_split: null
 steps_per_epoch: null
+base_trainable: true

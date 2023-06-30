@@ -2,7 +2,7 @@
 
 NPSV-deep is a Python-based tool for stand-alone genotyping of previously detected/reported deletion (DEL) and insertion (INS) structural variants (SVs) in short-read genome sequencing (SRS) data. NPSV-deep is the successor to the [NSPV SV genotyper](https://github.com/mlinderm/npsv). NPSV-deep implements a deep learning-based approach for SV genotyping that employs SRS simulation to model the combined effects of the genomic region, sequencer and alignment pipeline.
 
-NPSV-deep is a work in progress that is currently under active development.
+NPSV-deep is currently under active development.
 
 ## Installation
 
@@ -27,6 +27,7 @@ To manually install and run NPSV-deep from the source, you will need the followi
 * samblaster
 * sambamba
 * samtools
+* whatshap
 
 along with standard command-line utilities, CMake and a C++14 compiler. After installing the dependencies listed above, install the Python dependencies, and then NPSV itself via:
 ```
@@ -70,14 +71,15 @@ samtools faidx human_g1k_v37.fasta
 
 ### Basic Workflow
 
-The minimal NPSV-deep workflow requires the putative SV(s) as a VCF file, the aligned reads and basic sequencing statistics (the sequencer model, read length, the mean and SD of the insert size, and depth), and a previously trained network model. The following assumes you have copied a suitable model to `tests/results/model.h5`. A minimal example follows.
+The minimal NPSV-deep workflow requires the putative SV(s) as a VCF file, the aligned reads and basic sequencing statistics (the sequencer model, read length, the mean and SD of the insert size, and depth), and a previously trained network model. The typical workflow also uses phased SNVs called in the same sample.
+
+By default, NPSV-deep will automatically download and cache pre-trained models from a repository on [Hugging Face](https://huggingface.co/mlinderman/npsvdeep). Different models can be specified via `model.model_path` configuration parameter.
 
 To run NPSV-deep genotyping:
 
-```
+```plaintext
 npsv2 command=genotype \
     reference=/data/human_g1k_v37.fasta \
-    model.model_path=tests/results/model.h5 \
     input=tests/data/12_22129565_22130387_DEL.vcf.gz \
     reads=tests/data/12_22127565_22132387.bam \
     stats_path=tests/data/stats.json \
@@ -85,7 +87,7 @@ npsv2 command=genotype \
     load_reference=true
 ```
 
-This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.gz` (determined by the output parameter) with the genotypes. The input variant is derived from the Genome-in-a-Bottle SV dataset; NPSV successfully genotypes this variant as homozygous alternate. The genotype is determined from the minimum index of the `DS` field, the distances between the actual and simulated data for each possible genotype. Note that due to random variation in simulation different runs will produce slightly different distances.
+This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.gz` (determined by the `output` parameter) with the genotypes. The input variant is derived from the Genome-in-a-Bottle SV dataset; NPSV successfully genotypes this variant as homozygous alternate. The genotype is determined from the minimum index of the `DS` field, the distances between the actual and simulated data for each possible genotype. Note that due to random variation in the simulation different runs will produce slightly different distances.
 
 ```plaintext
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
@@ -93,6 +95,20 @@ This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.g
 ```
 
 *Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion) if it has not already been loaded. 
+
+A more typical example incorporates phased SNVs via the `pileup.snv_vcf_input` parameter, e.g.,
+
+```plaintext
+npsv2 command=genotype \
+    reference=/data/human_g1k_v37.fasta \
+    model.model_path=tests/results/model.h5 \
+    input=tests/data/12_22129565_22130387_DEL.vcf.gz \
+    reads=tests/data/12_22127565_22132387.bam \
+    stats_path=tests/data/stats.json \
+    pileup.snv_vcf_input=tests/data/12_22129565_22130387_DEL.snvs.vcf.gz \
+    output=tests/results/12_22129565_22130387_DEL.npsv2.vcf.gz \
+    load_reference=true
+```
 
 ### Preprocessing to create a "stats" file
 
@@ -117,10 +133,79 @@ MSv1 - MiSeq v1 (250bp),            MSv3 - MiSeq v3 (250bp),        NS50 - NextS
 
 Preprocessing is multi-threaded. Specifying multiple threads, e.g. `threads=8`, will improve preprocessing performance.
 
-## Developing on an Apple M1
+### "End-to-end" example
 
-An experimental Dockerfile is including for testing on systems with an Apple M1. To build an Apple-specific container:
+The `paper` directory includes an `example.sh` script that downloads the HG002 short-read sequencing data and the GIAB SV calls, aligns the reads with BWA, calls SNVs with GATK, and then genotypes those SVs with NPSV using a representative workflow.
+
+Aspects of this script are specific to the local computing infrastructure (e.g., directory paths, number of cores, executable paths) and so will need to be modified prior to use. The script assumes you have a customized version of [Truvari](https://github.com/mlinderm/truvari/tree/genotype_stats) installed.
+
+## SV refining
+
+NPSV-deep includes experimental support for automatically identifying "better" SV representations during genotyping using the simulated data. This workflow is implemented with a "proposal" step that generates possible alternate SV representations and a "refining" step that updates the genotype for the original SV from the alternate SV whose simulated data is most similar to the real data.
+
+### Prerequisites
+
+SV proposal requires a BED file (`--simple-repeats-bed`) derived from the UCSC Genome Browser [simpleRepeats.txt.gz](http://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/simpleRepeat.txt.gz) table dump that contains the standard BED columns plus the repeat period, number of copies and consensus repeat sequence. Alternative representations will only be generated for variants that overlap regions in this file. For convenience `simple_repeats.b37.bed.gz` and the index file (along with the hg38 version `simple_repeats.hg38.bed.gz`) are available at <http://skylight.middlebury.edu/~mlinderman/data/simple_repeats.b37.bed.gz>. To download these files in the Docker container:
+```
+curl -k https://www.cs.middlebury.edu/~mlinderman/data/simple_repeats.b37.bed.gz -o /data/simple_repeats.b37.bed.gz
+curl -k https://www.cs.middlebury.edu/~mlinderman/data/simple_repeats.b37.bed.gz.tbi -o /data/simple_repeats.b37.bed.gz.tbi 
+```
+### Workflow
+
+To generate possible alternate representations, use the `propose` sub-command for `npsv2`, e.g.
+
+```plaintext
+npsv2 command=propose \
+    reference=data/human_g1k_v37.fasta \
+    refine.simple_repeats_path=/data/simple_repeats.b37.bed.gz \
+    input=tests/data/1_1865644_1866241_DEL.vcf.gz \
+    output=tests/results/1_1865644_1866241_DEL.propose.vcf.gz \
+    refine.all_alignments=true
+```
+
+The `tests/results/1_1865644_1866241_DEL.propose.vcf.gz` file contains the original SV along with the proposed alternative descriptions (linked by the "INFO/ORIGINAL" field).
+
+Then genotype the expanded set of putative variant.
+
+```plaintext
+npsv2 command=genotype \
+    reference=/data/human_g1k_v37.fasta \
+    input=tests/results/1_1865644_1866241_DEL.propose.vcf.gz \
+    reads=tests/data/1_1861644_1871561.bam \
+    stats_path=tests/data/stats.json \
+    output=tests/results/1_1865644_1866241_DEL.propose.npsv2.vcf.gz \
+    load_reference=true
+```
+
+Then select the best of the proposed representations with the `refine` sub-command. Refinement will update the original VCF with genotypes for the best representation.
+
+```plaintext
+npsv2 command=refine \
+	input=tests/results/1_1865644_1866241_DEL.propose.npsv2.vcf.gz \
+    output=tests/results/1_1865644_1866241_DEL.propose.npsv2.refine.vcf.gz
+```
+
+When reviewing the pileup, the GIAB SV description appears to be "left shifted" from the true location as estimated from long-read sequencing data (approximately 1:1866429-1867023). NPSV (and other tools) incorrectly genotype the original SV description as homozygous reference. The NPSV proposal algorithm selects the alternative description where the actual data is most similar to simulated data for non-reference genotypes. The VCF calls produced by `refine` (shown below for this example) contain the alternate and original genotypes and PLs, the alternate and original Mahalanobis distance (smaller is better) and the alternate SV description. For this variant, `refine` selects 1:1866388-1867000 as the best SV description. The minimum non-reference distance for that SV description is 8.0, compared to 570.1 for the original description. The alternate SV description is correctly genotyped as heterozygous. 
+
+```
+
+```
+
+Note that due to the random simulations the distances will differ between runs.
+
+
+## FAQ
+
+### Developing on an Apple M1
+
+An experimental Dockerfile is included for testing on systems with an Apple M1. To build an Apple-specific container:
 ```
 docker build -f Dockerfile.m1 -t npsv2-m1 .
 ```
 and then start the npsv2-m1 container.
+
+### Parallelization
+
+NPSV-deep can perform genotyping and other per-variant operations in parallel (controlled via the `threads` parameter). While inference is typically perfomed on the CPU only, training is typically performed on a CUDA-capable GPU.
+
+### Data availability

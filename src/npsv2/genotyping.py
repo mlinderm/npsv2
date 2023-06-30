@@ -272,3 +272,6 @@ def genotype_vcf(cfg: DictConfig, vcf_path: str, samples: typing.Dict[str,Sample
         # Sort output file and index (if relevant)
         bcftools.sort("-O", bcftools_format(output_path), "-o", output_path, "-T", output_dir, unsorted_output_path, catch_stdout=False)
         index_variant_file(output_path)
+
+        # Shutdown Ray after genotyping is complete
+        ray.shutdown()

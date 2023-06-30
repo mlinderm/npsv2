@@ -13,20 +13,6 @@ from .utilities.callbacks import NModelCheckpoint
 from .utilities.sequence import as_scalar
 from .utilities.losses import contrastive_loss
 
-# https://github.com/tensorflow/tensorflow/issues/35634#issuecomment-665517890
-# class ReturnBestEarlyStopping(EarlyStopping):
-#     def __init__(self, **kwargs):
-#         super(ReturnBestEarlyStopping, self).__init__(**kwargs)
-
-#     def on_train_end(self, logs=None):
-#         if self.stopped_epoch > 0:
-#             if self.verbose > 0:
-#                 print(f'\nEpoch {self.stopped_epoch + 1}: early stopping')
-#         elif self.restore_best_weights:
-#             if self.verbose > 0:
-#                 print('Restoring model weights from the end of the best epoch.')
-#             self.model.set_weights(self.best_weights
-
 def _cdist(tensors, squared: bool = False):
     # https://github.com/tensorflow/addons/blob/81529ff7dd246f7575338b8cfe65784b0cc8a502/tensorflow_addons/losses/metric_learning.py#L21-L67
     query_features, genotype_features = tensors
@@ -70,7 +56,6 @@ def _query_distances(tensors):
 
 def _base_model(input_shape, weights="imagenet", trainable=True):
     assert tf.keras.backend.image_data_format() == "channels_last"
-
     if weights is not None and input_shape[-1] != 3:
         # imagenet weights require a 3-channel input image. To enable us to use more channels, we construct a dummy model
         # with 3-channel image and copy those weights where possible into a network with the desired size
@@ -107,7 +92,7 @@ def _contrastive_encoder(input_shape, weights=None, base_trainable=True, normali
     # Set trainable to False to lock the weights when transfer learning
     # Set training=False to avoid updates to non-trainable BatchNorm parameters as described at
     # https://www.tensorflow.org/guide/keras/transfer_learning#build_a_model)
-    base_model = _base_model(input_shape, weights=weights, trainable=base_trainable or weights is None)
+    base_model = _base_model(input_shape, weights=weights, trainable=weights is None or base_trainable)
     
     embedding = base_model(image, training=(None if weights is None else False))
     normalized_embedding = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(embedding)
@@ -243,16 +228,19 @@ class GenotypingModel:
 class SupervisedBaselineModel(GenotypingModel):
     def __init__(self, image_shape, replicates, model_path: str=None, **kwargs):
         self.image_shape = image_shape
-        self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
+        self._model = self._create_model(image_shape, **kwargs)
         if model_path:
+            # Load all of the model weights, not just the encoder so we get the top layer
             self._model.load_weights(model_path)
 
     def save(self, model_path: str):
         self._model.save_weights(model_path)
 
-    def _create_model(self, image_shape, model_path: str=None, **kwargs):
+    def _create_model(self, image_shape, model_path: str=None,  weights=None, base_trainable=True, **kwargs):
         encoder = _contrastive_encoder(
             image_shape,
+            weights=weights,
+            base_trainable=base_trainable,
             normalize_embedding=False,
             projection_size=[],
         )
@@ -295,9 +283,8 @@ class SupervisedBaselineModel(GenotypingModel):
         )
 
     def fit(self, cfg, training_dataset, validation_dataset=None):
-        optimizer = tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate)
         self._model.compile(
-            optimizer=optimizer,
+            optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.training.learning_rate),
             loss={ "genotypes_logits": tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True) },
             metrics={ "genotypes": ["sparse_categorical_accuracy", sparse_nonref_genotype_concordance] },
         )
@@ -333,7 +320,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
         self.image_shape = image_shape
         self._model = self._create_model(image_shape, model_path=model_path, **kwargs)
 
-    def _create_model(self, image_shape, model_path: typing.Union[str, typing.List[str]]=None, projection_size=[512], weights=None, typed_projection=False, **kwargs):
+    def _create_model(self, image_shape, model_path: typing.Union[str, typing.List[str]]=None, projection_size=[512], weights=None, typed_projection=False, base_trainable=True, **kwargs):
         assert len(image_shape) == 3, "Model only supports single images"
         
         support = layers.Input((3,) + image_shape, name="support")
@@ -342,7 +329,7 @@ class SimulatedEmbeddingsModel(GenotypingModel):
 
         def siamese_network(model_path, index=""):
              # In this context, we only care about the projection output
-            encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=True, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True, typed_projection=typed_projection, **kwargs)
+            encoder =_contrastive_encoder(image_shape, weights=weights, base_trainable=base_trainable, normalize_embedding=False, projection_size=projection_size, batch_normalize_projection=True, normalize_projection=True, typed_projection=typed_projection, **kwargs)
             _, _, projection = encoder.output
             encoder = tf.keras.Model(encoder.input, projection, name=f"encoder{index}")
             if model_path:

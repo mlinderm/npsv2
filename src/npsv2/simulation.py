@@ -187,7 +187,7 @@ def _art_read_length(read_length, profile):
         return read_length
 
 
-def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, region: Range = None, phase_vcf_path: str = None):
+def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference, shared_reference=None, dir=tempfile.gettempdir(), stats_path: str = None, region: Range = None, phase_vcf_path: str = None, aligner: str = "bwa"):
     # TODO: Adjust haplotype coverage based on normalization strategy
     shared_ref_arg = f"-S {quote(shared_reference)}" if shared_reference else ""
     stats_path_arg = f"-j {quote(stats_path)}" if stats_path else ""
@@ -208,6 +208,7 @@ def simulate_variant_sequencing(fasta_path, hap_covg, sample: Sample, reference,
         -p {sample.sequencer} \
         {phase_vcf_arg} \
         -i 1 \
+        -a {aligner} \
         {quote(fasta_path)} \
         {quote(replicate_bam.name)}"
 
