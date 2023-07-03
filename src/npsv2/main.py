@@ -186,14 +186,16 @@ def main(cfg: DictConfig) -> None:
         else:
             output = hydra.utils.to_absolute_path(cfg.output)
 
-        # model_path can be a single file, list, or dictionary keyed by variant type. For specific types
-        # split out variants into separate files
-        if isinstance(cfg.model.model_path, (dict, DictConfig)):
+        # model_path is a dictionary with multiples entries for different variant types, or just "ALL"
+        if cfg.model.model_path.get("ALL") is not None:
+            # Make sure input path is absolute
+            type_input = {"ALL": (hydra.utils.to_absolute_path(cfg.input), output, cfg.model.model_path["ALL"])}
+        else:
             # Split out variants by type
             logging.info("Splitting input VCF into %s SVs. All other variants types will be skipped", ",".join(cfg.model.model_path.keys()))
             split_input_dir = tempfile.mkdtemp()
             with pysam.VariantFile(hydra.utils.to_absolute_path(cfg.input)) as src_vcf_file:
-                split_input = {kind: pysam.VariantFile(os.path.join(split_input_dir, f"{kind}.vcf.gz"), mode="wz", header=src_vcf_file.header) for kind in cfg.model.model_path}
+                split_input = {kind: pysam.VariantFile(os.path.join(split_input_dir, f"{kind}.vcf.gz"), mode="wz", header=src_vcf_file.header) for kind, model_path in cfg.model.model_path.items() if model_path}
                 for record in src_vcf_file:
                     variant = Variant.from_pysam(record)
                     split_file = split_input.get(variant.type)
@@ -204,10 +206,7 @@ def main(cfg: DictConfig) -> None:
                     index_variant_file(_normalize_fname(split_file.filename))
 
             # Create corresponding model files
-            type_input = {kind : (_normalize_fname(split_input[kind].filename), os.path.join(split_input_dir, f"{kind}.genotypes.vcf.gz"), model_path) for kind, model_path in cfg.model.model_path.items()}
-        else:
-            # Make sure input path is absolute
-            type_input = {"ALL": (hydra.utils.to_absolute_path(cfg.input), output, cfg.model.model_path)}
+            type_input = {kind : (_normalize_fname(split_input[kind].filename), os.path.join(split_input_dir, f"{kind}.genotypes.vcf.gz"), model_path) for kind, model_path in cfg.model.model_path.items() if model_path}
 
         # Make sure other paths are absolute
         _make_paths_absolute(cfg, ["pileup.snv_vcf_input", "cache_dir"])
@@ -236,7 +235,7 @@ def main(cfg: DictConfig) -> None:
             )
     
         # Merge and cleanup type specific files
-        if isinstance(cfg.model.model_path, (dict, DictConfig)):
+        if cfg.model.model_path.get("ALL") is None:
             logging.info("Merging output files into %s", output)
             bcftools.concat("-O", bcftools_format(output), "-o", output, "--allow-overlaps", *[type_path for _, type_path, _ in type_input.values()], catch_stdout=False)
             index_variant_file(output)

@@ -110,7 +110,8 @@ class SupervisedBaselineModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
-            "model=supervised_baseline"
+            "model=supervised_baseline",
+            "model.model_path=null"
         ])
     
     def test_construct_model(self):
@@ -143,7 +144,8 @@ class SimulatedEmbeddingsModelTest(unittest.TestCase):
     def setUp(self):
         self.cfg = hydra.compose(config_name="config", overrides=[
             "training.epochs=1",
-            "model=simulated_embeddings"
+            "model=simulated_embeddings",
+            "model.model_path=null",
         ])
 
     @unittest.skipUnless(os.path.exists(os.path.join(FILE_DIR, "test.tfrecords.gz")), "No test inputs available")
@@ -178,7 +180,7 @@ class JointEmbeddingsModelTest(unittest.TestCase):
             "training.epochs=1",
             "model=joint_embeddings",
             "training.contrastive_margin=0.5",
-            #"model.typed_projection=true",
+            "model.model_path=null",
         ])
     
     def test_construct_model(self):

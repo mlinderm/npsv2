@@ -13,3 +13,4 @@ model:
   model_path:
     DEL: ["https://huggingface.co/mlinderman/npsvdeep/resolve/main/DEL.0.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/DEL.1.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/DEL.2.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/DEL.3.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/DEL.4.model.h5"]
     INS: ["https://huggingface.co/mlinderman/npsvdeep/resolve/main/INS.0.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/INS.1.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/INS.2.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/INS.3.model.h5","https://huggingface.co/mlinderman/npsvdeep/resolve/main/INS.4.model.h5"]
+    ALL: null

@@ -42,6 +42,7 @@ def _mock_simulate_variant_sequencing(
     stats_path=None,
     region: Range = None, 
     phase_vcf_path: str = None,
+    aligner: str = "bwa",
 ):
     return os.path.join(FILE_DIR, "1_896922_902998.bam")
 
