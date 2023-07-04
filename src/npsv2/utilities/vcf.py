@@ -7,12 +7,10 @@ from scipy.special import comb
 def index_variant_file(filename: str):
     """Index variant file"""
     # There is a file handle leak in pysam.tabix_index, so we use bcftools index directly
-    # TODO: Detect file format in another way that doesn't generate spurious warnings
-    with pysam.VariantFile(filename, "r") as variant_file:
-        if variant_file.format == "VCF" and variant_file.compression == "BGZF":
-            bcftools.index("-t", filename, catch_stdout=False)
-        elif variant_file.format == "BCF":
-            bcftools.index("-c", filename, catch_stdout=False)
+    if filename.endswith("vcf.gz"):
+        bcftools.index("-t", filename, catch_stdout=False)
+    elif filename.endswith(".bcf"):
+        bcftools.index("-c", filename, catch_stdout=False)
 
 
 def bcftools_format(filename: str) -> str:

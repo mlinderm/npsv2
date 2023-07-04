@@ -1,4 +1,4 @@
-import datetime, logging, os, re, sys, tempfile, typing
+import datetime, logging, os, re, sys, tempfile, typing, warnings
 import collections.abc
 from omegaconf import OmegaConf
 import tensorflow as tf
@@ -57,12 +57,16 @@ def _query_distances(tensors):
 def _base_model(input_shape, weights="imagenet", trainable=True):
     assert tf.keras.backend.image_data_format() == "channels_last"
     if weights is not None and input_shape[-1] != 3:
-        # imagenet weights require a 3-channel input image. To enable us to use more channels, we construct a dummy model
-        # with 3-channel image and copy those weights where possible into a network with the desired size
-        base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
+        # Suppress warnings about input shape
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # imagenet weights require a 3-channel input image. To enable us to use more channels, we construct a dummy model
+            # with 3-channel image and copy those weights where possible into a network with the desired size
+            base_model = tf.keras.applications.InceptionV3(include_top=False, weights=None, input_shape=input_shape, pooling="avg")
 
-        # Only the first convolution layer needs to have different weights
-        src_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape[:-1] + (3,), pooling="avg")
+            # Only the first convolution layer needs to have different weights
+            src_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape[:-1] + (3,), pooling="avg")
+        
         for i, (src_layer, dst_layer) in enumerate(zip(src_model.layers, base_model.layers)):
             if i == 1:
                 # Replicate mean of existing first convolutional layer (assumes "channels_last"). Motivated by
@@ -75,8 +79,11 @@ def _base_model(input_shape, weights="imagenet", trainable=True):
                 dst_layer.set_weights(src_layer.get_weights())
                 dst_layer.trainable = trainable
     else:
-        base_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape, pooling="avg")
-        base_model.trainable = trainable
+        # Suppress warnings about input shape
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            base_model = tf.keras.applications.InceptionV3(include_top=False, weights=weights, input_shape=input_shape, pooling="avg")
+            base_model.trainable = trainable
     
     return base_model
 

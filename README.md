@@ -46,7 +46,6 @@ Given the multi-step workflow, the typical approach when using the Docker image 
 ```
 docker run --entrypoint /bin/bash \
     --shm-size=8g \
-    -v `pwd`:/opt/npsv2 \
     -v /path/to/reference/directory:/data \
     -w /opt/npsv2 \
     -it \
@@ -69,11 +68,17 @@ bwa index human_g1k_v37.fasta
 samtools faidx human_g1k_v37.fasta
 ```
 
+The following commands also assume you have create a `tests/results` directory
+
+```plaintext
+mkdir -p tests/results
+```
+
 ### Basic Workflow
 
 The minimal NPSV-deep workflow requires the putative SV(s) as a VCF file, the aligned reads and basic sequencing statistics (the sequencer model, read length, the mean and SD of the insert size, and depth), and a previously trained network model. The typical workflow also uses phased SNVs called in the same sample.
 
-By default, NPSV-deep will automatically download and cache pre-trained models from a repository on [Hugging Face](https://huggingface.co/mlinderman/npsvdeep). Different models can be specified via `model.model_path` configuration parameter.
+By default, NPSV-deep will automatically download and cache pre-trained models from a repository on [Hugging Face](https://huggingface.co/mlinderman/npsvdeep). Different models can be specified via the `model.model_path` configuration parameter.
 
 To run NPSV-deep genotyping:
 
@@ -94,7 +99,7 @@ This will produce a VCF file `tests/results/12_22129565_22130387_DEL.npsv2.vcf.g
 12	22129565	HG2_PB_SVrefine2Falcon2Bionano_6426	CAGGGGCATACTGTGAAGAACTTGACCTCTAATTAATAGCTAAGGCCGATCCTAAGAGAGCCAATTGTGGGAGATTGTCAGCTACTATATTCCTCATAGCTGGGTAGAAAGCCCTCTTGAAGGAAGATCTGAGCAGTACATCTTAGTGTCTGTCACAGACACACAGAGCTTGGATGACTCAAAAAAAGAAAAAGAGAAATAATTCTTCTGATTCTAAATATGTAACCCTCATTCCCTGAGGCGCAGTACTTCAAATTTAAGAACAAAGTTATAAAAACAACTAGTTAAGAAAAAAAGATCTGTAATCCTACTTACTCCTCAAGCAATATAACCCCCAGAAGTTCTTCTCGAGTAAATTTATGAATATCCAGTGGGTGTCTCACAAGAGTTCTAATAACATGCTGTTGACTACCATCGGGGATTCTACCAATTTTCCTATCTCCTAATCTAGATCACTGGATAATGTGTCTAATTGCTCCTAAGTTAAGAGTGGTAGCTATGCCAAACCATTGGCAGTTTCACTTCCCAGACACTACTCCTGAGGATGCTACATAGCCCAAGACTGAGGGTTCTGACTTCTATTCAGGGGTTCTGATGTTTTATATCCAGAGAATACAAGGCACTGAAATCAGCATTTTATCATTTTATCAATAACACAACTCATCAACATTGCTAACATTCTGTCCCTGTGTCATCAATGTCATCACTTCTAAGAGGACTCAATGTCTCATGAAGGTTATAGAACAACAGCTTTTTGAGATTTTACTTACTTTTTTGTTGCAGCTTTCTTGCTCTCAGATTGAGAATGGCTGGTCTAATTGAT	C	20	PASS	ClusterIDs=HG2_10X_SVrefine210Xhap12_9132:HG2_PB_PB10Xdip_7025:HG2_PB_PB10Xdip_7024:HG3_PB_pbsv_12731:HG4_PB_pbsv_13042:HG2_PB_pbsv_13047:HG3_PB_SVrefine2Falcon1Dovetail_7887:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumClusterSVs=15;ExactMatchIDs=HG2_10X_SVrefine210Xhap12_9132:HG4_Ill_SVrefine2DISCOVARDovetail_9275:HG3_PB_SVrefine2PBcRDovetail_6143:HG3_PB_HySA_19630:HG2_PB_SVrefine2PBcRplusDovetail_2270:HG2_PB_SVrefine2PB10Xhap12_9410:HG2_PB_SVrefine2Falcon2Bionano_6426:HG2_PB_SVrefine2Falcon1plusDovetail_2387:HG2_Ill_SVrefine2DISCOVARplusDovetail_2630;NumExactMatchSVs=9;ClusterMaxShiftDist=0.00488102;ClusterMaxSizeDiff=0.00487211;ClusterMaxEditDist=0.00854179;PBcalls=12;Illcalls=2;TenXcalls=1;CGcalls=0;PBexactcalls=6;Illexactcalls=2;TenXexactcalls=1;CGexactcalls=0;HG2count=9;HG3count=4;HG4count=2;NumTechs=3;NumTechsExact=3;SVLEN=-822;DistBack=4675;DistForward=-689;DistMin=-689;DistMinlt1000=TRUE;MultiTech=TRUE;MultiTechExact=TRUE;SVTYPE=DEL;sizecat=300to999;DistPASSHG2gt49Minlt1000=FALSE;DistPASSMinlt1000=FALSE;MendelianError=FALSE;HG003_GT=1/1;HG004_GT=1/1;TRall=TRUE;TRgt100=TRUE;TRgt10k=FALSE;segdup=FALSE;REPTYPE=CONTRAC;BREAKSIMLENGTH=823;REFWIDENED=12:22129566-22131210	GT:DS:DHFFC:FS:SOR	1/1:0.9457,0.9968,0.0977:0.371:0:0.693
 ```
 
-*Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion). 
+*Creating the simulated replicates is more efficient when the BWA indices are loaded into shared memory prior to running NPSV-deep (and thus doesn't need to re-loaded for each replicate).* The `load_reference=true` argument will automatically load the BWA index into shared memory (and cleanup after completion). If you are running multiple short commands, you can preload the index manually with `bwa shm /data/human_g1k_v37.fasta` (and omit the `load_reference` argument).
 
 A more typical example incorporates phased SNVs into the pileup image generation via the `pileup.snv_vcf_input` parameter, e.g.,
 
@@ -208,3 +213,5 @@ and then start the npsv2-m1 container.
 NPSV-deep can perform genotyping and other per-variant operations in parallel (controlled via the `threads` parameter). While inference is typically perfomed on the CPU only, training is typically performed on a CUDA-capable GPU.
 
 ### Data availability
+
+The `example.sh` script in `paper` directory includes an example of downloading and preparing both the HG002 short-read sequencing data and the GIAB SV calls for use with the NPSV genotyper. Similar NGS data is available for the parental [HG003](ftp://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG003_NA24149_father/NIST_HiSeq_HG003_Homogeneity-12389378/HG003_HiSeq300x_fastq/140721_D00360_0044_AHA66RADXX) and [HG004](ftp://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data//AshkenazimTrio/HG004_NA24143_mother/NIST_HiSeq_HG004_Homogeneity-14572558/HG004_HiSeq300x_fastq/140818_D00360_0046_AHA5R5ADXX) samples. The NA12878 "Platinum Genomes" NGS data is available in the European Nucleotide Archive under project [PRJEB3381](https://www.ebi.ac.uk/ena/browser/view/PRJEB3381). The Polaris SV call set is available via [GitHub](https://github.com/Illumina/Polaris). The HGSCV2 call set is available via the [IGSR](https://www.internationalgenome.org/data-portal/data-collection/hgsvc2) as is the [SRS data](https://www.internationalgenome.org/data-portal/data-collection/30x-grch38) used for training. The Syndip callset used for model selection is available via [GitHub](https://github.com/lh3/CHM-eval).
