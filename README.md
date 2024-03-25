@@ -2,7 +2,9 @@
 
 NPSV-deep is a Python-based tool for stand-alone genotyping of previously detected/reported deletion (DEL) and insertion (INS) structural variants (SVs) in short-read genome sequencing (SRS) data. NPSV-deep is the successor to the [NSPV SV genotyper](https://github.com/mlinderm/npsv). NPSV-deep implements a deep learning-based approach for SV genotyping that employs SRS simulation to model the combined effects of the genomic region, sequencer and alignment pipeline.
 
-NPSV-deep is currently under active development.
+NPSV-deep is described in the following publication:
+
+Linderman MD, Wallace J, van der Heyde A, Wieman E, Brey D, Shi Y, Hansen P, Shamsi Z, Gelb BD, Bashir A. [NPSV-deep: A deep learning method for genotyping structural variants in short read genome sequencing data](https://doi.org/10.1093/bioinformatics/btae129). Bioinformatics. 2024;40(3).
 
 ## Installation
 
@@ -126,7 +128,7 @@ npsv2 command=preprocess \
     output=tests/results/stats.json
 ```
 
-The `sequencer` argument specifies the sequencer model and thus the profile to use with the [ART NGS simulator](https://www.niehs.nih.gov/research/resources/software/biostatistics/art/index.cfm). Currently available profiles in ART are:
+The `sequencer` argument specifies the sequencer model and thus the profile to use with the [ART NGS simulator](https://www.niehs.nih.gov/research/resources/software/biostatistics/art/index.cfm). Currently available profiles in ART are shown below. If your sequencer is newer than the available profiles, choose the the most recent model with a similar preparation workflow and read length. For example, training using `HSXn` with a data produced from a NovaSeq 6000.
 
 ```
 GA1 - GenomeAnalyzer I (36bp,44bp), GA2 - GenomeAnalyzer II (50bp, 75bp)
