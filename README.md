@@ -171,7 +171,7 @@ npsv2 command=propose \
 
 The `tests/results/1_1865644_1866241_DEL.propose.vcf.gz` file contains the original SV along with the proposed alternative descriptions (linked by the "INFO/ORIGINAL" field). Since we specified `refine.all_alignments=true`, the proposer will generate all possible start positions for the SV within the repetitive region, ~2200 variants. That can be reduced with read support filtering via the `filter` subcommand. Alternately, not setting `all_alignments` will use small maximum number of proposals based on realigning the putative SV within the repeat.
 
-Then genotype the expanded set of putative variant. Mulitple threads are recommend (see below), since we are genotyping numerous SVs.
+Then genotype the expanded set of putative variant. Multiple threads are recommended (see below), since we are genotyping numerous SVs.
 
 ```plaintext
 npsv2 command=genotype \
