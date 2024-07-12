@@ -139,6 +139,13 @@ MSv1 - MiSeq v1 (250bp),            MSv3 - MiSeq v3 (250bp),        NS50 - NextS
 
 Preprocessing is multi-threaded. Specifying multiple threads, e.g. `threads=8`, will improve preprocessing performance.
 
+*Note that preprocessing CRAM files may require [creating a local MD5 cache](http://www.htslib.org/workflow/cram.html#the-ref_path-and-ref_cache) of the reference for use by Samtools.* Interally, NPSV2 uses `goleft` to compute the coverage, which in turn invokes `samtools`. But `goleft` does not appear to pass the path to the reference through to `samtools`. To efficiently preprocess CRAM files, try creating a local MD5 cache as described [here](http://www.htslib.org/workflow/cram.html#the-ref_path-and-ref_cache) and setting the `REF_PATH` and `REF_CACHE` environment variables, e.g.,
+```
+<samtools_src_dir>/misc/seq_cache_populate.pl -root /some_dir/Homo_sapiens_assembly38_cache Homo_sapiens_assembly38.fasta
+export REF_PATH=/some_dir/Homo_sapiens_assembly38_cache/%2s/%2s/%s
+export REF_CACHE=/some_dir/Homo_sapiens_assembly38_cache/%2s/%2s/%s
+```
+
 ### "End-to-end" example
 
 The `paper` directory includes an `example.sh` script that downloads the HG002 short-read sequencing data and the GIAB SV calls, aligns the reads with BWA, calls SNVs with GATK, and then genotypes those SVs with NPSV using a representative workflow.

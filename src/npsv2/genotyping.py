@@ -31,7 +31,7 @@ def coverage_over_region(input_bam, region: Range, reference, min_mapq=40, min_b
         "-q", str(min_baseq),
         "-l", str(min_anchor),
         "-r", str(region),
-        #"--reference", reference,  # no longer seems to be an argument in recent versions
+        "--reference", reference,
         input_bam,
     )
 

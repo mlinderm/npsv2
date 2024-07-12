@@ -161,7 +161,7 @@ with open("LICENSE") as f:
 
 setup(
     name="npsv2",
-    version="0.1.0",
+    version="0.1.1",
     description="NPSV-deep: Deep learning structural variant genotyper",
     long_description=readme,
     author="Michael Linderman",
